@@ -750,34 +750,53 @@
 
 /* Master fabrication process list, in canonical route order. An item's route
    is always a subset of this list, kept in this same order — so routes never
-   need manual reordering, they just follow the real factory sequence. */
+   need manual reordering, they just follow the real factory sequence.
+   This is the full 30-step process list (Process Owners + Add New SO share
+   this exact same list — editing it here updates both places at once).
+   Ids for steps that already existed under the old, shorter list are kept
+   UNCHANGED even where the label wording changed, so every already-saved
+   item's route/status/timestamps/cost history keeps matching correctly —
+   only the display label was renamed, nothing about existing data moved. */
 const PROCESS_LIST = [
-  // Pre-production — new as of the lifecycle expansion; NOT retroactively
-  // added to items created before this, only pre-selected for new ones.
-  {id:'material_purchasing', label:'Material Purchasing', category:'pre'},
-  {id:'drawing',              label:'Drawing / Engineering', category:'pre'},
-  {id:'material_withdrawal',  label:'Material Withdrawal', category:'pre'},
-  // Production — the original fabrication route, unchanged.
-  {id:'laser_cutting',      label:'Laser Cutting', category:'production'},
-  {id:'bystronic_cutting',  label:'Bystronic Cutting', category:'production'},
+  // Pre-production / planning — NOT retroactively added to items created
+  // before this, only pre-selected for new ones.
+  {id:'material_purchasing',              label:'Material Procurement', category:'pre'},
+  {id:'drawing',                          label:'Fabrication Drawing', category:'pre'},
+  {id:'laser_cutting_program',            label:'Laser Cutting Program', category:'pre'},
+  {id:'bystronic_tube_cutting_program',   label:'Bystronic Tube Cutting Program', category:'pre'},
+  {id:'manual_cutting_scheme',            label:'Manual Cutting Scheme', category:'pre'},
+  {id:'bending_flat_pattern',             label:'Bending Flat Pattern', category:'pre'},
+  {id:'turret_punch_program',             label:'Turret Punch Program', category:'pre'},
+  {id:'material_withdrawal',              label:'Materials/Consumables/Accessories Withdrawal', category:'pre'},
+  // Production — the actual shop-floor execution steps.
+  {id:'laser_cutting',      label:'Laser Machine Cutting', category:'production'},
+  {id:'bystronic_cutting',  label:'Bystronic Pipe Laser Cutting', category:'production'},
   {id:'manual_cutting',     label:'Manual Cutting', category:'production'},
+  {id:'turret_punching',    label:'Turret Punching', category:'production'},
+  {id:'burring',            label:'De-Burring', category:'production'},
   {id:'machining',          label:'Machining', category:'production'},
-  {id:'burring',            label:'Burring', category:'production'},
+  {id:'engraving',          label:'Engraving', category:'production'},
+  {id:'burring_2',          label:'Burring', category:'production'},
   {id:'tapping',            label:'Tapping', category:'production'},
-  {id:'countersunk',        label:'Countersunk', category:'production'},
-  {id:'grooving',           label:'Grooving', category:'production'},
+  {id:'countersunk',        label:'Countersunking', category:'production'},
   {id:'bending',            label:'Bending', category:'production'},
-  {id:'stud_welding',       label:'Stud Welding', category:'production'},
-  {id:'welding',            label:'Welding', category:'production'},
+  {id:'welding',            label:'Welding and Assembly', category:'production'},
   {id:'finishing',          label:'Finishing', category:'production'},
+  {id:'materials_return',   label:'Materials/Consumables/Accessories Return', category:'production'},
+  {id:'metal_treatment',    label:'Metal Treatment', category:'production'},
   {id:'powder_coating',     label:'Powder Coating', category:'production'},
   {id:'hot_dipping',        label:'Hot Dipping', category:'production'},
   {id:'plating',            label:'Plating', category:'production'},
   {id:'final_inspection',   label:'Final Inspection', category:'production'},
   {id:'packaging',          label:'Packaging', category:'production'},
-  {id:'finish_goods',       label:'Finish Goods', category:'production'},
-  // Post-production — new as of the lifecycle expansion.
-  {id:'delivery',            label:'Delivery to Client', category:'post'}
+  {id:'finish_goods',       label:'Finish Good', category:'production'},
+  // Post-production.
+  {id:'delivery',            label:'Delivery', category:'post'},
+  // Legacy steps — not part of the current 30-step list, kept here only so
+  // older items that already used them keep showing correctly and their
+  // owners stay assignable. Never pre-selected for new items.
+  {id:'grooving',           label:'Grooving', category:'legacy'},
+  {id:'stud_welding',       label:'Stud Welding', category:'legacy'}
 ];
 // Pre-selected by default for every NEWLY created item row (see addItemRow) —
 // existing items are never retroactively changed.
@@ -806,8 +825,11 @@ const DEFAULT_OWNERS = {
   laser_cutting:     ['Rosemary Vermug'],
   bystronic_cutting: ['Angel Bentulan'],
   manual_cutting:    ['Angel Bentulan'],
+  turret_punching:   [],
   machining:         [],
+  engraving:         [],
   burring:           ['Elmer Galangue'],
+  burring_2:         [],
   tapping:           ['Elmer Galangue'],
   countersunk:       ['Elmer Galangue'],
   grooving:          [],
@@ -815,6 +837,8 @@ const DEFAULT_OWNERS = {
   stud_welding:      ['Angelica Mercado','Alfred Portugaliza','Myrna Garfin'],
   welding:           ['Angelica Mercado','Myrna Garfin','Alfred Portugaliza'],
   finishing:         ['Elmer Galangue'],
+  materials_return:  [],
+  metal_treatment:   [],
   powder_coating:    ['Juvy Tanate'],
   hot_dipping:       ['Subcon'],
   plating:           ['Subcon'],
@@ -823,6 +847,11 @@ const DEFAULT_OWNERS = {
   finish_goods:      ['Warehouse'],
   material_purchasing: [],
   drawing:              [],
+  laser_cutting_program: [],
+  bystronic_tube_cutting_program: [],
+  manual_cutting_scheme: [],
+  bending_flat_pattern:  [],
+  turret_punch_program:  [],
   material_withdrawal:  [],
   delivery:             []
 };
