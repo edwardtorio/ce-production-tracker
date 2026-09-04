@@ -1151,6 +1151,45 @@ async function saveItem(item){
   updateSyncBadge('offline');
   showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
 }
+// Lightweight save for the 4 meta rows only (owners, photos, cost rates,
+// period costs) — used by edits that only ever touch meta, like Process
+// Owners and Cost Rates, so they don't have to upload the entire ~100+
+// item ITEMS array (which is what made editing a single owner name feel
+// slow) just to persist a few names.
+async function persistMeta(){
+  if(typeof sbClient==='undefined' || !sbClient){ capabilityUnavailable = true; return {ok:false, code:'capability_disabled'}; }
+  try{
+    const metaRows = [
+      {key:'owners', data: PROCESS_OWNERS},
+      {key:'photos', data: TEAM_PHOTOS},
+      {key:'costRates', data: PROCESS_COST_RATES},
+      {key:'periodCosts', data: PERIOD_COST_ENTRIES},
+    ];
+    const {error} = await sbClient.from('meta').upsert(metaRows, {onConflict:'key'});
+    if(error) throw error;
+    return {ok:true};
+  }catch(e){
+    return {ok:false, code:'upstream_error', message: e && e.message};
+  }
+}
+async function saveMeta(){
+  if(isReadOnly || capabilityUnavailable){ return; }
+  updateSyncBadge('saving');
+  let result = await persistMeta();
+  if(!result.ok && result.code==='upstream_error'){
+    await sleep(400 + Math.random()*400);
+    result = await persistMeta();
+  }
+  if(result.ok){ updateSyncBadge('saved'); return; }
+  if(result.code==='capability_disabled'){
+    capabilityUnavailable = true;
+    updateSyncBadge('unavailable');
+    showToast('Hindi available ang pag-save dito ngayon.');
+    return;
+  }
+  updateSyncBadge('offline');
+  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
+}
 // Shared save wrapper used by every other mutation in the app (owners, cost
 // rates, SO edits, new items, deletes, ...) — uploads the full working
 // state. Handles the read-only / conflict / transient-failure cases the
@@ -3549,7 +3588,7 @@ async function saveOwnersFromForm(silent){
   });
   PROCESS_OWNERS = updated;
   renderTeam(); renderOverview();
-  await save();
+  await saveMeta();
   renderTeamPhotosEditor(); // person list may have changed
   if(!silent) showToast('Na-save ang Process Owners');
 }
@@ -4297,6 +4336,8 @@ function handleRemoteMetaChange(payload){
 function rerenderCurrentView(){
   const modalOpen = document.getElementById('modalOverlay') && document.getElementById('modalOverlay').classList.contains('show');
   if(modalOpen) return;
+  const activeEl = document.activeElement;
+  if(activeEl && (activeEl.tagName==='INPUT' || activeEl.tagName==='TEXTAREA')) return;
   renderOverview();
   renderBoard();
   const activeView = document.querySelector('.view.active');
