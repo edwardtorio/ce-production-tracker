@@ -779,6 +779,8 @@ const PROCESS_LIST = [
   {id:'burring_2',          label:'Burring', category:'production'},
   {id:'tapping',            label:'Tapping', category:'production'},
   {id:'countersunk',        label:'Countersunking', category:'production'},
+  {id:'grooving',           label:'Grooving', category:'production'},
+  {id:'stud_welding',       label:'Stud Welding', category:'production'},
   {id:'bending',            label:'Bending', category:'production'},
   {id:'welding',            label:'Welding and Assembly', category:'production'},
   {id:'finishing',          label:'Finishing', category:'production'},
@@ -791,12 +793,7 @@ const PROCESS_LIST = [
   {id:'packaging',          label:'Packaging', category:'production'},
   {id:'finish_goods',       label:'Finish Good', category:'production'},
   // Post-production.
-  {id:'delivery',            label:'Delivery', category:'post'},
-  // Legacy steps — not part of the current 30-step list, kept here only so
-  // older items that already used them keep showing correctly and their
-  // owners stay assignable. Never pre-selected for new items.
-  {id:'grooving',           label:'Grooving', category:'legacy'},
-  {id:'stud_welding',       label:'Stud Welding', category:'legacy'}
+  {id:'delivery',            label:'Delivery', category:'post'}
 ];
 // Pre-selected by default for every NEWLY created item row (see addItemRow) —
 // existing items are never retroactively changed.
