@@ -3743,6 +3743,116 @@ async function extractPdfText(file){
   }
   return text;
 }
+// Same as extractPdfText, but also keeps each text fragment's raw x/y
+// position (pdf.js gives this per-fragment but reconstructLinesFromTextContent
+// throws it away once it's grouped into flattened lines). The SO PDF's own
+// table has columns that wrap independently of each other — the Customer
+// name, the Item code, and the Description can each spill onto 2-3 lines,
+// and those wrapped continuation lines land on the SAME printed row as a
+// DIFFERENT column's wrapped continuation. Flattening to plain text before
+// parsing loses which column a wrapped word belongs to, which is what made
+// the Client field pick up "TYPE OF BUSINESS" (a neighboring column's own
+// header) and made Description drop everything after the first line. Kept
+// positions let parseSoText read each column by its own x-range instead.
+async function extractPdfTextAndItems(file){
+  await ensurePdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  let text = '';
+  const items = [];
+  for(let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    text += reconstructLinesFromTextContent(content) + '\n';
+    content.items.forEach(it=>{
+      if(it.str && it.str.trim()) items.push({x: it.transform[4], y: it.transform[5], str: it.str});
+    });
+  }
+  return {text, items};
+}
+// Reads the Customer/Client name by its column position instead of by
+// regex on flattened text. Finds the "CUSTOMER" header label, figures out
+// that column's left/right x-boundaries from the neighboring header label
+// (e.g. "TYPE OF BUSINESS") and the "BILL TO" row that closes off the
+// block below it, then collects every text fragment inside that box —
+// which correctly picks up a customer name that wraps across several
+// lines — and drops the leading customer-code token (e.g. "CUST76206").
+function extractClientFromItems(items){
+  if(!items || !items.length) return '';
+  const Y_TOL = 3;
+  const norm = s => (s||'').trim().toUpperCase();
+  const customerItem = items.find(it=> norm(it.str)==='CUSTOMER');
+  if(!customerItem) return '';
+  const headerY = customerItem.y, headerX = customerItem.x;
+  const sameRowRight = items.filter(it=> Math.abs(it.y-headerY)<=Y_TOL && it.x > headerX + 5)
+    .sort((a,b)=>a.x-b.x);
+  const colRight = sameRowRight.length ? sameRowRight[0].x : headerX + 350;
+  const billItem = items
+    .filter(it=> norm(it.str).startsWith('BILL') && it.y < headerY - Y_TOL)
+    .sort((a,b)=> b.y - a.y)[0];
+  const lowerYBound = billItem ? billItem.y : (headerY - 60);
+  const colLeft = headerX - 5;
+  const valueItems = items.filter(it=>
+    it.y < headerY - Y_TOL && it.y > lowerYBound + Y_TOL &&
+    it.x >= colLeft && it.x < colRight - Y_TOL
+  );
+  if(!valueItems.length) return '';
+  valueItems.sort((a,b)=> (b.y - a.y) || (a.x - b.x));
+  let joined = valueItems.map(it=>it.str).join(' ').replace(/\s+/g,' ').trim();
+  joined = joined.replace(/^[A-Z]{2,}\d{2,}\s*/, '').trim(); // drop the leading customer code, e.g. "CUST76206"
+  return joined;
+}
+// Same column-position idea, applied to the item table: finds the
+// "Description"/"Quantity" header labels to get the Description column's
+// x-range, then anchors one row per recognized unit word (pc, lot, set,
+// ...) and gathers every fragment in that column between this row and the
+// next — reconstructing a wrapped multi-line description (e.g. a part
+// number + dimensions on their own continuation line) instead of only the
+// first line. Returns null if the expected headers aren't found, so the
+// caller can fall back to the older flattened-text approach for a
+// differently-laid-out PDF.
+function extractItemsFromPositions(items){
+  if(!items || !items.length) return null;
+  const norm = s => (s||'').trim();
+  const Y_TOL = 3;
+  const header = items.find(it=> norm(it.str).toLowerCase()==='description');
+  const qtyHeader = items.find(it=> norm(it.str).toLowerCase()==='quantity');
+  if(!header || !qtyHeader) return null;
+  const descX0 = header.x, descX1 = qtyHeader.x;
+  const unitRegex = /^(pcs?|units?|sets?|boxes?|kgs?|pairs?|lots?)$/i;
+  const unitItems = items.filter(it=> unitRegex.test(norm(it.str)) && it.y < header.y)
+    .sort((a,b)=> b.y - a.y);
+  if(!unitItems.length) return null;
+  const boundaryItem = items.filter(it=> /^project id/i.test(norm(it.str)) && it.y < header.y)
+    .sort((a,b)=> b.y - a.y)[0];
+  const results = [];
+  unitItems.forEach((u, idx)=>{
+    const rowY = u.y;
+    const nextY = idx+1 < unitItems.length ? unitItems[idx+1].y : (boundaryItem ? boundaryItem.y : rowY - 80);
+    const qtyItem = items.filter(it=> Math.abs(it.y-rowY)<=Y_TOL && it.x < u.x && /^\d+(\.\d+)?$/.test(norm(it.str)))
+      .sort((a,b)=> b.x-a.x)[0];
+    const amounts = items.filter(it=> Math.abs(it.y-rowY)<=Y_TOL && it.x > u.x && /PHP|₱/.test(it.str))
+      .sort((a,b)=> a.x-b.x);
+    const rateStr = amounts[0] ? amounts[0].str.replace(/[^\d.,]/g,'') : '';
+    const descItems = items.filter(it=>
+      it.y <= rowY + Y_TOL && it.y > nextY + Y_TOL &&
+      it.x >= descX0 - 5 && it.x < descX1 - 3
+    ).sort((a,b)=> (b.y-a.y) || (a.x-b.x));
+    let descText = descItems.map(it=>it.str).join(' ').replace(/\s+/g,' ').trim();
+    const codeMatch = descText.match(/^([A-Z0-9]{2,}(?:-[A-Z0-9]+){1,6})\s*/);
+    let code = '';
+    if(codeMatch){ code = codeMatch[1]; descText = descText.slice(codeMatch[0].length).trim(); }
+    if(/subtotal|tax total|shipping cost|handling cost|^total$/i.test(descText)) return;
+    results.push({
+      code: code || '(check code)',
+      desc: descText || '(check description)',
+      qty: qtyItem ? norm(qtyItem.str) : '',
+      unit: norm(u.str).replace(/s$/,'') || 'pc',
+      rate: rateStr ? (Number(rateStr.replace(/,/g,'')) || 0) : 0,
+    });
+  });
+  return results;
+}
 // pdf.js hands back individual text fragments with x/y positions but no line
 // breaks. Grouping fragments that share roughly the same y-coordinate (and
 // sorting left-to-right within each group) reconstructs real table rows —
@@ -3796,35 +3906,48 @@ function parseBomRowsFromCleanedText(cleanedText){
   });
   return rows;
 }
-function parseSoText(text){
+function parseSoText(text, items){
   const clean = text.replace(/\s+/g,' ').trim();
   let soNumber = '';
   let m = clean.match(/\b([A-Z]{2,6}-[A-Z]{2,8}-\d{3,8})\b/);
   if(m) soNumber = m[1];
   else{ m = clean.match(/NO\.?:?\s*([A-Z0-9\-]{5,})/i); if(m) soNumber = m[1]; }
-  let client = '';
-  m = clean.match(/CUSTOMER\s+(.*?)\s+(?:TYPE OF BUSINESS|DELIVERY DATE|BILL TO|SHIP TO|PAYMENT TERMS)/i);
-  if(m) client = m[1].trim();
-  const rowRegex = /(\d+(?:\.\d+)?)\s+(pcs?|units?|sets?|boxes?|kgs?|pairs?|pc|pcs)\b\s*(?:PHP|₱)\s?([\d,]+\.?\d*)\s+(?:PHP|₱)\s?[\d,]+\.?\d*/gi;
-  const items = [];
-  let lastIndex = 0, rm;
-  while((rm = rowRegex.exec(clean)) !== null){
-    const chunk = clean.slice(lastIndex, rm.index).trim();
-    lastIndex = rowRegex.lastIndex;
-    if(!chunk) continue;
-    const codeMatches = [...chunk.matchAll(/\b([A-Z0-9]{2,}(?:-[A-Z0-9]+){1,6})\b/g)];
-    let code = '', desc = chunk;
-    if(codeMatches.length){
-      const lastCode = codeMatches[codeMatches.length-1];
-      code = lastCode[1];
-      desc = chunk.slice(lastCode.index + lastCode[0].length).trim();
-    }
-    if(!desc) desc = chunk;
-    if(/subtotal|tax total|shipping cost|handling cost|^total$/i.test(desc)) continue;
-    const rate = Number(rm[3].replace(/,/g,'')) || 0;
-    items.push({code: code || '(check code)', desc: desc || '(check description)', qty: rm[1], unit: rm[2].replace(/s$/,'') || 'pc', rate});
+
+  // Client: prefer the position-aware column read (handles a name that
+  // wraps across lines); fall back to the old same-line regex for a PDF
+  // whose layout doesn't match (e.g. missing the expected header labels).
+  let client = extractClientFromItems(items);
+  if(!client){
+    m = clean.match(/CUSTOMER\s+(.*?)\s+(?:TYPE OF BUSINESS|DELIVERY DATE|BILL TO|SHIP TO|PAYMENT TERMS)/i);
+    if(m) client = m[1].trim();
   }
-  return {soNumber, client, items};
+
+  // Items: same preference — position-aware first (also correctly
+  // reconstructs a wrapped multi-line description), fall back to the
+  // flattened-text regex scan otherwise.
+  let parsedItems = extractItemsFromPositions(items);
+  if(!parsedItems){
+    parsedItems = [];
+    const rowRegex = /(\d+(?:\.\d+)?)\s+(pcs?|units?|sets?|boxes?|kgs?|pairs?|lots?|pc|pcs|lot)\b\s*(?:PHP|₱)\s?([\d,]+\.?\d*)\s+(?:PHP|₱)\s?[\d,]+\.?\d*/gi;
+    let lastIndex = 0, rm;
+    while((rm = rowRegex.exec(clean)) !== null){
+      const chunk = clean.slice(lastIndex, rm.index).trim();
+      lastIndex = rowRegex.lastIndex;
+      if(!chunk) continue;
+      const codeMatches = [...chunk.matchAll(/\b([A-Z0-9]{2,}(?:-[A-Z0-9]+){1,6})\b/g)];
+      let code = '', desc = chunk;
+      if(codeMatches.length){
+        const lastCode = codeMatches[codeMatches.length-1];
+        code = lastCode[1];
+        desc = chunk.slice(lastCode.index + lastCode[0].length).trim();
+      }
+      if(!desc) desc = chunk;
+      if(/subtotal|tax total|shipping cost|handling cost|^total$/i.test(desc)) continue;
+      const rate = Number(rm[3].replace(/,/g,'')) || 0;
+      parsedItems.push({code: code || '(check code)', desc: desc || '(check description)', qty: rm[1], unit: rm[2].replace(/s$/,'') || 'pc', rate});
+    }
+  }
+  return {soNumber, client, items: parsedItems};
 }
 async function handlePdfUpload(file){
   const dz = document.getElementById('dropzone'), dzText = document.getElementById('dzText'), status = document.getElementById('uploadStatus');
@@ -3834,8 +3957,8 @@ async function handlePdfUpload(file){
   try{
     await ensurePdfJs();
     dzText.innerHTML = `<b>Reading ${file.name}…</b>`;
-    const text = await extractPdfText(file);
-    const parsed = parseSoText(text);
+    const {text, items} = await extractPdfTextAndItems(file);
+    const parsed = parseSoText(text, items);
     if(parsed.soNumber) document.getElementById('soNumber').value = parsed.soNumber;
     if(parsed.client) document.getElementById('soClient').value = parsed.client;
     document.getElementById('itemRows').innerHTML = '';
