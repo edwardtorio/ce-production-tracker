@@ -4130,6 +4130,11 @@ function promptDrawingLink(id){
   const url = window.prompt('I-paste ang link ng drawing (Google Drive, atbp.):', current);
   if(url===null) return;
   setDrawingLink(id, url.trim(), url.trim());
+  const statusEl = document.getElementById('partsStatus_'+id);
+  if(statusEl && url.trim()) statusEl.textContent = 'Naka-attach ang link. Hindi ito ma-a-auto-detect ang Sub Assy (kailangan ang aktwal na file) — gamitin ang "📎 Idagdag ang Drawing" → "I-upload mula sa device" o "Kunin sa Google Drive" kung gusto mong subukan ang auto-detect, o "+ Add Sub Assy" para i-type manually.';
+}
+function isPdfLikeFile(file){
+  return !!file && ((file.type && file.type==='application/pdf') || /\.pdf$/i.test(file.name||''));
 }
 async function handleDrawingFileUpload(id, file){
   if(!file) return;
@@ -4144,7 +4149,12 @@ async function handleDrawingFileUpload(id, file){
     setDrawingLink(id, data.publicUrl, file.name);
   }catch(err){
     if(prev) prev.innerHTML = `⚠️ Hindi na-upload ang file: ${escapeHtml(String(err.message||err))}`;
+    return;
   }
+  // The uploaded drawing doubles as the BOM source: if it's a PDF, try to
+  // auto-detect the Sub Assy / Child Part rows from it right away instead
+  // of making the user upload it a second time in a separate button.
+  if(isPdfLikeFile(file)) await detectSubAssyFromFile(id, file);
 }
 async function openDrawingDrivePicker(id){
   const prev = document.getElementById('drawingPreview_'+id);
@@ -4180,6 +4190,19 @@ async function openDrawingDrivePicker(id){
         }catch(permErr){ /* ignore — link is used regardless */ }
         const viewLink = doc.url || `https://drive.google.com/file/d/${doc.id}/view`;
         setDrawingLink(id, viewLink, doc.name);
+        // Best-effort: also pull the file's bytes so a PDF drawing's BOM
+        // table can be auto-detected the same way a device upload is —
+        // this failing just means Sub Assy still has to be added manually.
+        if(/\.pdf$/i.test(doc.name||'') || doc.mimeType==='application/pdf'){
+          try{
+            const res = await fetch(`https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`, {headers:{Authorization:`Bearer ${accessToken}`}});
+            if(res.ok){
+              const blob = await res.blob();
+              const pdfFile = new File([blob], doc.name || 'drawing.pdf', {type:'application/pdf'});
+              await detectSubAssyFromFile(id, pdfFile);
+            }
+          }catch(fetchErr){ /* drawing link is already saved; auto-detect just skipped */ }
+        }
       })
       .build();
     picker.setVisible(true);
@@ -4221,7 +4244,8 @@ function addItemRow(prefill, existingId){
       <div class="route-preview" id="routePreview_${id}">Route: (wala pang napipili)</div>
     </div>
     <div class="route-picker" style="margin-top:8px;">
-      <div class="route-picker-label">Drawing ng Item na Ito — makikita ito sa My Tasks, kahit gamit ay cellphone lang</div>
+      <div class="route-picker-label">Drawing ng Item na Ito — makikita ito sa My Tasks kahit gamit ay cellphone lang. Kung PDF ito na may BOM table, awtomatiko ring susubukan i-detect ang Sub Assy/Child Part na bumubuo sa Main Assy (item) na ito.</div>
+      <div class="hint" style="margin-bottom:6px;"><b>Main Assy</b> (itong item) → <b>Sub Assy</b> (2+ karaniwan) → <b>Child Part</b> (1+ bawat Sub Assy, kung meron). Awtomatikong nagmu-multiply ang Total Kailangan sa bawat antas.</div>
       <div class="drawing-menu-wrap">
         <button type="button" class="btn secondary btn-sm" id="drawingBtn_${id}" onclick="toggleDrawingMenu('${id}')">📎 Idagdag ang Drawing</button>
         <div class="drawing-menu" id="drawingMenu_${id}">
@@ -4233,15 +4257,7 @@ function addItemRow(prefill, existingId){
       </div>
       <input type="hidden" id="drawingLink_${id}" value="">
       <div class="hint" id="drawingPreview_${id}" style="margin-top:6px;"></div>
-    </div>
-    <div class="route-picker" style="margin-top:8px;">
-      <div class="route-picker-label">Sub Assy at Child Part na Bumubuo sa Main Assy (item) na Ito — i-upload ang BOM drawing (PDF), susubukan kong i-detect ang mga Sub Assy mula sa BOM table (tinatanggal ang title block noise). I-verify, i-edit, at gamitin ang "+ Add Child Part" kung may piyesa pang bumubuo sa isang Sub Assy.</div>
-      <div class="hint" style="margin-bottom:6px;"><b>Main Assy</b> (itong item) → <b>Sub Assy</b> (2+ karaniwan) → <b>Child Part</b> (1+ bawat Sub Assy, kung meron). Awtomatikong nagmu-multiply ang Total Kailangan sa bawat antas.</div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <input type="file" id="partsPdf_${id}" accept="application/pdf" style="display:none;" onchange="handlePartsPdfUpload('${id}', this.files[0])">
-        <button type="button" class="btn secondary btn-sm" onclick="document.getElementById('partsPdf_${id}').click()">📎 Upload BOM Drawing (PDF) — auto-detect Sub Assy</button>
-        <span class="hint" id="partsStatus_${id}"></span>
-      </div>
+      <div class="hint" id="partsStatus_${id}" style="margin-top:6px;"></div>
       <textarea id="partsNotes_${id}" placeholder="Cleaned na text mula sa PDF (tinanggal ang title block) — gamitin bilang reference kung may nakaligtaang piyesa sa auto-detect." style="margin-top:6px;margin-bottom:8px;min-height:60px;" oninput="scheduleSaveDraft('${id}')"></textarea>
       <div id="partsListRows_${id}"></div>
       <button type="button" class="btn secondary btn-sm" onclick="addPartRow('${id}')">+ Add Sub Assy</button>
@@ -4435,14 +4451,16 @@ function renderPartsListTable(rowId){
   });
   tableEl.innerHTML = `<tr><th>Piyesa</th><th>Qty/parent</th><th>Total Kailangan (Main Assy × ${itemQty} ${itemUnit})</th></tr>` + rowsHtml;
 }
-async function handlePartsPdfUpload(rowId, file){
+// Shared by every path that ends up with an actual PDF File object (device
+// upload, Google Drive fetch) — reads it, strips title-block noise, and
+// tries to auto-detect Sub Assy rows from whatever looks like a BOM table.
+async function detectSubAssyFromFile(rowId, file){
   if(!file) return;
   const statusEl = document.getElementById('partsStatus_'+rowId);
   const notesEl = document.getElementById('partsNotes_'+rowId);
-  if(statusEl) statusEl.textContent = 'Loading PDF reader…';
+  if(statusEl) statusEl.textContent = 'Kinukuha ang Sub Assy mula sa BOM table…';
   try{
     await ensurePdfJs();
-    if(statusEl) statusEl.textContent = `Reading ${file.name}…`;
     const rawText = await extractPdfText(file);
     const cleaned = cleanPartsPdfText(rawText);
     if(notesEl) notesEl.value = cleaned;
@@ -4454,10 +4472,10 @@ async function handlePartsPdfUpload(rowId, file){
       if(rowId!=='edit') scheduleSaveDraft(rowId);
       if(statusEl) statusEl.textContent = `✓ Na-detect ang ${detected.length} posibleng Sub Assy mula sa BOM table ng "${file.name}" — inalis na ang title block noise. Paki-verify at i-adjust kung kailangan (o gawing Child Part kung ito pala ay parte ng ibang Sub Assy).`;
     }else{
-      if(statusEl) statusEl.textContent = `Na-clean ang text mula sa "${file.name}" (tinanggal ang title block) — walang awtomatikong na-detect na BOM row, i-check ang "Raw Extracted Text" sa ibaba at ilagay manually gamit ang "+ Add Sub Assy".`;
+      if(statusEl) statusEl.textContent = `Na-save ang drawing at na-clean ang text mula sa "${file.name}" (tinanggal ang title block) — walang awtomatikong na-detect na BOM row. I-check ang "Raw Extracted Text" sa ibaba: kung mayroon talagang Sub Assy list dito na hindi na-detect, i-type na lang manually gamit ang "+ Add Sub Assy".`;
     }
   }catch(err){
-    if(statusEl) statusEl.textContent = `Hindi mabasa ang PDF (${err.message||err}) — gamitin na lang ang "+ Add Sub Assy" para i-type manually.`;
+    if(statusEl) statusEl.textContent = `Na-save ang drawing pero hindi mabasa ang text nito para sa auto-detect (${err.message||err}) — gamitin na lang ang "+ Add Sub Assy" para i-type manually.`;
   }
 }
 // If this description or drawing link matches an item we've seen before
