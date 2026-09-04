@@ -603,6 +603,9 @@
         <div class="dz-text" id="dzText"><b>Click to upload</b> the SO PDF — SO Number, Client, and items will be filled in automatically below.</div>
         <input type="file" id="pdfUpload" accept="application/pdf" style="display:none;">
       </label>
+      <div style="text-align:center;margin-top:10px;">
+        <button type="button" class="btn secondary btn-sm" id="drivePickerBtn" onclick="openGoogleDrivePicker()">📁 Pumili mula sa Google Drive</button>
+      </div>
       <div id="uploadStatus" class="hint" style="margin-top:8px;"></div>
     </div>
 
@@ -3852,6 +3855,103 @@ async function handlePdfUpload(file){
   }
 }
 document.getElementById('pdfUpload').addEventListener('change', (e)=>{ const file = e.target.files[0]; if(file) handlePdfUpload(file); });
+/* ---------- Google Drive picker (alternative to local file upload) ----------
+   Lets the SO PDF be picked directly from the user's Google Drive (including
+   shared drives) instead of having to download it to the computer first. Once
+   picked, the file's bytes are fetched from Drive and handed to the EXACT
+   same handlePdfUpload()/PDF.js parsing pipeline used for a local upload —
+   nothing about how the SO is read changes, only where the bytes come from. */
+const GOOGLE_CLIENT_ID = '99866496074-cqm654bito6tqf6738ptv556urk4tn5b.apps.googleusercontent.com';
+const GOOGLE_API_KEY = 'AIzaSyBs5y6oaeWLop_ZsbVAHwHXEIsL_s71Yxc';
+const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+let googleLibsLoadPromise = null;
+let googleTokenClient = null;
+let googlePickerAccessToken = '';
+function loadScriptOnce(src){
+  return new Promise((resolve, reject)=>{
+    if(document.querySelector(`script[src="${src}"]`)){ resolve(); return; }
+    const s = document.createElement('script');
+    s.src = src; s.async = true; s.defer = true;
+    s.onload = resolve;
+    s.onerror = ()=>reject(new Error('Could not load ' + src));
+    document.head.appendChild(s);
+  });
+}
+function ensureGoogleDriveLibs(){
+  if(googleLibsLoadPromise) return googleLibsLoadPromise;
+  googleLibsLoadPromise = (async ()=>{
+    await Promise.all([
+      loadScriptOnce('https://accounts.google.com/gsi/client'),
+      loadScriptOnce('https://apis.google.com/js/api.js'),
+    ]);
+    await new Promise(resolve=>{ gapi.load('picker', resolve); });
+  })();
+  return googleLibsLoadPromise;
+}
+function getGoogleAccessToken(){
+  return new Promise((resolve, reject)=>{
+    if(!googleTokenClient){
+      googleTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: GOOGLE_DRIVE_SCOPE,
+        callback: ()=>{}, // overridden per-request below
+      });
+    }
+    googleTokenClient.callback = (resp)=>{
+      if(resp.error){ reject(new Error(resp.error)); return; }
+      googlePickerAccessToken = resp.access_token;
+      resolve(resp.access_token);
+    };
+    googleTokenClient.requestAccessToken({prompt: googlePickerAccessToken ? '' : 'consent'});
+  });
+}
+async function openGoogleDrivePicker(){
+  const dz = document.getElementById('dropzone'), dzText = document.getElementById('dzText'), status = document.getElementById('uploadStatus');
+  const btn = document.getElementById('drivePickerBtn');
+  try{
+    btn.disabled = true; btn.textContent = 'Naglo-load…';
+    await ensureGoogleDriveLibs();
+    const accessToken = await getGoogleAccessToken();
+    btn.disabled = false; btn.textContent = '📁 Pumili mula sa Google Drive';
+    const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+      .setIncludeFolders(true)
+      .setSelectFolderEnabled(false)
+      .setMimeTypes('application/pdf')
+      .setEnableDrives(true);
+    const picker = new google.picker.PickerBuilder()
+      .enableFeature(google.picker.Feature.SUPPORT_DRIVES)
+      .setOAuthToken(accessToken)
+      .setDeveloperKey(GOOGLE_API_KEY)
+      .setAppId(GOOGLE_CLIENT_ID.split('-')[0])
+      .addView(view)
+      .setCallback(async (data)=>{
+        if(data.action !== google.picker.Action.PICKED) return;
+        const doc = data.docs[0];
+        dz.className = 'dropzone dz-loading';
+        dzText.innerHTML = `<b>Kinukuha ang ${doc.name} mula sa Google Drive…</b>`;
+        status.textContent = '';
+        try{
+          const res = await fetch(`https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`, {
+            headers: {Authorization: `Bearer ${accessToken}`}
+          });
+          if(!res.ok) throw new Error('Hindi makuha ang file mula sa Drive (HTTP ' + res.status + ')');
+          const blob = await res.blob();
+          const file = new File([blob], doc.name || 'so.pdf', {type:'application/pdf'});
+          await handlePdfUpload(file);
+        }catch(err){
+          dz.className = 'dropzone dz-error';
+          dzText.innerHTML = `<b>Hindi nakuha ang file mula sa Google Drive.</b> Please fill in / paste the details below instead.`;
+          status.textContent = String(err.message || err);
+        }
+      })
+      .build();
+    picker.setVisible(true);
+  }catch(err){
+    btn.disabled = false; btn.textContent = '📁 Pumili mula sa Google Drive';
+    status.textContent = 'Hindi ma-buksan ang Google Drive picker: ' + (err.message || err);
+  }
+}
+
 
 /* ---------- Add SO form ---------- */
 let itemRowCount = 0;
