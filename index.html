@@ -132,6 +132,13 @@
   .ac-item:last-child{border-bottom:none;}
   .ac-item:hover{background:var(--steel-100);}
   .ac-item b{color:var(--accent-teal-dk);}
+  .drawing-menu-wrap{position:relative;display:inline-block;}
+  .drawing-menu{position:absolute;top:100%;left:0;background:#fff;border:1px solid var(--line);border-radius:8px;
+    box-shadow:0 8px 20px rgba(18,32,43,.15);z-index:40;display:none;min-width:230px;margin-top:4px;overflow:hidden;}
+  .drawing-menu.show{display:block;}
+  .drawing-menu-item{padding:10px 14px;font-size:12.5px;color:var(--steel-800);cursor:pointer;border-bottom:1px solid var(--line);}
+  .drawing-menu-item:last-child{border-bottom:none;}
+  .drawing-menu-item:hover{background:var(--steel-100);}
   .filter-row input[type=text]{flex:1;min-width:180px;}
   .filter-row select{width:auto;min-width:140px;flex-shrink:0;}
   table.mini-table{width:100%;border-collapse:collapse;font-size:12px;}
@@ -4076,6 +4083,112 @@ async function openGoogleDrivePicker(){
 }
 
 
+/* ---------- Drawing attach button (one button → upload file / pick from
+   Google Drive / paste a link — all three end up filling the same hidden
+   drawingLink_<id> input, so buildItemFromRow() doesn't need to know which
+   path was used). Files uploaded from a device go to a public Supabase
+   Storage bucket ("drawings") so co-workers can open the resulting link on
+   any device — including a phone — with no login needed. Files picked from
+   Google Drive are marked "anyone with the link can view" (best-effort;
+   picking already grants this app per-file access) for the same reason. */
+function toggleDrawingMenu(id){
+  const menu = document.getElementById('drawingMenu_'+id);
+  if(!menu) return;
+  const isOpen = menu.classList.contains('show');
+  document.querySelectorAll('.drawing-menu.show').forEach(m=>m.classList.remove('show'));
+  if(!isOpen) menu.classList.add('show');
+}
+function closeDrawingMenu(id){
+  const menu = document.getElementById('drawingMenu_'+id);
+  if(menu) menu.classList.remove('show');
+}
+document.addEventListener('click', (e)=>{
+  if(!e.target.closest('.drawing-menu-wrap')){
+    document.querySelectorAll('.drawing-menu.show').forEach(m=>m.classList.remove('show'));
+  }
+});
+function renderDrawingPreview(id, label){
+  const prev = document.getElementById('drawingPreview_'+id);
+  if(!prev) return;
+  const el = document.getElementById('drawingLink_'+id);
+  const url = el ? el.value : '';
+  if(!url){ prev.innerHTML = ''; return; }
+  const shown = label || url;
+  prev.innerHTML = `📐 <a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(shown)}</a> <span style="cursor:pointer;color:#c0392b;margin-left:8px;font-weight:600;" onclick="clearDrawingLink('${id}')">✕ palitan</span>`;
+}
+function setDrawingLink(id, url, label){
+  const el = document.getElementById('drawingLink_'+id);
+  if(!el) return;
+  el.value = url;
+  renderDrawingPreview(id, label);
+  scheduleSaveDraft(id);
+  checkAndSuggestReference(id);
+}
+function clearDrawingLink(id){ setDrawingLink(id, '', ''); }
+function promptDrawingLink(id){
+  const current = (document.getElementById('drawingLink_'+id)||{}).value || '';
+  const url = window.prompt('I-paste ang link ng drawing (Google Drive, atbp.):', current);
+  if(url===null) return;
+  setDrawingLink(id, url.trim(), url.trim());
+}
+async function handleDrawingFileUpload(id, file){
+  if(!file) return;
+  const prev = document.getElementById('drawingPreview_'+id);
+  if(prev) prev.innerHTML = `⏳ Ina-upload ang ${escapeHtml(file.name)}…`;
+  try{
+    const ext = (file.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g,'') || 'bin';
+    const path = `${id}_${Date.now()}.${ext}`;
+    const {error} = await sbClient.storage.from('drawings').upload(path, file, {contentType: file.type || 'application/octet-stream', upsert: true});
+    if(error) throw error;
+    const {data} = sbClient.storage.from('drawings').getPublicUrl(path);
+    setDrawingLink(id, data.publicUrl, file.name);
+  }catch(err){
+    if(prev) prev.innerHTML = `⚠️ Hindi na-upload ang file: ${escapeHtml(String(err.message||err))}`;
+  }
+}
+async function openDrawingDrivePicker(id){
+  const prev = document.getElementById('drawingPreview_'+id);
+  try{
+    if(prev) prev.innerHTML = '⏳ Naglo-load ang Google Drive…';
+    await ensureGoogleDriveLibs();
+    const accessToken = await getGoogleAccessToken();
+    const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
+      .setIncludeFolders(true)
+      .setSelectFolderEnabled(false)
+      .setEnableDrives(true);
+    const picker = new google.picker.PickerBuilder()
+      .enableFeature(google.picker.Feature.SUPPORT_DRIVES)
+      .setOAuthToken(accessToken)
+      .setDeveloperKey(GOOGLE_API_KEY)
+      .setAppId(GOOGLE_CLIENT_ID.split('-')[0])
+      .addView(view)
+      .setCallback(async (data)=>{
+        if(data.action !== google.picker.Action.PICKED) return;
+        const doc = data.docs[0];
+        if(prev) prev.innerHTML = `⏳ Ginagawang makikita ng lahat ang ${escapeHtml(doc.name)}…`;
+        try{
+          // Best-effort: make the file "anyone with the link can view" so a
+          // co-worker on their phone (not signed into this Drive account)
+          // can still open it from My Tasks. If org policy blocks public
+          // links this silently fails and the link still works for anyone
+          // who already has access to the file/shared drive.
+          await fetch(`https://www.googleapis.com/drive/v3/files/${doc.id}/permissions`, {
+            method: 'POST',
+            headers: {Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json'},
+            body: JSON.stringify({role:'reader', type:'anyone'})
+          });
+        }catch(permErr){ /* ignore — link is used regardless */ }
+        const viewLink = doc.url || `https://drive.google.com/file/d/${doc.id}/view`;
+        setDrawingLink(id, viewLink, doc.name);
+      })
+      .build();
+    picker.setVisible(true);
+    if(prev) prev.innerHTML = '';
+  }catch(err){
+    if(prev) prev.innerHTML = `⚠️ Hindi ma-buksan ang Google Drive picker: ${escapeHtml(String(err.message||err))}`;
+  }
+}
+
 /* ---------- Add SO form ---------- */
 let itemRowCount = 0;
 let partsListState = {}; // rowId -> [{name, qtyPerUnit}]
@@ -4108,8 +4221,18 @@ function addItemRow(prefill, existingId){
       <div class="route-preview" id="routePreview_${id}">Route: (wala pang napipili)</div>
     </div>
     <div class="route-picker" style="margin-top:8px;">
-      <div class="route-picker-label">Drawing ng Item na Ito — i-paste ang link (Google Drive, atbp.) para maging clickable sa My Tasks</div>
-      <input type="text" id="drawingLink_${id}" placeholder="https://drive.google.com/... (link ng tamang drawing ng item na ito)" oninput="scheduleSaveDraft('${id}')" onchange="checkAndSuggestReference('${id}')">
+      <div class="route-picker-label">Drawing ng Item na Ito — makikita ito sa My Tasks, kahit gamit ay cellphone lang</div>
+      <div class="drawing-menu-wrap">
+        <button type="button" class="btn secondary btn-sm" id="drawingBtn_${id}" onclick="toggleDrawingMenu('${id}')">📎 Idagdag ang Drawing</button>
+        <div class="drawing-menu" id="drawingMenu_${id}">
+          <div class="drawing-menu-item" onclick="closeDrawingMenu('${id}');document.getElementById('drawingFile_${id}').click();">📤 I-upload mula sa device</div>
+          <div class="drawing-menu-item" onclick="closeDrawingMenu('${id}');openDrawingDrivePicker('${id}');">📁 Kunin sa Google Drive</div>
+          <div class="drawing-menu-item" onclick="closeDrawingMenu('${id}');promptDrawingLink('${id}');">🔗 I-paste ang link</div>
+        </div>
+        <input type="file" id="drawingFile_${id}" accept="application/pdf,image/*" style="display:none;" onchange="handleDrawingFileUpload('${id}', this.files[0])">
+      </div>
+      <input type="hidden" id="drawingLink_${id}" value="">
+      <div class="hint" id="drawingPreview_${id}" style="margin-top:6px;"></div>
     </div>
     <div class="route-picker" style="margin-top:8px;">
       <div class="route-picker-label">Sub Assy at Child Part na Bumubuo sa Main Assy (item) na Ito — i-upload ang BOM drawing (PDF), susubukan kong i-detect ang mga Sub Assy mula sa BOM table (tinatanggal ang title block noise). I-verify, i-edit, at gamitin ang "+ Add Child Part" kung may piyesa pang bumubuo sa isang Sub Assy.</div>
@@ -4204,6 +4327,7 @@ function loadDraftsLocal(){
     addItemRow({code:draft.code, desc:draft.desc, qty:draft.qty, unit:draft.unit, rate:draft.rate}, id);
     const drawingEl = document.getElementById('drawingLink_'+id);
     if(drawingEl) drawingEl.value = draft.drawingLink || '';
+    renderDrawingPreview(id);
     const notesEl = document.getElementById('partsNotes_'+id);
     if(notesEl) notesEl.value = draft.partsNotes || '';
     updateRoutePreview(id);
