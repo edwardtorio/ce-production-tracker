@@ -626,11 +626,6 @@
         <div class="field"><label>Date Uploaded</label><input type="date" id="soDateUploaded" onchange="scheduleSaveSoContext()"></div>
         <div class="field"><label>Target Delivery Date</label><input type="date" id="soTargetDelivery" onchange="scheduleSaveSoContext()"></div>
       </div>
-      <div class="field">
-        <label>Reference Files / Drawing Numbers <span style="font-weight:400;color:var(--gray);">(text label lang; hindi dito na-sto-store ang aktwal na file)</span></label>
-        <input type="text" id="soRefFiles" placeholder="Kung may link (Google Drive, atbp.), i-paste ito para maging clickable — hal. https://drive.google.com/..." oninput="scheduleSaveSoContext()">
-        <div class="hint">I-paste ang aktwal na <b>link</b> ng drawing (hal. mula sa inyong shared Google Drive) para maging click-able ito sa My Tasks — dito lang talaga maayos na mabu-browse ang totoong drawing, dahil text/letters lang ang kayang i-imbak dito, hindi ang aktwal na larawan o PDF.</div>
-      </div>
       <div class="hint" id="autofillNote" style="display:none;margin-bottom:8px;"></div>
 
       <label>Items <span style="font-weight:400;color:var(--gray);">— para sa bawat item, piliin din ang fabrication route (hindi bababa sa 2 process)</span></label>
@@ -4309,8 +4304,7 @@ function scheduleSaveSoContext(){
       soNumber: document.getElementById('soNumber').value,
       client: document.getElementById('soClient').value,
       dateUploaded: document.getElementById('soDateUploaded').value,
-      targetDelivery: document.getElementById('soTargetDelivery').value,
-      referenceFiles: document.getElementById('soRefFiles').value
+      targetDelivery: document.getElementById('soTargetDelivery').value
     };
     saveDraftsLocal();
   }, 500);
@@ -4330,7 +4324,6 @@ function loadDraftsLocal(){
     if(c.client) document.getElementById('soClient').value = c.client;
     if(c.dateUploaded) document.getElementById('soDateUploaded').value = c.dateUploaded;
     if(c.targetDelivery) document.getElementById('soTargetDelivery').value = c.targetDelivery;
-    if(c.referenceFiles) document.getElementById('soRefFiles').value = c.referenceFiles;
   }
   const ids = Object.keys(DRAFT_ROWS).filter(k=>k!=='_soContext');
   if(ids.length===0) return;
@@ -4543,7 +4536,7 @@ function getSoContext(){
     client: document.getElementById('soClient').value.trim(),
     dateUploaded: document.getElementById('soDateUploaded').value || new Date().toISOString().slice(0,10),
     targetDelivery: document.getElementById('soTargetDelivery').value || '',
-    referenceFiles: document.getElementById('soRefFiles').value.trim()
+    referenceFiles: '' // collected per-item now (the Drawing button on each item row), not once per SO
   };
 }
 // Shared by both the per-item "Add This Item" button and the bulk "Add to
@@ -4658,7 +4651,7 @@ async function submitSO(){
   if(remainingWraps.length===0){
     document.getElementById('soNumber').value=''; document.getElementById('soClient').value='';
     document.getElementById('soDateUploaded').value = new Date().toISOString().slice(0,10);
-    document.getElementById('soTargetDelivery').value=''; document.getElementById('soRefFiles').value='';
+    document.getElementById('soTargetDelivery').value='';
     document.getElementById('pasteArea').value='';
     itemRowCount = 0; rowRoutes = {}; partsListState = {}; DRAFT_ROWS = {}; saveDraftsLocal();
     addItemRow();
