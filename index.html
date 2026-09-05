@@ -581,7 +581,8 @@
     <div class="panel" style="padding:12px 16px;margin-bottom:12px;">
       <div class="filter-row" style="margin-bottom:0;">
         <input type="text" id="boardSoSearch" placeholder="🔍 Maghanap ng SO Number o Client…" oninput="renderBoard()">
-        <button class="btn secondary btn-sm" id="boardSoSearchClear" onclick="document.getElementById('boardSoSearch').value=''; renderBoard();">Clear</button>
+        <select id="boardSoSelect" onchange="renderBoard()"><option value="">Lahat ng SO</option></select>
+        <button class="btn secondary btn-sm" id="boardSoSearchClear" onclick="document.getElementById('boardSoSearch').value=''; document.getElementById('boardSoSelect').value=''; renderBoard();">Clear</button>
       </div>
       <div class="hint" style="margin-top:6px;">Kapag walang laman ang search, ang mga SO na tapos na (lahat ng item ay Finish Good) ay nasa pinaka-baba; ang mga may ongoing/on-queue pa ay nasa taas, at ang pinakamatagal nang naka-upload na hindi pa tapos ang unang lalabas.</div>
     </div>
@@ -2025,19 +2026,38 @@ function renderBoard(){
     if(!groups[key]) groups[key] = [];
     groups[key].push(it);
   });
+  const allKeys = Object.keys(groups);
+
+  // Dropdown lets a specific SO be jumped to directly, same idea as the
+  // Browse Existing Sales Orders picker — populated fresh each render so it
+  // always reflects the current set of SOs, keeping whatever was selected.
+  const selectEl = document.getElementById('boardSoSelect');
+  if(selectEl){
+    const currentSelect = selectEl.value;
+    const sortedForSelect = allKeys.slice().sort((a,b)=>a.split('||')[0].localeCompare(b.split('||')[0]));
+    selectEl.innerHTML = '<option value="">Lahat ng SO</option>' +
+      sortedForSelect.map(key=>{
+        const [soNumber, client] = key.split('||');
+        return `<option value="${key.replace(/"/g,'&quot;')}">${escapeHtml(soNumber)} — ${escapeHtml(client)}</option>`;
+      }).join('');
+    if([...selectEl.options].some(o=>o.value===currentSelect)) selectEl.value = currentSelect;
+  }
+
   const searchEl = document.getElementById('boardSoSearch');
   const search = searchEl ? searchEl.value.trim().toLowerCase() : '';
-  let keys = Object.keys(groups);
-  if(search){
+  let keys = allKeys;
+  if(selectEl && selectEl.value){
+    keys = keys.filter(key=>key===selectEl.value);
+  }else if(search){
     keys = keys.filter(key=>{
       const [soNumber, client] = key.split('||');
       return soNumber.toLowerCase().includes(search) || client.toLowerCase().includes(search);
     });
   }
-  // Default (no search) ordering: SOs that still have ongoing/queued work stay
-  // on top — sorted oldest-uploaded-first, since those have been waiting the
-  // longest — while SOs where every item has reached Finish Good sink to the
-  // very bottom, out of the way.
+  // Default (no search/select) ordering: SOs that still have ongoing/queued
+  // work stay on top — sorted oldest-uploaded-first, since those have been
+  // waiting the longest — while SOs where every item has reached Finish Good
+  // sink to the very bottom, out of the way.
   const soMeta = {};
   keys.forEach(key=>{
     const items = groups[key];
@@ -2052,7 +2072,7 @@ function renderBoard(){
   });
   let html = '';
   if(keys.length===0){
-    html = Object.keys(groups).length===0
+    html = allKeys.length===0
       ? `<div class="empty-state"><div class="big">🗂️</div>No sales orders yet. Add one under "+ Add New SO".</div>`
       : `<div class="empty-state"><div class="big">🔍</div>Walang tugmang SO sa "${escapeHtml(searchEl.value.trim())}".</div>`;
   }
