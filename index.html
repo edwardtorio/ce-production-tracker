@@ -123,6 +123,29 @@
   .stage-row .fill{height:100%;background:linear-gradient(90deg,var(--accent-teal),var(--accent-teal-dk));border-radius:8px;transition:width .3s;}
   .stage-row .pct{width:40px;text-align:right;font-family:var(--font-mono);color:var(--gray);font-size:11.5px;flex-shrink:0;}
 
+  /* Progress by Process, v2 — bigger type and a per-stage breakdown (assigned,
+     done, on track, delayed) shown right under the bar instead of just a lone
+     percentage, so a stage's health is readable without opening the board. */
+  .stage-row-v2{margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--line);}
+  .stage-row-v2:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0;}
+  .stage-row-v2 .stage-row-top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+  .stage-row-v2 .name{flex:1 1 220px;min-width:180px;color:var(--steel-900);font-weight:700;font-size:15px;}
+  .stage-row-v2 .track{flex:3 1 220px;height:16px;background:var(--gray-bg);border-radius:10px;overflow:hidden;}
+  .stage-row-v2 .fill{height:100%;background:linear-gradient(90deg,var(--accent-teal),var(--accent-teal-dk));border-radius:10px;transition:width .3s;}
+  .stage-row-v2 .pct{width:58px;text-align:right;font-family:var(--font-mono);color:var(--accent-teal-dk);font-size:17px;font-weight:800;flex-shrink:0;}
+  .stage-row-v2 .stage-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
+  .meta-chip{font-size:12.5px;font-weight:700;padding:5px 12px;border-radius:100px;background:var(--gray-bg);color:var(--steel-700);white-space:nowrap;}
+  .meta-chip b{font-weight:800;}
+  .meta-chip.meta-assigned{background:var(--purple-bg);color:var(--purple);}
+  .meta-chip.meta-done{background:var(--green-bg);color:var(--green);}
+  .meta-chip.meta-ontrack{background:var(--blue-bg);color:var(--blue);}
+  .meta-chip.meta-delay{background:var(--red-bg);color:var(--red);}
+
+  @media (max-width:720px){
+    .stage-row-v2 .name{flex-basis:100%;}
+    .stage-row-v2 .pct{width:auto;}
+  }
+
   .workload-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;}
   .person-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--steel-50);}
   .person-card .pname{font-weight:700;font-size:13px;color:var(--steel-900);}
@@ -1613,17 +1636,32 @@ function renderOverview(){
   renderFinishedSection();
   renderStuckSection();
 
-  // Progress by process (only counts items whose route actually includes that process)
+  // Progress by process (only counts items whose route actually includes that process).
+  // Beyond the done/total %, each stage also breaks down the items CURRENTLY
+  // sitting at that step: how many are assigned to someone, how many are
+  // on track vs. already past their target date for this step.
   let progHtml = '';
   PROCESS_LIST.forEach(p=>{
     const relevant = ITEMS_VIEW.filter(it=>it.route.includes(p.id));
+    if(relevant.length===0) return;
     const doneN = relevant.filter(it=>it.routeStatus[p.id]==='done').length;
     const pct = relevant.length ? Math.round(doneN/relevant.length*100) : 0;
-    if(relevant.length===0) return;
-    progHtml += `<div class="stage-row">
-      <div class="name">${p.label}</div>
-      <div class="track"><div class="fill" style="width:${pct}%"></div></div>
-      <div class="pct">${pct}%</div>
+    const currentItems = relevant.filter(it=>currentStepId(it)===p.id);
+    const assignedN = currentItems.filter(it=>currentAssignee(it)).length;
+    const delayN = currentItems.filter(isItemOverdueNow).length;
+    const onTrackN = currentItems.length - delayN;
+    progHtml += `<div class="stage-row-v2">
+      <div class="stage-row-top">
+        <div class="name">${p.label}</div>
+        <div class="track"><div class="fill" style="width:${pct}%"></div></div>
+        <div class="pct">${pct}%</div>
+      </div>
+      <div class="stage-meta">
+        <span class="meta-chip meta-assigned">👤 <b>${assignedN}</b> naka-assign</span>
+        <span class="meta-chip meta-done">✓ <b>${doneN}</b> natapos</span>
+        <span class="meta-chip meta-ontrack">🟢 <b>${onTrackN}</b> on track</span>
+        <span class="meta-chip meta-delay">🔴 <b>${delayN}</b> delayed</span>
+      </div>
     </div>`;
   });
   document.getElementById('stageProgress').innerHTML = progHtml || `<div class="hint">Wala pang laman.</div>`;
