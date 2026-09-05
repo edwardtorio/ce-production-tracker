@@ -1350,6 +1350,8 @@ async function loadInitialState(){
     if(it.drawingLink===undefined){ it.drawingLink = ''; changed = true; }
     if(it.drawings===undefined){ it.drawings = it.drawingLink ? [{url: it.drawingLink, name: it.drawingLink}] : []; changed = true; }
     if(it.drawingImage===undefined){ it.drawingImage = ''; changed = true; }
+    if(it.soPdfUrl===undefined){ it.soPdfUrl = ''; changed = true; }
+    if(it.soPdfName===undefined){ it.soPdfName = ''; changed = true; }
     if(it.actualStartDate===undefined){ it.actualStartDate = ''; changed = true; }
     if(it.actualDeliveryDate===undefined){ it.actualDeliveryDate = ''; changed = true; }
     if((!it.partsList || it.partsList.length===0) && SEED_PARTS_BY_CODE[it.itemCode]){
@@ -3689,9 +3691,24 @@ function renderBrowseSo(){
       <div style="margin-top:10px;"><div class="mini-bar" style="width:160px;"><div class="f" style="width:${pct}%"></div></div>
       <span style="font-size:12px;color:var(--gray);"> ${pct}% complete · ${so.items.length} line items · ${qty.toLocaleString()} pcs · ${fmtPHP(value)}</span></div>
       <div class="mini-table-wrap" style="margin-top:12px;"><table class="mini-table">
-        <tr><th>Item Code</th><th>Description</th><th>Qty</th><th>Value</th><th>Current Step</th></tr>
-        ${so.items.map(it=>`<tr><td class="so-num">${escapeHtml(it.itemCode)}</td><td>${escapeHtml(it.description)}</td><td>${it.qty} ${it.unit}</td><td>${fmtPHP(itemAmount(it))}</td><td>${routeMiniHtml(it)}</td></tr>`).join('')}
+        <tr><th>Item Code</th><th>Description</th><th>Qty</th><th>Value</th><th>Current Step</th><th>Delivered</th><th>Delay</th></tr>
+        ${so.items.map(it=>{
+          const delay = itemDelayInfo(it);
+          const delivered = it.actualDeliveryDate ? formatDateLong(it.actualDeliveryDate) : '—';
+          return `<tr><td class="so-num">${escapeHtml(it.itemCode)}</td><td>${escapeHtml(it.description)}</td><td>${it.qty} ${it.unit}</td><td>${fmtPHP(itemAmount(it))}</td><td>${routeMiniHtml(it)}</td><td style="white-space:nowrap;">${delivered}</td><td style="white-space:nowrap;${delay.style}">${delay.text}</td></tr>`;
+        }).join('')}
       </table></div>
+      ${(first.soPdfUrl||so.items.some(it=>(it.drawings&&it.drawings.length)||it.drawingLink))?`
+      <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--line, #e6dad3);">
+        ${first.soPdfUrl?`<div class="hint"><b>📄 Naka-attach na SO:</b> <a href="${escapeHtml(first.soPdfUrl)}" target="_blank" rel="noopener">${escapeHtml(first.soPdfName||'Buksan ang SO PDF')}</a></div>`:''}
+        <div style="margin-top:${first.soPdfUrl?'8px':'0'};">
+          ${so.items.map(it=>{
+            const dh = drawingLinkHtml(it);
+            if(!dh) return '';
+            return `<div class="hint" style="margin-top:4px;"><b>${escapeHtml(it.itemCode)}</b></div>${dh}`;
+          }).join('')}
+        </div>
+      </div>`:''}
     </div>`;
 }
 
@@ -3978,6 +3995,21 @@ function parseSoText(text, items){
   }
   return {soNumber, client, items: parsedItems};
 }
+// The actual uploaded SO file (not just its parsed text) is kept and stored
+// alongside the SO so it can be reopened later from Browse Existing Sales
+// Orders — the earlier version only ever parsed the PDF and threw it away.
+let currentSoPdf = null; // {url, name}
+async function uploadSoPdfFile(file){
+  try{
+    const path = `so_${Date.now()}.pdf`;
+    const {error} = await sbClient.storage.from('drawings').upload(path, file, {contentType: file.type || 'application/pdf', upsert: true});
+    if(error) throw error;
+    const {data} = sbClient.storage.from('drawings').getPublicUrl(path);
+    currentSoPdf = {url: data.publicUrl, name: file.name};
+  }catch(err){
+    currentSoPdf = null; // best-effort — the SO can still be added without a stored copy of the source file
+  }
+}
 async function handlePdfUpload(file){
   const dz = document.getElementById('dropzone'), dzText = document.getElementById('dzText'), status = document.getElementById('uploadStatus');
   dz.className = 'dropzone dz-loading';
@@ -3988,10 +4020,11 @@ async function handlePdfUpload(file){
     dzText.innerHTML = `<b>Reading ${file.name}…</b>`;
     const {text, items} = await extractPdfTextAndItems(file);
     const parsed = parseSoText(text, items);
+    await uploadSoPdfFile(file);
     if(parsed.soNumber) document.getElementById('soNumber').value = parsed.soNumber;
     if(parsed.client) document.getElementById('soClient').value = parsed.client;
     document.getElementById('itemRows').innerHTML = '';
-    itemRowCount = 0; rowRoutes = {}; partsListState = {}; DRAFT_ROWS = {}; saveDraftsLocal();
+    itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; DRAFT_ROWS = {}; saveDraftsLocal();
     if(parsed.items.length){ parsed.items.forEach(it=>{ const newId = addItemRow(it); captureDraftRow(newId); checkAndSuggestReference(newId); }); } else { addItemRow(); }
     scheduleSaveSoContext();
     const note = document.getElementById('autofillNote');
@@ -4599,7 +4632,9 @@ function getSoContext(){
     client: document.getElementById('soClient').value.trim(),
     dateUploaded: document.getElementById('soDateUploaded').value || new Date().toISOString().slice(0,10),
     targetDelivery: document.getElementById('soTargetDelivery').value || '',
-    referenceFiles: '' // collected per-item now (the Drawing button on each item row), not once per SO
+    referenceFiles: '', // collected per-item now (the Drawing button on each item row), not once per SO
+    soPdfUrl: currentSoPdf ? currentSoPdf.url : '',
+    soPdfName: currentSoPdf ? currentSoPdf.name : ''
   };
 }
 // Shared by both the per-item "Add This Item" button and the bulk "Add to
@@ -4630,6 +4665,7 @@ function buildItemFromRow(wrap, ctx){
     id: uid(), soNumber: ctx.soNumber, client: ctx.client, itemCode: code || '(no code)', description: desc || '(no description)',
     qty: qty || 0, unit, rate: rate ? Number(rate) : 0, dateAdded: new Date().toISOString().slice(0,10),
     dateUploaded: ctx.dateUploaded, targetDelivery: ctx.targetDelivery, referenceFiles: ctx.referenceFiles,
+    soPdfUrl: ctx.soPdfUrl || '', soPdfName: ctx.soPdfName || '',
     partsBreakdown, drawingLink, drawings, partsList
   }, blankRouteState(orderedRoute));
   item.routeTargetDates = computeRouteTargetDates(orderedRoute, ctx.dateUploaded, ctx.targetDelivery);
@@ -4716,7 +4752,8 @@ async function submitSO(){
     document.getElementById('soDateUploaded').value = new Date().toISOString().slice(0,10);
     document.getElementById('soTargetDelivery').value='';
     document.getElementById('pasteArea').value='';
-    itemRowCount = 0; rowRoutes = {}; partsListState = {}; DRAFT_ROWS = {}; saveDraftsLocal();
+    itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; DRAFT_ROWS = {}; saveDraftsLocal();
+    currentSoPdf = null;
     addItemRow();
     renderBoard(); renderOverview(); renderBrowseSo();
     document.querySelector('.tab[data-view="board"]').click();
