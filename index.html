@@ -200,7 +200,22 @@
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
   .item-row{display:grid;grid-template-columns:1.2fr 2fr .6fr .6fr .8fr 32px;gap:8px;margin-bottom:8px;align-items:end;}
   .item-row input{font-size:12.5px;padding:7px 8px;}
-  .item-row-wrap{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px;background:var(--steel-50);}
+  .item-row-wrap{border:1.5px solid var(--line);border-left:5px solid var(--accent-teal);border-radius:12px;
+    padding:16px 18px 18px;margin-bottom:30px;background:#fff;box-shadow:0 3px 10px rgba(59,52,54,.07);position:relative;}
+  .item-row-wrap.stripe-b{border-left-color:var(--amber);}
+  .item-row-wrap::after{content:'';position:absolute;left:-5px;right:-1px;bottom:-15px;height:1px;background:var(--line);}
+  .item-row-wrap:last-child::after{display:none;}
+  .item-index-badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;letter-spacing:.6px;
+    text-transform:uppercase;color:#fff;background:var(--accent-teal-dk);padding:4px 12px;border-radius:100px;margin-bottom:12px;}
+  .item-row-wrap.stripe-b .item-index-badge{background:var(--amber);}
+  .item-row-wrap .route-picker{background:var(--steel-100);}
+  .drawing-list{display:flex;flex-direction:column;gap:6px;margin-top:8px;}
+  .drawing-chip{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:8px;
+    padding:6px 10px;font-size:12.5px;}
+  .drawing-chip a{color:var(--accent-teal-dk);font-weight:600;text-decoration:none;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;flex:1;}
+  .drawing-chip a:hover{text-decoration:underline;}
+  .drawing-chip-remove{cursor:pointer;color:var(--red);font-weight:700;flex:none;padding:0 2px;}
 
   .btn{display:inline-flex;align-items:center;gap:6px;background:var(--accent-teal);color:#fff;border:none;
     padding:9px 18px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;transition:.15s;}
@@ -1029,12 +1044,23 @@ function linkifyText(text){
     return escapeHtml(part);
   }).join('');
 }
+// An item can carry more than one attached drawing (item.drawings); older
+// items only ever had a single item.drawingLink, so that's used as a
+// one-entry fallback when item.drawings isn't there yet.
 function drawingLinkHtml(item){
-  if(!item.drawingLink) return '';
-  if(/^https?:\/\//i.test(item.drawingLink.trim())){
-    return `<div class="hint" style="margin-top:4px;"><b>📐 Drawing:</b> ${linkifyText(item.drawingLink)}</div>`;
-  }
-  return `<div class="hint" style="margin-top:4px;"><b>📐 Drawing:</b> ${escapeHtml(item.drawingLink)}</div>`;
+  const drawings = (item.drawings && item.drawings.length)
+    ? item.drawings
+    : (item.drawingLink ? [{url: item.drawingLink, name: item.drawingLink}] : []);
+  if(!drawings.length) return '';
+  const multi = drawings.length > 1;
+  return drawings.map((d, idx)=>{
+    const label = multi ? `📐 Drawing ${idx+1}:` : '📐 Drawing:';
+    const url = (d.url||'').trim();
+    if(/^https?:\/\//i.test(url)){
+      return `<div class="hint" style="margin-top:4px;"><b>${label}</b> ${linkifyText(url)}</div>`;
+    }
+    return `<div class="hint" style="margin-top:4px;"><b>${label}</b> ${escapeHtml(d.name||url)}</div>`;
+  }).join('');
 }
 function partsListTableHtml(item){
   if(!item.partsList || item.partsList.length===0) return '';
@@ -1322,6 +1348,7 @@ async function loadInitialState(){
     if(it.referenceFiles===undefined){ it.referenceFiles = ''; changed = true; }
     if(it.stepAssignee===undefined){ it.stepAssignee = {}; changed = true; }
     if(it.drawingLink===undefined){ it.drawingLink = ''; changed = true; }
+    if(it.drawings===undefined){ it.drawings = it.drawingLink ? [{url: it.drawingLink, name: it.drawingLink}] : []; changed = true; }
     if(it.drawingImage===undefined){ it.drawingImage = ''; changed = true; }
     if(it.actualStartDate===undefined){ it.actualStartDate = ''; changed = true; }
     if(it.actualDeliveryDate===undefined){ it.actualDeliveryDate = ''; changed = true; }
@@ -4078,12 +4105,12 @@ async function openGoogleDrivePicker(){
 }
 
 
-/* ---------- Drawing attach button (one button → upload file / pick from
-   Google Drive / paste a link — all three end up filling the same hidden
-   drawingLink_<id> input, so buildItemFromRow() doesn't need to know which
-   path was used). Files uploaded from a device go to a public Supabase
-   Storage bucket ("drawings") so co-workers can open the resulting link on
-   any device — including a phone — with no login needed. Files picked from
+/* ---------- Drawing attach button (one button → upload one or more files /
+   pick one or more from Google Drive / paste a link — all three ADD to the
+   same per-row drawingsState[id] list, so an item can carry more than one
+   drawing). Files uploaded from a device go to a public Supabase Storage
+   bucket ("drawings") so co-workers can open the resulting link on any
+   device — including a phone — with no login needed. Files picked from
    Google Drive are marked "anyone with the link can view" (best-effort;
    picking already grants this app per-file access) for the same reason. */
 function toggleDrawingMenu(id){
@@ -4102,59 +4129,70 @@ document.addEventListener('click', (e)=>{
     document.querySelectorAll('.drawing-menu.show').forEach(m=>m.classList.remove('show'));
   }
 });
-function renderDrawingPreview(id, label){
-  const prev = document.getElementById('drawingPreview_'+id);
-  if(!prev) return;
-  const el = document.getElementById('drawingLink_'+id);
-  const url = el ? el.value : '';
-  if(!url){ prev.innerHTML = ''; return; }
-  const shown = label || url;
-  prev.innerHTML = `📐 <a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(shown)}</a> <span style="cursor:pointer;color:#c0392b;margin-left:8px;font-weight:600;" onclick="clearDrawingLink('${id}')">✕ palitan</span>`;
+function renderDrawingList(id){
+  const list = document.getElementById('drawingList_'+id);
+  if(!list) return;
+  const drawings = drawingsState[id] || [];
+  list.innerHTML = drawings.map((d, idx)=>`
+    <div class="drawing-chip">📐 <a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.name||d.url)}</a>
+    <span class="drawing-chip-remove" onclick="removeDrawing('${id}', ${idx})" title="Alisin">✕</span></div>
+  `).join('');
 }
-function setDrawingLink(id, url, label){
-  const el = document.getElementById('drawingLink_'+id);
-  if(!el) return;
-  el.value = url;
-  renderDrawingPreview(id, label);
+function addDrawing(id, url, name){
+  if(!url) return;
+  if(!drawingsState[id]) drawingsState[id] = [];
+  drawingsState[id].push({url, name: name || url});
+  renderDrawingList(id);
   scheduleSaveDraft(id);
   checkAndSuggestReference(id);
 }
-function clearDrawingLink(id){ setDrawingLink(id, '', ''); }
+function removeDrawing(id, idx){
+  if(!drawingsState[id]) return;
+  drawingsState[id].splice(idx, 1);
+  renderDrawingList(id);
+  scheduleSaveDraft(id);
+}
 function promptDrawingLink(id){
-  const current = (document.getElementById('drawingLink_'+id)||{}).value || '';
-  const url = window.prompt('I-paste ang link ng drawing (Google Drive, atbp.):', current);
-  if(url===null) return;
-  setDrawingLink(id, url.trim(), url.trim());
+  const url = window.prompt('I-paste ang link ng drawing (Google Drive, atbp.):', '');
+  if(url===null || !url.trim()) return;
+  addDrawing(id, url.trim(), url.trim());
   const statusEl = document.getElementById('partsStatus_'+id);
-  if(statusEl && url.trim()) statusEl.textContent = 'Naka-attach ang link. Hindi ito ma-a-auto-detect ang Sub Assy (kailangan ang aktwal na file) — gamitin ang "📎 Idagdag ang Drawing" → "I-upload mula sa device" o "Kunin sa Google Drive" kung gusto mong subukan ang auto-detect, o "+ Add Sub Assy" para i-type manually.';
+  if(statusEl) statusEl.textContent = 'Naka-attach ang link. Hindi ito ma-a-auto-detect ang Sub Assy (kailangan ang aktwal na file) — gamitin ang "📎 Idagdag ang Drawing" → "I-upload mula sa device" o "Kunin sa Google Drive" kung gusto mong subukan ang auto-detect, o "+ Add Sub Assy" para i-type manually.';
 }
 function isPdfLikeFile(file){
   return !!file && ((file.type && file.type==='application/pdf') || /\.pdf$/i.test(file.name||''));
 }
-async function handleDrawingFileUpload(id, file){
-  if(!file) return;
-  const prev = document.getElementById('drawingPreview_'+id);
-  if(prev) prev.innerHTML = `⏳ Ina-upload ang ${escapeHtml(file.name)}…`;
-  try{
-    const ext = (file.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g,'') || 'bin';
-    const path = `${id}_${Date.now()}.${ext}`;
-    const {error} = await sbClient.storage.from('drawings').upload(path, file, {contentType: file.type || 'application/octet-stream', upsert: true});
-    if(error) throw error;
-    const {data} = sbClient.storage.from('drawings').getPublicUrl(path);
-    setDrawingLink(id, data.publicUrl, file.name);
-  }catch(err){
-    if(prev) prev.innerHTML = `⚠️ Hindi na-upload ang file: ${escapeHtml(String(err.message||err))}`;
-    return;
+async function handleDrawingFileUpload(id, fileList){
+  const files = Array.from(fileList || []);
+  if(!files.length) return;
+  const statusEl = document.getElementById('drawingUploadStatus_'+id);
+  let uploaded = 0, failed = 0, firstPdf = null;
+  for(const file of files){
+    if(statusEl) statusEl.textContent = `⏳ Ina-upload ang ${escapeHtml(file.name)}… (${uploaded+failed+1}/${files.length})`;
+    try{
+      const ext = (file.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g,'') || 'bin';
+      const path = `${id}_${Date.now()}_${uploaded+failed}.${ext}`;
+      const {error} = await sbClient.storage.from('drawings').upload(path, file, {contentType: file.type || 'application/octet-stream', upsert: true});
+      if(error) throw error;
+      const {data} = sbClient.storage.from('drawings').getPublicUrl(path);
+      addDrawing(id, data.publicUrl, file.name);
+      uploaded++;
+      if(!firstPdf && isPdfLikeFile(file)) firstPdf = file;
+    }catch(err){
+      failed++;
+      if(statusEl) statusEl.textContent = `⚠️ Hindi na-upload ang "${escapeHtml(file.name)}": ${escapeHtml(String(err.message||err))}`;
+    }
   }
-  // The uploaded drawing doubles as the BOM source: if it's a PDF, try to
-  // auto-detect the Sub Assy / Child Part rows from it right away instead
-  // of making the user upload it a second time in a separate button.
-  if(isPdfLikeFile(file)) await detectSubAssyFromFile(id, file);
+  if(statusEl && failed===0) statusEl.textContent = uploaded>1 ? `✓ Na-upload ang ${uploaded} drawing.` : '';
+  // The uploaded drawing doubles as the BOM source: if any of the uploaded
+  // files is a PDF, try to auto-detect the Sub Assy / Child Part rows from
+  // the first one right away instead of uploading it a second time.
+  if(firstPdf) await detectSubAssyFromFile(id, firstPdf);
 }
 async function openDrawingDrivePicker(id){
-  const prev = document.getElementById('drawingPreview_'+id);
+  const statusEl = document.getElementById('drawingUploadStatus_'+id);
   try{
-    if(prev) prev.innerHTML = '⏳ Naglo-load ang Google Drive…';
+    if(statusEl) statusEl.textContent = '⏳ Naglo-load ang Google Drive…';
     await ensureGoogleDriveLibs();
     const accessToken = await getGoogleAccessToken();
     const view = new google.picker.DocsView(google.picker.ViewId.DOCS)
@@ -4163,37 +4201,43 @@ async function openDrawingDrivePicker(id){
       .setEnableDrives(true);
     const picker = new google.picker.PickerBuilder()
       .enableFeature(google.picker.Feature.SUPPORT_DRIVES)
+      .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
       .setOAuthToken(accessToken)
       .setDeveloperKey(GOOGLE_API_KEY)
       .setAppId(GOOGLE_CLIENT_ID.split('-')[0])
       .addView(view)
       .setCallback(async (data)=>{
         if(data.action !== google.picker.Action.PICKED) return;
-        const doc = data.docs[0];
-        if(prev) prev.innerHTML = `⏳ Ginagawang makikita ng lahat ang ${escapeHtml(doc.name)}…`;
-        try{
-          // Best-effort: make the file "anyone with the link can view" so a
-          // co-worker on their phone (not signed into this Drive account)
-          // can still open it from My Tasks. If org policy blocks public
-          // links this silently fails and the link still works for anyone
-          // who already has access to the file/shared drive.
-          await fetch(`https://www.googleapis.com/drive/v3/files/${doc.id}/permissions`, {
-            method: 'POST',
-            headers: {Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json'},
-            body: JSON.stringify({role:'reader', type:'anyone'})
-          });
-        }catch(permErr){ /* ignore — link is used regardless */ }
-        const viewLink = doc.url || `https://drive.google.com/file/d/${doc.id}/view`;
-        setDrawingLink(id, viewLink, doc.name);
-        // Best-effort: also pull the file's bytes so a PDF drawing's BOM
-        // table can be auto-detected the same way a device upload is —
-        // this failing just means Sub Assy still has to be added manually.
-        if(/\.pdf$/i.test(doc.name||'') || doc.mimeType==='application/pdf'){
+        const docs = data.docs || [];
+        let firstPdf = null;
+        for(const doc of docs){
+          if(statusEl) statusEl.textContent = `⏳ Ginagawang makikita ng lahat ang ${escapeHtml(doc.name)}…`;
           try{
-            const res = await fetch(`https://www.googleapis.com/drive/v3/files/${doc.id}?alt=media`, {headers:{Authorization:`Bearer ${accessToken}`}});
+            // Best-effort: make the file "anyone with the link can view" so a
+            // co-worker on their phone (not signed into this Drive account)
+            // can still open it from My Tasks. If org policy blocks public
+            // links this silently fails and the link still works for anyone
+            // who already has access to the file/shared drive.
+            await fetch(`https://www.googleapis.com/drive/v3/files/${doc.id}/permissions`, {
+              method: 'POST',
+              headers: {Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json'},
+              body: JSON.stringify({role:'reader', type:'anyone'})
+            });
+          }catch(permErr){ /* ignore — link is used regardless */ }
+          const viewLink = doc.url || `https://drive.google.com/file/d/${doc.id}/view`;
+          addDrawing(id, viewLink, doc.name);
+          if(!firstPdf && (/\.pdf$/i.test(doc.name||'') || doc.mimeType==='application/pdf')) firstPdf = doc;
+        }
+        if(statusEl) statusEl.textContent = docs.length>1 ? `✓ Na-attach ang ${docs.length} drawing mula sa Google Drive.` : '';
+        // Best-effort: also pull the first PDF's bytes so its BOM table can
+        // be auto-detected the same way a device upload is — this failing
+        // just means Sub Assy still has to be added manually.
+        if(firstPdf){
+          try{
+            const res = await fetch(`https://www.googleapis.com/drive/v3/files/${firstPdf.id}?alt=media`, {headers:{Authorization:`Bearer ${accessToken}`}});
             if(res.ok){
               const blob = await res.blob();
-              const pdfFile = new File([blob], doc.name || 'drawing.pdf', {type:'application/pdf'});
+              const pdfFile = new File([blob], firstPdf.name || 'drawing.pdf', {type:'application/pdf'});
               await detectSubAssyFromFile(id, pdfFile);
             }
           }catch(fetchErr){ /* drawing link is already saved; auto-detect just skipped */ }
@@ -4201,15 +4245,22 @@ async function openDrawingDrivePicker(id){
       })
       .build();
     picker.setVisible(true);
-    if(prev) prev.innerHTML = '';
+    if(statusEl) statusEl.textContent = '';
   }catch(err){
-    if(prev) prev.innerHTML = `⚠️ Hindi ma-buksan ang Google Drive picker: ${escapeHtml(String(err.message||err))}`;
+    if(statusEl) statusEl.textContent = `⚠️ Hindi ma-buksan ang Google Drive picker: ${escapeHtml(String(err.message||err))}`;
   }
 }
 
 /* ---------- Add SO form ---------- */
 let itemRowCount = 0;
 let partsListState = {}; // rowId -> [{name, qtyPerUnit}]
+let drawingsState = {}; // rowId -> [{url, name}] — an item can have more than one attached drawing
+function renumberItemRows(){
+  document.querySelectorAll('#itemRows .item-row-wrap').forEach((wrap, idx)=>{
+    const badge = wrap.querySelector('.item-index-badge');
+    if(badge) badge.textContent = 'Item ' + (idx+1);
+  });
+}
 function addItemRow(prefill, existingId){
   let id;
   if(existingId){
@@ -4219,12 +4270,14 @@ function addItemRow(prefill, existingId){
     id = 'row_'+itemRowCount;
     rowRoutes[id] = DEFAULT_NEW_ITEM_ROUTE.slice(); // pre-selected; still editable per item
     partsListState[id] = [];
+    drawingsState[id] = [];
   }
   const div = document.createElement('div');
   const stripeIdx = document.querySelectorAll('#itemRows .item-row-wrap').length;
   div.className = 'item-row-wrap ' + (stripeIdx%2===0 ? 'stripe-a' : 'stripe-b');
   div.id = 'wrap_'+id;
   div.innerHTML = `
+    <div class="item-index-badge">Item</div>
     <div class="item-row">
       <input type="text" placeholder="Item code" class="f-code" value="${prefill?prefill.code:''}" oninput="scheduleSaveDraft('${id}')">
       <input type="text" placeholder="Description" class="f-desc" value="${prefill?prefill.desc:''}" oninput="scheduleSaveDraft('${id}')" onchange="checkAndSuggestReference('${id}')">
@@ -4239,19 +4292,19 @@ function addItemRow(prefill, existingId){
       <div class="route-preview" id="routePreview_${id}">Route: (wala pang napipili)</div>
     </div>
     <div class="route-picker" style="margin-top:8px;">
-      <div class="route-picker-label">Drawing ng Item na Ito — makikita ito sa My Tasks kahit gamit ay cellphone lang. Kung PDF ito na may BOM table, awtomatiko ring susubukan i-detect ang Sub Assy/Child Part na bumubuo sa Main Assy (item) na ito.</div>
+      <div class="route-picker-label">Drawing(s) ng Item na Ito — pwedeng higit sa isa, makikita ito sa My Tasks kahit gamit ay cellphone lang. Kung PDF ito na may BOM table, awtomatiko ring susubukan i-detect ang Sub Assy/Child Part na bumubuo sa Main Assy (item) na ito.</div>
       <div class="hint" style="margin-bottom:6px;"><b>Main Assy</b> (itong item) → <b>Sub Assy</b> (2+ karaniwan) → <b>Child Part</b> (1+ bawat Sub Assy, kung meron). Awtomatikong nagmu-multiply ang Total Kailangan sa bawat antas.</div>
       <div class="drawing-menu-wrap">
         <button type="button" class="btn secondary btn-sm" id="drawingBtn_${id}" onclick="toggleDrawingMenu('${id}')">📎 Idagdag ang Drawing</button>
         <div class="drawing-menu" id="drawingMenu_${id}">
-          <div class="drawing-menu-item" onclick="closeDrawingMenu('${id}');document.getElementById('drawingFile_${id}').click();">📤 I-upload mula sa device</div>
-          <div class="drawing-menu-item" onclick="closeDrawingMenu('${id}');openDrawingDrivePicker('${id}');">📁 Kunin sa Google Drive</div>
+          <div class="drawing-menu-item" onclick="closeDrawingMenu('${id}');document.getElementById('drawingFile_${id}').click();">📤 I-upload mula sa device (pwedeng piliin nang marami)</div>
+          <div class="drawing-menu-item" onclick="closeDrawingMenu('${id}');openDrawingDrivePicker('${id}');">📁 Kunin sa Google Drive (pwedeng piliin nang marami)</div>
           <div class="drawing-menu-item" onclick="closeDrawingMenu('${id}');promptDrawingLink('${id}');">🔗 I-paste ang link</div>
         </div>
-        <input type="file" id="drawingFile_${id}" accept="application/pdf,image/*" style="display:none;" onchange="handleDrawingFileUpload('${id}', this.files[0])">
+        <input type="file" id="drawingFile_${id}" accept="application/pdf,image/*" multiple style="display:none;" onchange="handleDrawingFileUpload('${id}', this.files)">
       </div>
-      <input type="hidden" id="drawingLink_${id}" value="">
-      <div class="hint" id="drawingPreview_${id}" style="margin-top:6px;"></div>
+      <div class="hint" id="drawingUploadStatus_${id}" style="margin-top:6px;"></div>
+      <div class="drawing-list" id="drawingList_${id}"></div>
       <div class="hint" id="partsStatus_${id}" style="margin-top:6px;"></div>
       <textarea id="partsNotes_${id}" placeholder="Cleaned na text mula sa PDF (tinanggal ang title block) — gamitin bilang reference kung may nakaligtaang piyesa sa auto-detect." style="margin-top:6px;margin-bottom:8px;min-height:60px;" oninput="scheduleSaveDraft('${id}')"></textarea>
       <div id="partsListRows_${id}"></div>
@@ -4261,15 +4314,19 @@ function addItemRow(prefill, existingId){
     <button class="btn secondary" style="margin-top:10px;" onclick="addSingleItem('${id}')">+ Add This Item to Board</button>
   `;
   document.getElementById('itemRows').appendChild(div);
+  renderDrawingList(id);
+  renumberItemRows();
   return id;
 }
 function removeItemRow(id){
   delete rowRoutes[id];
   delete partsListState[id];
+  delete drawingsState[id];
   delete DRAFT_ROWS[id];
   saveDraftsLocal();
   const el = document.getElementById('wrap_'+id);
   if(el) el.remove();
+  renumberItemRows();
 }
 
 /* ---------- Draft persistence: in-progress "Add New SO" rows survive a
@@ -4289,7 +4346,7 @@ function captureDraftRow(rowId){
     qty: wrap.querySelector('.f-qty').value,
     unit: wrap.querySelector('.f-unit').value,
     rate: wrap.querySelector('.f-rate').value,
-    drawingLink: (document.getElementById('drawingLink_'+rowId)||{}).value || '',
+    drawings: JSON.parse(JSON.stringify(drawingsState[rowId]||[])),
     partsNotes: (document.getElementById('partsNotes_'+rowId)||{}).value || '',
     route: (rowRoutes[rowId]||[]).slice(),
     partsList: JSON.parse(JSON.stringify(partsListState[rowId]||[]))
@@ -4333,10 +4390,12 @@ function loadDraftsLocal(){
     const draft = DRAFT_ROWS[id];
     rowRoutes[id] = (draft.route||[]).slice();
     partsListState[id] = JSON.parse(JSON.stringify(draft.partsList||[]));
+    // draft.drawings is the current shape; draft.drawingLink is a fallback
+    // for a draft saved in-browser before multi-drawing support existed.
+    drawingsState[id] = draft.drawings ? JSON.parse(JSON.stringify(draft.drawings)) :
+      (draft.drawingLink ? [{url: draft.drawingLink, name: draft.drawingLink}] : []);
     addItemRow({code:draft.code, desc:draft.desc, qty:draft.qty, unit:draft.unit, rate:draft.rate}, id);
-    const drawingEl = document.getElementById('drawingLink_'+id);
-    if(drawingEl) drawingEl.value = draft.drawingLink || '';
-    renderDrawingPreview(id);
+    renderDrawingList(id);
     const notesEl = document.getElementById('partsNotes_'+id);
     if(notesEl) notesEl.value = draft.partsNotes || '';
     updateRoutePreview(id);
@@ -4496,9 +4555,8 @@ function checkAndSuggestReference(rowId){
   const wrap = document.getElementById('wrap_'+rowId);
   if(!wrap) return;
   const description = wrap.querySelector('.f-desc').value;
-  const drawingLinkEl = document.getElementById('drawingLink_'+rowId);
-  const drawingLink = drawingLinkEl ? drawingLinkEl.value : '';
-  if(!description.trim() && !drawingLink.trim()) return;
+  const firstDrawing = (drawingsState[rowId] && drawingsState[rowId][0]) ? drawingsState[rowId][0].url : '';
+  if(!description.trim() && !firstDrawing.trim()) return;
 
   // Untouched from creation (still exactly the default pre-selected route,
   // or empty) doesn't count as "already set up" — a real customization
@@ -4510,7 +4568,7 @@ function checkAndSuggestReference(rowId){
   const hasOwnParts = (partsListState[rowId]||[]).some(s=>s.name);
   if(hasOwnRoute || hasOwnParts) return; // don't clobber what the person already set up
 
-  const ref = findMatchingReferenceItem(description, drawingLink);
+  const ref = findMatchingReferenceItem(description, firstDrawing);
   if(!ref) return;
 
   if(ref.route && ref.route.length){
@@ -4524,8 +4582,13 @@ function checkAndSuggestReference(rowId){
     }));
     renderPartRows(rowId);
   }
-  if(!drawingLink.trim() && ref.drawingLink && drawingLinkEl){
-    drawingLinkEl.value = ref.drawingLink;
+  if(!firstDrawing.trim()){
+    const refDrawings = (ref.drawings && ref.drawings.length) ? ref.drawings
+      : (ref.drawingLink ? [{url: ref.drawingLink, name: ref.drawingLink}] : []);
+    if(refDrawings.length){
+      drawingsState[rowId] = JSON.parse(JSON.stringify(refDrawings));
+      renderDrawingList(rowId);
+    }
   }
   scheduleSaveDraft(rowId);
   showToast(`Na-detect ang parehong item (${ref.itemCode}) — inilagay ang huling na-update na route at parts list. Paki-verify.`);
@@ -4550,8 +4613,8 @@ function buildItemFromRow(wrap, ctx){
   const rate = wrap.querySelector('.f-rate').value.trim();
   const partsEl = document.getElementById('partsNotes_'+rowId);
   const partsBreakdown = partsEl ? partsEl.value.trim() : '';
-  const drawingLinkEl = document.getElementById('drawingLink_'+rowId);
-  const drawingLink = drawingLinkEl ? drawingLinkEl.value.trim() : '';
+  const drawings = (drawingsState[rowId] || []).slice();
+  const drawingLink = drawings.length ? drawings[0].url : ''; // legacy single-drawing field, kept for older display/matching code
   const partsList = (partsListState[rowId] || [])
     .filter(r=>r.name)
     .map(r=>({
@@ -4567,7 +4630,7 @@ function buildItemFromRow(wrap, ctx){
     id: uid(), soNumber: ctx.soNumber, client: ctx.client, itemCode: code || '(no code)', description: desc || '(no description)',
     qty: qty || 0, unit, rate: rate ? Number(rate) : 0, dateAdded: new Date().toISOString().slice(0,10),
     dateUploaded: ctx.dateUploaded, targetDelivery: ctx.targetDelivery, referenceFiles: ctx.referenceFiles,
-    partsBreakdown, drawingLink, partsList
+    partsBreakdown, drawingLink, drawings, partsList
   }, blankRouteState(orderedRoute));
   item.routeTargetDates = computeRouteTargetDates(orderedRoute, ctx.dateUploaded, ctx.targetDelivery);
   item.lineageId = item.id; // tracks the original line item across any future partial splits
