@@ -578,6 +578,13 @@
     <div class="panel" style="padding:12px 16px;margin-bottom:12px;">
       <span class="hint">Bawat item ay may sariling fabrication route. Ang <b style="color:var(--amber)">amber na hakbang</b> lang ang kasalukuyang ma-cli-click (tap para mag-cycle: Queue → Ongoing → Done). Pag na-Done, awtomatikong lilipat sa susunod na proseso.</span>
     </div>
+    <div class="panel" style="padding:12px 16px;margin-bottom:12px;">
+      <div class="filter-row" style="margin-bottom:0;">
+        <input type="text" id="boardSoSearch" placeholder="🔍 Maghanap ng SO Number o Client…" oninput="renderBoard()">
+        <button class="btn secondary btn-sm" id="boardSoSearchClear" onclick="document.getElementById('boardSoSearch').value=''; renderBoard();">Clear</button>
+      </div>
+      <div class="hint" style="margin-top:6px;">Kapag walang laman ang search, ang mga SO na tapos na (lahat ng item ay Finish Good) ay nasa pinaka-baba; ang mga may ongoing/on-queue pa ay nasa taas, at ang pinakamatagal nang naka-upload na hindi pa tapos ang unang lalabas.</div>
+    </div>
     <div id="boardWrap"></div>
   </div>
 
@@ -1256,7 +1263,7 @@ async function save(){
 // detected lazily rather than assumed up front.
 function applyReadOnlyUI(){
   document.querySelectorAll('button, input, select, textarea').forEach(el=>{
-    if(el.id==='soSearch' || el.id==='progressSearch' || el.id==='finishedSearch' || el.id==='stuckSearch' || el.id==='browseSoSearch') return; // search/filter stays usable
+    if(el.id==='soSearch' || el.id==='progressSearch' || el.id==='finishedSearch' || el.id==='stuckSearch' || el.id==='browseSoSearch' || el.id==='boardSoSearch') return; // search/filter stays usable
     if(el.closest('.filter-row')) return;
     el.disabled = true;
   });
@@ -1641,7 +1648,7 @@ function matchesSearch(it, term){
 // So the person never has to type a full client name — as soon as a few
 // letters are typed, matching Client names / SO Numbers appear as a clickable
 // dropdown list to pick from.
-const AUTOCOMPLETE_TARGETS = ['soSearch','progressSearch','finishedSearch','stuckSearch','browseSoSearch'];
+const AUTOCOMPLETE_TARGETS = ['soSearch','progressSearch','finishedSearch','stuckSearch','browseSoSearch','boardSoSearch'];
 function getClientAndSoSuggestions(){
   const set = new Set();
   ITEMS.forEach(it=>{ if(it.client) set.add(it.client); if(it.soNumber) set.add(it.soNumber); });
@@ -2018,11 +2025,38 @@ function renderBoard(){
     if(!groups[key]) groups[key] = [];
     groups[key].push(it);
   });
-  let html = '';
-  if(Object.keys(groups).length===0){
-    html = `<div class="empty-state"><div class="big">🗂️</div>No sales orders yet. Add one under "+ Add New SO".</div>`;
+  const searchEl = document.getElementById('boardSoSearch');
+  const search = searchEl ? searchEl.value.trim().toLowerCase() : '';
+  let keys = Object.keys(groups);
+  if(search){
+    keys = keys.filter(key=>{
+      const [soNumber, client] = key.split('||');
+      return soNumber.toLowerCase().includes(search) || client.toLowerCase().includes(search);
+    });
   }
-  Object.keys(groups).forEach(key=>{
+  // Default (no search) ordering: SOs that still have ongoing/queued work stay
+  // on top — sorted oldest-uploaded-first, since those have been waiting the
+  // longest — while SOs where every item has reached Finish Good sink to the
+  // very bottom, out of the way.
+  const soMeta = {};
+  keys.forEach(key=>{
+    const items = groups[key];
+    const allDone = items.every(it=>itemCategory(it)==='done');
+    const earliest = Math.min(...items.map(it=>new Date(it.dateUploaded || it.dateAdded || 0).getTime() || 0));
+    soMeta[key] = {allDone, earliest};
+  });
+  keys.sort((a,b)=>{
+    const ma = soMeta[a], mb = soMeta[b];
+    if(ma.allDone !== mb.allDone) return ma.allDone ? 1 : -1;
+    return ma.earliest - mb.earliest;
+  });
+  let html = '';
+  if(keys.length===0){
+    html = Object.keys(groups).length===0
+      ? `<div class="empty-state"><div class="big">🗂️</div>No sales orders yet. Add one under "+ Add New SO".</div>`
+      : `<div class="empty-state"><div class="big">🔍</div>Walang tugmang SO sa "${escapeHtml(searchEl.value.trim())}".</div>`;
+  }
+  keys.forEach(key=>{
     const [soNumber, client] = key.split('||');
     const items = groups[key];
     html += `<div class="so-group">
