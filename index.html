@@ -117,6 +117,11 @@
   .panel{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:18px;}
   .panel h3{margin:0 0 14px;font-family:var(--font-display);font-size:16px;color:var(--steel-900);}
 
+  /* Same dark gradient used on the logo header banner, reused for the Line
+     Items & Pieces panel so it reads as a highlighted summary block. */
+  .panel-dark{background:linear-gradient(120deg,var(--steel-900) 0%, var(--steel-700) 100%);border-color:transparent;}
+  .panel-dark h3{color:#fff;}
+
   .stage-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:12.5px;}
   .stage-row .name{width:170px;flex-shrink:0;color:var(--steel-800);font-weight:600;}
   .stage-row .track{flex:1;height:12px;background:var(--gray-bg);border-radius:8px;overflow:hidden;}
@@ -539,7 +544,7 @@
   <div class="view active" id="view-overview">
     <div class="cards-row" id="statCards"></div>
 
-    <div class="panel">
+    <div class="panel panel-dark">
       <h3>Line Items &amp; Pieces — Done / Ongoing / Not Started</h3>
       <div class="breakdown-row cards-row" id="breakdownRow"></div>
     </div>
@@ -1612,19 +1617,19 @@ function renderOverview(){
   document.getElementById('breakdownRow').innerHTML = `
     <div class="stat-card" style="border-color:#bfe6cd;background:var(--green-bg);">
       <div class="lbl" style="color:var(--green);">✓ Natapos (Done)</div>
-      <div class="num" style="color:var(--green);font-size:26px;">${doneItems.length} item${doneItems.length===1?'':'s'} <span style="font-size:14px;">(${pctOf(doneItems)}%)</span></div>
+      <div class="num" style="color:var(--green);font-size:26px;">${doneItems.length} item${doneItems.length===1?'':'s'} <span style="font-size:19px;font-weight:800;">(${pctOf(doneItems)}%)</span></div>
       <div style="font-size:16px;font-weight:700;color:var(--green);margin-top:2px;">${fmtPHP(sumVal(doneItems))}</div>
       <div style="margin-top:4px;font-size:15px;font-weight:700;color:var(--green);">${sumQty(doneItems).toLocaleString()} pcs (${pctOfPieces(doneItems)}%)</div>
     </div>
     <div class="stat-card" style="border-color:#f3d9a8;background:var(--amber-bg);">
       <div class="lbl" style="color:var(--amber);">⏳ Ongoing</div>
-      <div class="num" style="color:var(--amber);font-size:26px;">${ongoingItems.length} item${ongoingItems.length===1?'':'s'} <span style="font-size:14px;">(${pctOf(ongoingItems)}%)</span></div>
+      <div class="num" style="color:var(--amber);font-size:26px;">${ongoingItems.length} item${ongoingItems.length===1?'':'s'} <span style="font-size:19px;font-weight:800;">(${pctOf(ongoingItems)}%)</span></div>
       <div style="font-size:16px;font-weight:700;color:var(--amber);margin-top:2px;">${fmtPHP(sumVal(ongoingItems))}</div>
       <div style="margin-top:4px;font-size:15px;font-weight:700;color:var(--amber);">${sumQty(ongoingItems).toLocaleString()} pcs (${pctOfPieces(ongoingItems)}%)</div>
     </div>
     <div class="stat-card" style="background:var(--gray-bg);">
       <div class="lbl" style="color:var(--steel-700);">◻ Hindi Pa Gumagalaw</div>
-      <div class="num" style="color:var(--steel-700);font-size:26px;">${stuckItems.length} item${stuckItems.length===1?'':'s'} <span style="font-size:14px;">(${pctOf(stuckItems)}%)</span></div>
+      <div class="num" style="color:var(--steel-700);font-size:26px;">${stuckItems.length} item${stuckItems.length===1?'':'s'} <span style="font-size:19px;font-weight:800;">(${pctOf(stuckItems)}%)</span></div>
       <div style="font-size:16px;font-weight:700;color:var(--steel-700);margin-top:2px;">${fmtPHP(sumVal(stuckItems))}</div>
       <div style="margin-top:4px;font-size:15px;font-weight:700;color:var(--steel-700);">${sumQty(stuckItems).toLocaleString()} pcs (${pctOfPieces(stuckItems)}%)</div>
     </div>
