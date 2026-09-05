@@ -134,8 +134,8 @@
   .stage-row-v2 .fill{height:100%;background:linear-gradient(90deg,var(--accent-teal),var(--accent-teal-dk));border-radius:10px;transition:width .3s;}
   .stage-row-v2 .pct{width:58px;text-align:right;font-family:var(--font-mono);color:var(--accent-teal-dk);font-size:17px;font-weight:800;flex-shrink:0;}
   .stage-row-v2 .stage-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;}
-  .meta-chip{font-size:12.5px;font-weight:700;padding:5px 12px;border-radius:100px;background:var(--gray-bg);color:var(--steel-700);white-space:nowrap;}
-  .meta-chip b{font-weight:800;}
+  .meta-chip{font-size:15px;font-weight:700;padding:8px 16px;border-radius:100px;background:var(--gray-bg);color:var(--steel-700);white-space:nowrap;}
+  .meta-chip b{font-weight:800;font-size:18px;}
   .meta-chip.meta-assigned{background:var(--purple-bg);color:var(--purple);}
   .meta-chip.meta-done{background:var(--green-bg);color:var(--green);}
   .meta-chip.meta-ontrack{background:var(--blue-bg);color:var(--blue);}
@@ -1637,19 +1637,26 @@ function renderOverview(){
   renderStuckSection();
 
   // Progress by process (only counts items whose route actually includes that process).
-  // Beyond the done/total %, each stage also breaks down the items CURRENTLY
-  // sitting at that step: how many are assigned to someone, how many are
-  // on track vs. already past their target date for this step.
+  // "Naka-assign" is every item allocated to pass through this station at all
+  // — whether it has already finished this step or not. Of the ones NOT yet
+  // done at this step (whether that step is their current one or still queued
+  // behind an earlier one), "on track" vs "delayed" is decided purely by
+  // whether today has passed this step's own target date. So by construction:
+  // natapos + on_track + delayed always equals naka-assign.
   let progHtml = '';
   PROCESS_LIST.forEach(p=>{
     const relevant = ITEMS_VIEW.filter(it=>it.route.includes(p.id));
     if(relevant.length===0) return;
-    const doneN = relevant.filter(it=>it.routeStatus[p.id]==='done').length;
-    const pct = relevant.length ? Math.round(doneN/relevant.length*100) : 0;
-    const currentItems = relevant.filter(it=>currentStepId(it)===p.id);
-    const assignedN = currentItems.filter(it=>currentAssignee(it)).length;
-    const delayN = currentItems.filter(isItemOverdueNow).length;
-    const onTrackN = currentItems.length - delayN;
+    const assignedN = relevant.length;
+    const doneItems = relevant.filter(it=>it.routeStatus[p.id]==='done');
+    const doneN = doneItems.length;
+    const pct = Math.round(doneN/assignedN*100);
+    const notDoneItems = relevant.filter(it=>it.routeStatus[p.id]!=='done');
+    const delayN = notDoneItems.filter(it=>{
+      const target = it.routeTargetDates && it.routeTargetDates[p.id];
+      return target && new Date() > new Date(target+'T23:59:59');
+    }).length;
+    const onTrackN = notDoneItems.length - delayN;
     progHtml += `<div class="stage-row-v2">
       <div class="stage-row-top">
         <div class="name">${p.label}</div>
