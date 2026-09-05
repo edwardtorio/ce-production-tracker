@@ -31,6 +31,11 @@
     --gray-bg:#e9edef;
     --red:#c14545;
     --red-bg:#fbeaea;
+    --blue:#2563a8;
+    --blue-bg:#e8f1fb;
+    --purple:#7c3fae;
+    --purple-bg:#f2e9fb;
+    --accent-teal-bg:#f6e9ed;
     --line:#dbe4e8;
     --font-display:'Zilla Slab','Georgia',serif;
     --font-body:'Inter','Segoe UI',sans-serif;
@@ -99,6 +104,15 @@
   .stat-card.accent .num{color:var(--accent-teal-dk);}
   .stat-card.warn{border-color:#f3d9a8;}
   .stat-card.warn .num{color:var(--red);}
+
+  /* Bigger, colorful overview stat cards — one accent color per metric so the
+     whole row reads at a glance instead of blending into uniform white tiles. */
+  .stat-card-lg{border-radius:14px;padding:18px 18px 16px;box-shadow:0 2px 8px rgba(18,32,43,.06);
+    border:1px solid var(--sc-line, var(--line));background:var(--sc-bg, #fff);border-top:5px solid var(--sc-accent, var(--gray));}
+  .stat-card-lg .icon{font-size:19px;line-height:1;margin-bottom:8px;}
+  .stat-card-lg .num{font-family:var(--font-display);font-size:32px;font-weight:700;color:var(--sc-accent, var(--steel-900));line-height:1.05;}
+  .stat-card-lg .lbl{font-size:12px;color:var(--steel-700);text-transform:uppercase;letter-spacing:.6px;margin-top:5px;font-weight:700;}
+  .stat-card-lg .sub{font-size:13px;font-weight:700;color:var(--sc-accent, var(--steel-800));margin-top:10px;padding-top:9px;border-top:1px dashed var(--sc-line, var(--line));}
 
   .panel{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:18px;}
   .panel h3{margin:0 0 14px;font-family:var(--font-display);font-size:16px;color:var(--steel-900);}
@@ -1455,22 +1469,55 @@ function renderOverview(){
   const totalItems = ITEMS_VIEW.length;
   const totalUnits = ITEMS_VIEW.reduce((a,i)=>a+Number(i.qty||0),0);
   const totalValue = ITEMS_VIEW.reduce((a,i)=>a+itemAmount(i),0);
-  const doneCt = ITEMS_VIEW.filter(i=>itemCategory(i)==='done').length;
-  const ongoingCount = ITEMS_VIEW.filter(i=>itemCategory(i)==='ongoing').length;
+  const doneItemsForStats = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
+  const doneCt = doneItemsForStats.length;
+  const donePieces = doneItemsForStats.reduce((a,i)=>a+Number(i.qty||0),0);
+  const doneValue = doneItemsForStats.reduce((a,i)=>a+itemAmount(i),0);
   const pctDone = totalItems ? Math.round(doneCt/totalItems*100) : 0;
   const soCount = new Set(ITEMS_VIEW.map(i=>i.soNumber)).size;
   const bottleneckCount = ITEMS_VIEW.filter(isItemOverdueNow).length;
 
+  // An SO counts as completed only once every one of its line items has
+  // reached Finish Good — grouped by SO number alone since that's the unit
+  // the "23 Active Sales Orders" card itself counts.
+  const soGroupsForStats = {};
+  ITEMS_VIEW.forEach(it=>{
+    if(!soGroupsForStats[it.soNumber]) soGroupsForStats[it.soNumber] = [];
+    soGroupsForStats[it.soNumber].push(it);
+  });
+  const completedSoCount = Object.values(soGroupsForStats).filter(items=>items.every(it=>itemCategory(it)==='done')).length;
+
   renderHeaderPct(pctDone);
 
   document.getElementById('statCards').innerHTML = `
-    <div class="stat-card"><div class="num">${soCount}</div><div class="lbl">Active Sales Orders</div></div>
-    <div class="stat-card"><div class="num">${totalItems}</div><div class="lbl">Line Items</div></div>
-    <div class="stat-card"><div class="num">${totalUnits.toLocaleString()}</div><div class="lbl">Total Pieces</div></div>
-    <div class="stat-card"><div class="num">${ongoingCount}</div><div class="lbl">Items In Progress</div></div>
-    <div class="stat-card accent"><div class="num">${pctDone}%</div><div class="lbl">Fully Finished Goods</div></div>
-    <div class="stat-card accent"><div class="num" style="font-size:19px;">${fmtPHP(totalValue)}</div><div class="lbl">Total Order Value</div></div>
-    <div class="stat-card ${bottleneckCount?'warn':''}"><div class="num">${bottleneckCount}</div><div class="lbl">Delayed Items</div></div>
+    <div class="stat-card-lg" style="--sc-accent:var(--blue);--sc-bg:var(--blue-bg);">
+      <div class="icon">🗂️</div>
+      <div class="num">${soCount}</div><div class="lbl">Active Sales Orders</div>
+      <div class="sub">✓ ${completedSoCount} completed</div>
+    </div>
+    <div class="stat-card-lg" style="--sc-accent:var(--purple);--sc-bg:var(--purple-bg);">
+      <div class="icon">📋</div>
+      <div class="num">${totalItems}</div><div class="lbl">Line Items</div>
+      <div class="sub">✓ ${doneCt} completed</div>
+    </div>
+    <div class="stat-card-lg" style="--sc-accent:var(--accent-teal-dk);--sc-bg:var(--accent-teal-bg);">
+      <div class="icon">📦</div>
+      <div class="num">${totalUnits.toLocaleString()}</div><div class="lbl">Total Pieces</div>
+      <div class="sub">✓ ${donePieces.toLocaleString()} completed</div>
+    </div>
+    <div class="stat-card-lg" style="--sc-accent:var(--green);--sc-bg:var(--green-bg);">
+      <div class="icon">✅</div>
+      <div class="num">${pctDone}%</div><div class="lbl">Fully Finished Goods</div>
+    </div>
+    <div class="stat-card-lg" style="--sc-accent:var(--amber);--sc-bg:var(--amber-bg);">
+      <div class="icon">💰</div>
+      <div class="num" style="font-size:24px;">${fmtPHP(totalValue)}</div><div class="lbl">Total Order Value</div>
+      <div class="sub">✓ ${fmtPHP(doneValue)} completed</div>
+    </div>
+    <div class="stat-card-lg" style="--sc-accent:var(--red);--sc-bg:${bottleneckCount?'var(--red-bg)':'#fff'};">
+      <div class="icon">⚠️</div>
+      <div class="num">${bottleneckCount}</div><div class="lbl">Delayed Items</div>
+    </div>
   `;
 
   const soMap = {};
