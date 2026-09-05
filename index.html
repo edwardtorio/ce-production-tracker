@@ -1614,19 +1614,19 @@ function renderOverview(){
       <div class="lbl" style="color:var(--green);">✓ Natapos (Done)</div>
       <div class="num" style="color:var(--green);font-size:26px;">${doneItems.length} item${doneItems.length===1?'':'s'} <span style="font-size:14px;">(${pctOf(doneItems)}%)</span></div>
       <div style="font-size:16px;font-weight:700;color:var(--green);margin-top:2px;">${fmtPHP(sumVal(doneItems))}</div>
-      <div class="hint" style="margin-top:4px;">${sumQty(doneItems).toLocaleString()} pcs (${pctOfPieces(doneItems)}%)</div>
+      <div style="margin-top:4px;font-size:15px;font-weight:700;color:var(--green);">${sumQty(doneItems).toLocaleString()} pcs (${pctOfPieces(doneItems)}%)</div>
     </div>
     <div class="stat-card" style="border-color:#f3d9a8;background:var(--amber-bg);">
       <div class="lbl" style="color:var(--amber);">⏳ Ongoing</div>
       <div class="num" style="color:var(--amber);font-size:26px;">${ongoingItems.length} item${ongoingItems.length===1?'':'s'} <span style="font-size:14px;">(${pctOf(ongoingItems)}%)</span></div>
       <div style="font-size:16px;font-weight:700;color:var(--amber);margin-top:2px;">${fmtPHP(sumVal(ongoingItems))}</div>
-      <div class="hint" style="margin-top:4px;">${sumQty(ongoingItems).toLocaleString()} pcs (${pctOfPieces(ongoingItems)}%)</div>
+      <div style="margin-top:4px;font-size:15px;font-weight:700;color:var(--amber);">${sumQty(ongoingItems).toLocaleString()} pcs (${pctOfPieces(ongoingItems)}%)</div>
     </div>
     <div class="stat-card" style="background:var(--gray-bg);">
       <div class="lbl" style="color:var(--steel-700);">◻ Hindi Pa Gumagalaw</div>
       <div class="num" style="color:var(--steel-700);font-size:26px;">${stuckItems.length} item${stuckItems.length===1?'':'s'} <span style="font-size:14px;">(${pctOf(stuckItems)}%)</span></div>
       <div style="font-size:16px;font-weight:700;color:var(--steel-700);margin-top:2px;">${fmtPHP(sumVal(stuckItems))}</div>
-      <div class="hint" style="margin-top:4px;">${sumQty(stuckItems).toLocaleString()} pcs (${pctOfPieces(stuckItems)}%)</div>
+      <div style="margin-top:4px;font-size:15px;font-weight:700;color:var(--steel-700);">${sumQty(stuckItems).toLocaleString()} pcs (${pctOfPieces(stuckItems)}%)</div>
     </div>
   `;
 
