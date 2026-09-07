@@ -558,11 +558,6 @@
   <div class="view active" id="view-overview">
     <div class="cards-row" id="statCards"></div>
 
-    <div class="panel panel-dark">
-      <h3>Line Items &amp; Pieces — Done / Ongoing / Not Started</h3>
-      <div class="breakdown-row cards-row" id="breakdownRow"></div>
-    </div>
-
     <div class="panel">
       <h3>Progress by Process</h3>
       <div id="stageProgress"></div>
@@ -631,6 +626,10 @@
 
   <!-- BOARD -->
   <div class="view" id="view-board">
+    <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);color:#fff;padding:24px 20px;margin-bottom:12px;">
+      <h3 style="color:#fff;margin-bottom:12px;">Line Items &amp; Pieces — Done / On Track / Delayed</h3>
+      <div class="breakdown-row cards-row" id="breakdownRow"></div>
+    </div>
     <div class="panel" style="padding:12px 16px;margin-bottom:12px;">
       <span class="hint">Bawat item ay may sariling fabrication route. Ang <b style="color:var(--amber)">amber na hakbang</b> lang ang kasalukuyang ma-cli-click (tap para mag-cycle: Queue → Ongoing → Done). Pag na-Done, awtomatikong lilipat sa susunod na proseso.</span>
     </div>
@@ -1518,6 +1517,12 @@ function renderOverview(){
   const pctDone = totalItems ? Math.round(doneCt/totalItems*100) : 0;
   const soCount = new Set(ITEMS_VIEW.map(i=>i.soNumber)).size;
   const bottleneckCount = ITEMS_VIEW.filter(isItemOverdueNow).length;
+  // "On track" = not yet done, and not currently past its own target date —
+  // mutually exclusive with both done and delayed, so done+onTrack+delayed
+  // always equals totalItems.
+  const onTrackCount = totalItems - doneCt - bottleneckCount;
+  const pctOnTrack = totalItems ? Math.round(onTrackCount/totalItems*100) : 0;
+  const pctDelayed = totalItems ? Math.round(bottleneckCount/totalItems*100) : 0;
 
   // An SO counts as completed only once every one of its line items has
   // reached Finish Good — grouped by SO number alone since that's the unit
@@ -1547,18 +1552,24 @@ function renderOverview(){
       <div class="num">${totalUnits.toLocaleString()}</div><div class="lbl">Total Pieces</div>
       <div class="sub">✓ ${donePieces.toLocaleString()} completed</div>
     </div>
-    <div class="stat-card-lg" style="--sc-accent:var(--green);--sc-bg:var(--green-bg);">
-      <div class="icon">✅</div>
-      <div class="num">${pctDone}%</div><div class="lbl">Fully Finished Goods</div>
-    </div>
     <div class="stat-card-lg" style="--sc-accent:var(--amber);--sc-bg:var(--amber-bg);">
       <div class="icon">💰</div>
       <div class="num" style="font-size:24px;">${fmtPHP(totalValue)}</div><div class="lbl">Total Order Value</div>
       <div class="sub">✓ ${fmtPHP(doneValue)} completed</div>
     </div>
+    <div class="stat-card-lg" style="--sc-accent:var(--green);--sc-bg:var(--green-bg);">
+      <div class="icon">✅</div>
+      <div class="num">${pctDone}%</div><div class="lbl">Fully Finished Goods</div>
+    </div>
+    <div class="stat-card-lg" style="--sc-accent:var(--blue);--sc-bg:var(--blue-bg);">
+      <div class="icon">🟢</div>
+      <div class="num">${onTrackCount}</div><div class="lbl">On Track</div>
+      <div class="sub">${pctOnTrack}%</div>
+    </div>
     <div class="stat-card-lg" style="--sc-accent:var(--red);--sc-bg:${bottleneckCount?'var(--red-bg)':'#fff'};">
       <div class="icon">⚠️</div>
       <div class="num">${bottleneckCount}</div><div class="lbl">Delayed Items</div>
+      <div class="sub">${pctDelayed}%</div>
     </div>
   `;
 
@@ -1622,33 +1633,10 @@ function renderOverview(){
   const doneItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
   const ongoingItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='ongoing');
   const stuckItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='stuck');
-  const sumQty = arr => arr.reduce((a,i)=>a+Number(i.qty||0),0);
-  const sumVal = arr => arr.reduce((a,i)=>a+itemAmount(i),0);
-  const totalItemsForPct = ITEMS_VIEW.length || 1;
-  const totalPiecesForPct = sumQty(ITEMS_VIEW) || 1;
-  const pctOf = (arr) => Math.round(arr.length/totalItemsForPct*100);
-  const pctOfPieces = (arr) => Math.round(sumQty(arr)/totalPiecesForPct*100);
-  document.getElementById('breakdownRow').innerHTML = `
-    <div class="stat-card" style="border-color:#bfe6cd;background:var(--green-bg);">
-      <div class="lbl" style="color:var(--green);">✓ Natapos (Done)</div>
-      <div class="num" style="color:var(--green);font-size:26px;">${doneItems.length} item${doneItems.length===1?'':'s'} <span style="font-size:19px;font-weight:800;">(${pctOf(doneItems)}%)</span></div>
-      <div style="font-size:16px;font-weight:700;color:var(--green);margin-top:2px;">${fmtPHP(sumVal(doneItems))}</div>
-      <div style="margin-top:4px;font-size:15px;font-weight:700;color:var(--green);">${sumQty(doneItems).toLocaleString()} pcs (${pctOfPieces(doneItems)}%)</div>
-    </div>
-    <div class="stat-card" style="border-color:#f3d9a8;background:var(--amber-bg);">
-      <div class="lbl" style="color:var(--amber);">⏳ Ongoing</div>
-      <div class="num" style="color:var(--amber);font-size:26px;">${ongoingItems.length} item${ongoingItems.length===1?'':'s'} <span style="font-size:19px;font-weight:800;">(${pctOf(ongoingItems)}%)</span></div>
-      <div style="font-size:16px;font-weight:700;color:var(--amber);margin-top:2px;">${fmtPHP(sumVal(ongoingItems))}</div>
-      <div style="margin-top:4px;font-size:15px;font-weight:700;color:var(--amber);">${sumQty(ongoingItems).toLocaleString()} pcs (${pctOfPieces(ongoingItems)}%)</div>
-    </div>
-    <div class="stat-card" style="background:var(--gray-bg);">
-      <div class="lbl" style="color:var(--steel-700);">◻ Hindi Pa Gumagalaw</div>
-      <div class="num" style="color:var(--steel-700);font-size:26px;">${stuckItems.length} item${stuckItems.length===1?'':'s'} <span style="font-size:19px;font-weight:800;">(${pctOf(stuckItems)}%)</span></div>
-      <div style="font-size:16px;font-weight:700;color:var(--steel-700);margin-top:2px;">${fmtPHP(sumVal(stuckItems))}</div>
-      <div style="margin-top:4px;font-size:15px;font-weight:700;color:var(--steel-700);">${sumQty(stuckItems).toLocaleString()} pcs (${pctOfPieces(stuckItems)}%)</div>
-    </div>
-  `;
-
+  // The "Line Items & Pieces" done/on-track/delayed summary now lives on the
+  // Production Board (see renderLineItemsBreakdown); OVERVIEW_CACHE here is
+  // still needed by the Items In Progress / Fully Finished / Not Yet Started
+  // list sections further down this same Overview page.
   OVERVIEW_CACHE = { soMap, doneItems, ongoingItems, stuckItems };
   renderSoSection();
   renderProgressSection();
@@ -1816,14 +1804,27 @@ function pickAutocomplete(inputId, value){
    filter on the page has its own independent selection; an empty
    selection means "show all", same meaning as the old blank option. */
 let multiSoState = {}; // id -> Set of selected values
+let openMultiSoId = null; // id of the currently-open dropdown, if any
+let multiSoAutoCloseTimer = null;
 function getMultiSoSet(id){
   if(!multiSoState[id]) multiSoState[id] = new Set();
   return multiSoState[id];
+}
+// Auto-close only kicks in after 5s of no interaction with the OPEN panel —
+// every checkbox click, "Piliin lahat", or "I-clear" resets the countdown,
+// so a user can keep picking multiple options without it slamming shut.
+function armMultiSoAutoClose(){
+  clearMultiSoAutoClose();
+  multiSoAutoCloseTimer = setTimeout(()=>{ closeAllMultiSoPanels(''); }, 5000);
+}
+function clearMultiSoAutoClose(){
+  if(multiSoAutoCloseTimer){ clearTimeout(multiSoAutoCloseTimer); multiSoAutoCloseTimer = null; }
 }
 function closeAllMultiSoPanels(exceptId){
   document.querySelectorAll('.multiso-panel').forEach(p=>{
     if(p.id !== exceptId+'_panel') p.style.display = 'none';
   });
+  if(!exceptId){ openMultiSoId = null; clearMultiSoAutoClose(); }
 }
 function toggleMultiSoPanel(id){
   const panel = document.getElementById(id+'_panel');
@@ -1831,6 +1832,8 @@ function toggleMultiSoPanel(id){
   const willOpen = panel.style.display !== 'block';
   closeAllMultiSoPanels(id);
   panel.style.display = willOpen ? 'block' : 'none';
+  if(willOpen){ openMultiSoId = id; armMultiSoAutoClose(); }
+  else { openMultiSoId = null; clearMultiSoAutoClose(); }
 }
 document.addEventListener('click', (e)=>{
   if(!e.target.closest('.multiso')) closeAllMultiSoPanels('');
@@ -1866,6 +1869,7 @@ function populateMultiSoDropdown(id, options, renderFnName, emptyLabel, multiSuf
 function multiSoToggle(id, value, checked, renderFn){
   const set = getMultiSoSet(id);
   if(checked) set.add(value); else set.delete(value);
+  if(openMultiSoId===id) armMultiSoAutoClose();
   renderFn();
 }
 function multiSoSelectAll(id, renderFn){
@@ -1874,10 +1878,12 @@ function multiSoSelectAll(id, renderFn){
   const panel = document.getElementById(id+'_panel');
   const set = getMultiSoSet(id);
   panel.querySelectorAll('input[type=checkbox]').forEach(cb=>set.add(cb.value));
+  if(openMultiSoId===id) armMultiSoAutoClose();
   renderFn();
 }
 function multiSoClear(id, renderFn){
   getMultiSoSet(id).clear();
+  if(openMultiSoId===id) armMultiSoAutoClose();
   renderFn();
 }
 function itemsSumLine(count, qty, value, noun){
@@ -2195,7 +2201,38 @@ setInterval(()=>{
 /* ---------- Board ---------- */
 function nextStatus(cur){ const idx = STATUS_CYCLE.indexOf(cur); return STATUS_CYCLE[(idx+1)%STATUS_CYCLE.length]; }
 
+// Company-wide Done / On Track / Delayed summary, shown at the top of the
+// Production Board (maroon panel, matching the Team Scorecard). "On track"
+// = not yet done and not currently past its own target date; "delayed" =
+// currently past its own target date. Mutually exclusive and exhaustive
+// with "done", same definition as the Overview page's On Track / Delayed
+// Items stat cards.
+function renderLineItemsBreakdown(){
+  const el = document.getElementById('breakdownRow');
+  if(!el) return;
+  const ITEMS_VIEW = activeItems();
+  const doneItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
+  const delayedItems = ITEMS_VIEW.filter(isItemOverdueNow);
+  const onTrackItems = ITEMS_VIEW.filter(i=>itemCategory(i)!=='done' && !isItemOverdueNow(i));
+  const sumQty = arr => arr.reduce((a,i)=>a+Number(i.qty||0),0);
+  const sumVal = arr => arr.reduce((a,i)=>a+itemAmount(i),0);
+  const totalItemsForPct = ITEMS_VIEW.length || 1;
+  const totalPiecesForPct = sumQty(ITEMS_VIEW) || 1;
+  const pctOf = (arr) => Math.round(arr.length/totalItemsForPct*100);
+  const pctOfPieces = (arr) => Math.round(sumQty(arr)/totalPiecesForPct*100);
+  const bCard = (icon, label, arr, accentBg) => `
+    <div class="stat-card-lg" style="background:${accentBg};border:1px solid rgba(255,255,255,.25);box-shadow:0 4px 14px rgba(0,0,0,.18);">
+      <div class="icon">${icon}</div>
+      <div class="num" style="color:#fff;">${arr.length} item${arr.length===1?'':'s'} <span style="font-size:19px;">(${pctOf(arr)}%)</span></div>
+      <div class="lbl" style="color:#f5e4e9;">${label}</div>
+      <div class="sub" style="color:#fff;border-top-color:rgba(255,255,255,.3);">${fmtPHP(sumVal(arr))}<br>${sumQty(arr).toLocaleString()} pcs (${pctOfPieces(arr)}%)</div>
+    </div>`;
+  el.innerHTML = bCard('✓','Natapos (Done)', doneItems, 'rgba(45,138,86,.28)')
+    + bCard('🟢','On Track', onTrackItems, 'rgba(37,99,168,.28)')
+    + bCard('⚠️','Delayed', delayedItems, 'rgba(196,60,60,.32)');
+}
 function renderBoard(){
+  renderLineItemsBreakdown();
   const groups = {};
   activeItems().forEach(it=>{
     const key = it.soNumber + '||' + it.client;
@@ -3151,7 +3188,7 @@ function renderPersonScorecardDetail(name){
 // consecutive) via a multi-select checkbox dropdown, and the team totals sum
 // across exactly those chosen periods.
 let teamBannerGranularity = 'day';
-function setTeamBannerGranularity(val){ teamBannerGranularity = val; renderTeamOverviewBanner(); }
+function setTeamBannerGranularity(val){ teamBannerGranularity = val; closeAllMultiSoPanels(''); renderTeamOverviewBanner(); }
 // Every date-ish value (target delivery, actual delivery, last-step
 // completion) that could ever matter to the team banner, so the dropdown
 // always has real periods to pick from (plus today's own period).
@@ -3171,22 +3208,6 @@ function getTeamPeriodOptions(granularity){
 function inSelectedPeriods(dateStr, granularity, selectedSet){
   if(!dateStr || !selectedSet || selectedSet.size===0) return false;
   return selectedSet.has(periodKey(dateStr, granularity));
-}
-// Team performance, scoped to items whose last-step completion falls inside
-// one of the chosen periods (same item-level "did it ship by its own Target
-// Delivery Date" definition as computeTeamOverallPerformance, just filtered).
-function computeTeamPerformanceInRange(granularity, selectedSet){
-  const items = activeItems().filter(it=>itemCategory(it)==='done' && it.targetDelivery);
-  let onTime=0, late=0;
-  items.forEach(it=>{
-    const lastProcessId = it.route[it.route.length-1];
-    const completedAt = it.routeCompletedAt && it.routeCompletedAt[lastProcessId];
-    if(!inSelectedPeriods(completedAt, granularity, selectedSet)) return;
-    if(new Date(completedAt) <= new Date(it.targetDelivery+'T23:59:59')) onTime++; else late++;
-  });
-  const total = onTime+late;
-  const pct = total ? Math.round(onTime/total*100) : null;
-  return { onTime, late, total, pct };
 }
 // Items whose Target Delivery Date falls inside a chosen period (regardless
 // of status) — how much was SUPPOSED to ship in the chosen periods.
@@ -3211,9 +3232,12 @@ function renderTeamOverviewBanner(){
   }
   const selectedSet = getMultiSoSet(periodId);
   const activePeople = allPeople().length;
-  const perf = computeTeamPerformanceInRange(teamBannerGranularity, selectedSet);
   const targetD = computeTargetDeliveredInRange(teamBannerGranularity, selectedSet);
   const actualD = computeActualDeliveredInRange(teamBannerGranularity, selectedSet);
+  // Team Performance % = how much actually shipped in the chosen periods
+  // against how much was supposed to (Target Delivered vs Actual Delivered),
+  // not an on-time/late tally.
+  const perfPct = targetD.count>0 ? Math.round(actualD.count/targetD.count*100) : null;
 
   const periodWord = ({day:'araw',week:'linggo',month:'buwan',year:'taon'})[teamBannerGranularity];
   const periodOptions = getTeamPeriodOptions(teamBannerGranularity);
@@ -3241,7 +3265,7 @@ function renderTeamOverviewBanner(){
   wrap.innerHTML = `
     <div class="cards-row" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));max-width:1000px;margin:0 auto;">
       ${card('👥', activePeople, 'Active Team Members', '', 'rgba(255,255,255,.10)')}
-      ${card('🎯', perf.pct!==null ? perf.pct+'%' : '—', `Team Performance (${rangeLabel})`, `${perf.onTime} on-time / ${perf.total} may target`, 'rgba(214,158,44,.28)')}
+      ${card('🎯', perfPct!==null ? perfPct+'%' : '—', `Team Performance (${rangeLabel})`, `${actualD.count} naihatid / ${targetD.count} target`, 'rgba(214,158,44,.28)')}
       ${card('📅', targetD.count, `Target Delivered Items (${rangeLabel})`, fmtPHP(targetD.value), 'rgba(37,99,168,.28)')}
       ${card('✅', actualD.count, `Actual Delivered Items (${rangeLabel})`, fmtPHP(actualD.value), 'rgba(45,138,86,.28)')}
     </div>
@@ -3256,6 +3280,13 @@ function renderTeamOverviewBanner(){
     <div style="margin-top:10px;text-align:center;color:#f0d9e0;font-size:11.5px;">Saklaw: ${escapeHtml(rangeSub)}</div>
   `;
   populateMultiSoDropdown(periodId, periodOptions, 'renderTeamOverviewBanner', 'Pumili ng '+periodWord, periodWord, 'Wala pang datos.');
+  // This whole banner (including the dropdown's button/panel) is rebuilt
+  // from scratch on every selection change, which would otherwise slam the
+  // panel shut after each checkbox click — restore it if it was left open.
+  if(openMultiSoId===periodId){
+    const panelEl = document.getElementById(periodId+'_panel');
+    if(panelEl) panelEl.style.display = 'block';
+  }
 }
 
 /* ---------- Detailed per-person profile (click a scorecard to open) ---------- */
