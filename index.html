@@ -557,6 +557,7 @@
   <!-- OVERVIEW -->
   <div class="view active" id="view-overview">
     <div class="cards-row" id="statCards"></div>
+    <div class="cards-row" id="statCardsStatus" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));max-width:520px;"></div>
 
     <div class="panel">
       <h3>Progress by Process</h3>
@@ -1540,6 +1541,18 @@ function renderOverview(){
 
   renderHeaderPct(pctDone);
 
+  // Total Order Value can run into the tens of millions (₱100,000,000.00+
+  // per year), so its font size shrinks to fit rather than overflowing the
+  // card — same idea applied to the smaller "completed" sub-line.
+  const totalValueStr = fmtPHP(totalValue);
+  const doneValueSubStr = `✓ ${fmtPHP(doneValue)} completed`;
+  const fitFont = (str, sizes) => {
+    for(const [maxLen, size] of sizes){ if(str.length<=maxLen) return size; }
+    return sizes[sizes.length-1][1];
+  };
+  const totalValueFont = fitFont(totalValueStr, [[11,24],[13,21],[15,18],[17,16],[20,14]]);
+  const doneValueFont = fitFont(doneValueSubStr, [[24,13],[28,12],[32,11],[999,10]]);
+
   document.getElementById('statCards').innerHTML = `
     <div class="stat-card-lg" style="--sc-accent:var(--blue);--sc-bg:var(--blue-bg);">
       <div class="icon">🗂️</div>
@@ -1558,15 +1571,18 @@ function renderOverview(){
     </div>
     <div class="stat-card-lg" style="--sc-accent:var(--amber);--sc-bg:var(--amber-bg);">
       <div class="icon">💰</div>
-      <div class="num" style="font-size:24px;">${fmtPHP(totalValue)}</div><div class="lbl">Total Order Value</div>
-      <div class="sub">✓ ${fmtPHP(doneValue)} completed</div>
+      <div class="num" style="font-size:${totalValueFont}px;white-space:nowrap;">${totalValueStr}</div><div class="lbl">Total Order Value</div>
+      <div class="sub" style="font-size:${doneValueFont}px;white-space:nowrap;">${doneValueSubStr}</div>
     </div>
     <div class="stat-card-lg" style="--sc-accent:var(--green);--sc-bg:var(--green-bg);">
       <div class="icon">✅</div>
       <div class="num">${pctDone}%</div><div class="lbl">Fully Finished Goods</div>
     </div>
-    <div class="stat-card-lg" style="--sc-accent:var(--blue);--sc-bg:var(--blue-bg);position:relative;">
-      <div style="position:absolute;top:12px;right:12px;width:36px;height:36px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;">${pctOnTrack}%</div>
+  `;
+
+  document.getElementById('statCardsStatus').innerHTML = `
+    <div class="stat-card-lg" style="--sc-accent:var(--accent-teal-dk);--sc-bg:var(--accent-teal-bg);position:relative;">
+      <div style="position:absolute;top:12px;right:12px;width:36px;height:36px;border-radius:50%;background:var(--accent-teal-dk);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;">${pctOnTrack}%</div>
       <div class="icon">🟢</div>
       <div class="num">${onTrackCount}</div><div class="lbl">On Track Items</div>
       <div class="sub">${fmtPHP(onTrackValue)}</div>
