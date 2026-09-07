@@ -1516,11 +1516,15 @@ function renderOverview(){
   const doneValue = doneItemsForStats.reduce((a,i)=>a+itemAmount(i),0);
   const pctDone = totalItems ? Math.round(doneCt/totalItems*100) : 0;
   const soCount = new Set(ITEMS_VIEW.map(i=>i.soNumber)).size;
-  const bottleneckCount = ITEMS_VIEW.filter(isItemOverdueNow).length;
   // "On track" = not yet done, and not currently past its own target date —
   // mutually exclusive with both done and delayed, so done+onTrack+delayed
   // always equals totalItems.
-  const onTrackCount = totalItems - doneCt - bottleneckCount;
+  const delayedItemsArr = ITEMS_VIEW.filter(isItemOverdueNow);
+  const onTrackItemsArr = ITEMS_VIEW.filter(it=>itemCategory(it)!=='done' && !isItemOverdueNow(it));
+  const bottleneckCount = delayedItemsArr.length;
+  const onTrackCount = onTrackItemsArr.length;
+  const onTrackValue = onTrackItemsArr.reduce((a,i)=>a+itemAmount(i),0);
+  const delayedValue = delayedItemsArr.reduce((a,i)=>a+itemAmount(i),0);
   const pctOnTrack = totalItems ? Math.round(onTrackCount/totalItems*100) : 0;
   const pctDelayed = totalItems ? Math.round(bottleneckCount/totalItems*100) : 0;
 
@@ -1561,15 +1565,17 @@ function renderOverview(){
       <div class="icon">✅</div>
       <div class="num">${pctDone}%</div><div class="lbl">Fully Finished Goods</div>
     </div>
-    <div class="stat-card-lg" style="--sc-accent:var(--blue);--sc-bg:var(--blue-bg);">
+    <div class="stat-card-lg" style="--sc-accent:var(--blue);--sc-bg:var(--blue-bg);position:relative;">
+      <div style="position:absolute;top:12px;right:12px;width:36px;height:36px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;">${pctOnTrack}%</div>
       <div class="icon">🟢</div>
-      <div class="num">${onTrackCount}</div><div class="lbl">On Track</div>
-      <div class="sub">${pctOnTrack}%</div>
+      <div class="num">${onTrackCount}</div><div class="lbl">On Track Items</div>
+      <div class="sub">${fmtPHP(onTrackValue)}</div>
     </div>
-    <div class="stat-card-lg" style="--sc-accent:var(--red);--sc-bg:${bottleneckCount?'var(--red-bg)':'#fff'};">
+    <div class="stat-card-lg" style="--sc-accent:var(--red);--sc-bg:${bottleneckCount?'var(--red-bg)':'#fff'};position:relative;">
+      <div style="position:absolute;top:12px;right:12px;width:36px;height:36px;border-radius:50%;background:var(--red);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;">${pctDelayed}%</div>
       <div class="icon">⚠️</div>
       <div class="num">${bottleneckCount}</div><div class="lbl">Delayed Items</div>
-      <div class="sub">${pctDelayed}%</div>
+      <div class="sub">${fmtPHP(delayedValue)}</div>
     </div>
   `;
 
