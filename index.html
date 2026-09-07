@@ -589,18 +589,6 @@
     </div>
 
     <div class="panel">
-      <h3>Items In Progress</h3>
-      <div class="summary-line" id="progressSummary"></div>
-      <div class="filter-row">
-        <input type="text" id="progressSearch" placeholder="Search item code, description, SO, or client…" oninput="renderProgressSection()">
-        <div class="multiso" id="progressFilterSelect_wrap"><button type="button" class="multiso-btn" id="progressFilterSelect_btn" onclick="toggleMultiSoPanel('progressFilterSelect')">All SOs ▾</button><div class="multiso-panel" id="progressFilterSelect_panel" style="display:none;"></div></div>
-        <button class="btn secondary btn-sm" onclick="toggleShowAll('progress')" id="progressShowAllBtn">Show all</button>
-      </div>
-      <div class="mini-table-wrap" id="progressTableWrap"><table class="mini-table" id="progressTable"></table></div>
-      <div class="hint" id="progressHint"></div>
-    </div>
-
-    <div class="panel">
       <h3>Fully Finished Items</h3>
       <div class="summary-line" id="finishedSummary"></div>
       <div class="filter-row">
@@ -613,7 +601,19 @@
     </div>
 
     <div class="panel">
-      <h3>Not Yet Started (Hindi Pa Gumagalaw)</h3>
+      <h3>On Track Items</h3>
+      <div class="summary-line" id="progressSummary"></div>
+      <div class="filter-row">
+        <input type="text" id="progressSearch" placeholder="Search item code, description, SO, or client…" oninput="renderProgressSection()">
+        <div class="multiso" id="progressFilterSelect_wrap"><button type="button" class="multiso-btn" id="progressFilterSelect_btn" onclick="toggleMultiSoPanel('progressFilterSelect')">All SOs ▾</button><div class="multiso-panel" id="progressFilterSelect_panel" style="display:none;"></div></div>
+        <button class="btn secondary btn-sm" onclick="toggleShowAll('progress')" id="progressShowAllBtn">Show all</button>
+      </div>
+      <div class="mini-table-wrap" id="progressTableWrap"><table class="mini-table" id="progressTable"></table></div>
+      <div class="hint" id="progressHint"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Delayed Items</h3>
       <div class="summary-line" id="stuckSummary"></div>
       <div class="filter-row">
         <input type="text" id="stuckSearch" placeholder="Search item code, description, SO, or client…" oninput="renderStuckSection()">
@@ -1659,16 +1659,19 @@ function renderOverview(){
   document.getElementById('bottleneckTable').innerHTML = btRows;
 
   const doneItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
-  const ongoingItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='ongoing');
-  const stuckItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='stuck');
+  const onTrackListItems = ITEMS_VIEW.filter(i=>itemCategory(i)!=='done' && !isItemOverdueNow(i));
+  const delayedListItems = ITEMS_VIEW.filter(isItemOverdueNow);
   // The "Line Items & Pieces" done/on-track/delayed summary now lives on the
   // Production Board (see renderLineItemsBreakdown); OVERVIEW_CACHE here is
-  // still needed by the Items In Progress / Fully Finished / Not Yet Started
-  // list sections further down this same Overview page.
-  OVERVIEW_CACHE = { soMap, doneItems, ongoingItems, stuckItems };
+  // still needed by the Fully Finished / On Track / Delayed list sections
+  // further down this same Overview page. "On track" here mirrors the same
+  // definition used everywhere else in the app: not done and not currently
+  // past its own target date (whether queued/not-yet-started or actively
+  // ongoing); "delayed" mirrors isItemOverdueNow.
+  OVERVIEW_CACHE = { soMap, doneItems, onTrackItems: onTrackListItems, delayedItems: delayedListItems };
   renderSoSection();
-  renderProgressSection();
   renderFinishedSection();
+  renderProgressSection();
   renderStuckSection();
 
   // Progress by process (only counts items whose route actually includes that process).
@@ -2034,7 +2037,7 @@ function renderSoSection(){
 }
 
 function renderProgressSection(){
-  const items = OVERVIEW_CACHE.ongoingItems;
+  const items = OVERVIEW_CACHE.onTrackItems;
   const qty = items.reduce((a,i)=>a+Number(i.qty||0),0);
   const val = items.reduce((a,i)=>a+itemAmount(i),0);
   document.getElementById('progressSummary').innerHTML = itemsSumLine(items.length, qty, val, 'item');
@@ -2102,7 +2105,7 @@ function renderFinishedSection(){
 }
 
 function renderStuckSection(){
-  const items = OVERVIEW_CACHE.stuckItems;
+  const items = OVERVIEW_CACHE.delayedItems;
   const qty = items.reduce((a,i)=>a+Number(i.qty||0),0);
   const val = items.reduce((a,i)=>a+itemAmount(i),0);
   document.getElementById('stuckSummary').innerHTML = itemsSumLine(items.length, qty, val, 'item');
