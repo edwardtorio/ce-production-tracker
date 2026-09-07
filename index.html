@@ -1839,7 +1839,9 @@ document.addEventListener('click', (e)=>{
 // of the global render function to re-invoke whenever the selection
 // changes, e.g. renderSoSection — written directly into the generated
 // onclick/onchange handlers so it resolves as a real function reference.
-function populateMultiSoDropdown(id, options, renderFnName, emptyLabel){
+function populateMultiSoDropdown(id, options, renderFnName, emptyLabel, multiSuffix, noItemsText){
+  if(multiSuffix===undefined) multiSuffix = 'SOs selected';
+  if(noItemsText===undefined) noItemsText = 'Wala pang SO.';
   const selected = getMultiSoSet(id);
   const validValues = new Set(options.map(o=>o.value));
   [...selected].forEach(v=>{ if(!validValues.has(v)) selected.delete(v); });
@@ -1850,7 +1852,7 @@ function populateMultiSoDropdown(id, options, renderFnName, emptyLabel){
   else if(selected.size===1){
     const opt = options.find(o=>o.value===[...selected][0]);
     btn.textContent = (opt ? opt.label : '1 selected') + ' ▾';
-  }else btn.textContent = selected.size + ' SOs selected ▾';
+  }else btn.textContent = selected.size + ' ' + multiSuffix + ' ▾';
 
   panel.innerHTML = (options.length ? `
     <div class="multiso-actions">
@@ -1859,7 +1861,7 @@ function populateMultiSoDropdown(id, options, renderFnName, emptyLabel){
     </div>` : '') +
     (options.length
       ? options.map(o=>`<label class="multiso-item"><input type="checkbox" value="${jsAttr(o.value)}" ${selected.has(o.value)?'checked':''} onchange="multiSoToggle('${id}', this.value, this.checked, ${renderFnName})"> ${escapeHtml(o.label)}</label>`).join('')
-      : '<div class="hint" style="padding:8px;">Wala pang SO.</div>');
+      : `<div class="hint" style="padding:8px;">${escapeHtml(noItemsText)}</div>`);
 }
 function multiSoToggle(id, value, checked, renderFn){
   const set = getMultiSoSet(id);
@@ -3026,6 +3028,7 @@ function isoWeekStart(dateStr){
   return d.toISOString().slice(0,10);
 }
 function periodKey(dateStr, granularity){
+  dateStr = String(dateStr).slice(0,10); // normalize away any time-of-day component
   if(granularity==='month') return dateStr.slice(0,7);
   if(granularity==='year') return dateStr.slice(0,4);
   if(granularity==='week') return isoWeekStart(dateStr);
@@ -3143,94 +3146,89 @@ function renderPersonScorecardDetail(name){
 }
 
 // Company-wide summary banner — aggregate only, no individual names, with its
-// own set of Daily/Weekly/Monthly/Yearly + "last N periods" controls for the
-// team totals. Selecting e.g. granularity=day, range=3 sums everything across
-// the last 3 days (today plus the 2 before it), not just today alone.
+// own Daily/Weekly/Monthly/Yearly tabs. For each granularity the user picks
+// any set of specific periods (e.g. Aug 3 + Aug 9 + Aug 20, not necessarily
+// consecutive) via a multi-select checkbox dropdown, and the team totals sum
+// across exactly those chosen periods.
 let teamBannerGranularity = 'day';
-let teamBannerRangeN = 1;
 function setTeamBannerGranularity(val){ teamBannerGranularity = val; renderTeamOverviewBanner(); }
-function setTeamBannerRangeN(val){
-  const n = Math.max(1, Math.min(60, parseInt(val,10)||1));
-  teamBannerRangeN = n;
-  renderTeamOverviewBanner();
+// Every date-ish value (target delivery, actual delivery, last-step
+// completion) that could ever matter to the team banner, so the dropdown
+// always has real periods to pick from (plus today's own period).
+function getTeamPeriodOptions(granularity){
+  const items = activeItems();
+  const keys = new Set();
+  items.forEach(it=>{
+    if(it.targetDelivery) keys.add(periodKey(it.targetDelivery, granularity));
+    if(it.actualDeliveryDate) keys.add(periodKey(it.actualDeliveryDate, granularity));
+    const lastProcessId = it.route[it.route.length-1];
+    const completedAt = it.routeCompletedAt && it.routeCompletedAt[lastProcessId];
+    if(completedAt) keys.add(periodKey(completedAt, granularity));
+  });
+  keys.add(periodKey(new Date().toISOString().slice(0,10), granularity));
+  return [...keys].sort().reverse().map(k=>({ value:k, label: periodLabel(k, granularity) }));
 }
-// Returns the inclusive [startStr,endStr] date-only (YYYY-MM-DD) window
-// covering the last `n` periods of the given granularity, ending with the
-// period that contains today. n=1 == just the current period.
-function periodRangeBounds(granularity, n){
-  const today = new Date();
-  let endStr, startDate;
-  if(granularity==='week'){
-    const weekStartStr = isoWeekStart(today.toISOString().slice(0,10));
-    const weekStart = new Date(weekStartStr+'T00:00:00');
-    const weekEnd = new Date(weekStart); weekEnd.setDate(weekEnd.getDate()+6);
-    endStr = weekEnd.toISOString().slice(0,10);
-    startDate = new Date(weekStart); startDate.setDate(startDate.getDate()-7*(n-1));
-  }else if(granularity==='month'){
-    const y=today.getFullYear(), m=today.getMonth();
-    endStr = new Date(y, m+1, 0).toISOString().slice(0,10);
-    startDate = new Date(y, m-(n-1), 1);
-  }else if(granularity==='year'){
-    const y = today.getFullYear();
-    endStr = new Date(y,11,31).toISOString().slice(0,10);
-    startDate = new Date(y-(n-1), 0, 1);
-  }else{ // day
-    endStr = today.toISOString().slice(0,10);
-    startDate = new Date(today); startDate.setDate(startDate.getDate()-(n-1));
-  }
-  return { startStr: startDate.toISOString().slice(0,10), endStr };
-}
-function inRange(dateStr, startStr, endStr){
-  if(!dateStr) return false;
-  const d = dateStr.slice(0,10);
-  return d>=startStr && d<=endStr;
+function inSelectedPeriods(dateStr, granularity, selectedSet){
+  if(!dateStr || !selectedSet || selectedSet.size===0) return false;
+  return selectedSet.has(periodKey(dateStr, granularity));
 }
 // Team performance, scoped to items whose last-step completion falls inside
-// the selected date window (same item-level "did it ship by its own Target
-// Delivery Date" definition as computeTeamOverallPerformance, just windowed).
-function computeTeamPerformanceInRange(startStr, endStr){
+// one of the chosen periods (same item-level "did it ship by its own Target
+// Delivery Date" definition as computeTeamOverallPerformance, just filtered).
+function computeTeamPerformanceInRange(granularity, selectedSet){
   const items = activeItems().filter(it=>itemCategory(it)==='done' && it.targetDelivery);
   let onTime=0, late=0;
   items.forEach(it=>{
     const lastProcessId = it.route[it.route.length-1];
     const completedAt = it.routeCompletedAt && it.routeCompletedAt[lastProcessId];
-    if(!completedAt || !inRange(completedAt, startStr, endStr)) return;
+    if(!inSelectedPeriods(completedAt, granularity, selectedSet)) return;
     if(new Date(completedAt) <= new Date(it.targetDelivery+'T23:59:59')) onTime++; else late++;
   });
   const total = onTime+late;
   const pct = total ? Math.round(onTime/total*100) : null;
   return { onTime, late, total, pct };
 }
-// Items whose Target Delivery Date falls inside the window (regardless of
-// status) — how much was SUPPOSED to ship in this range.
-function computeTargetDeliveredInRange(startStr, endStr){
-  const items = activeItems().filter(it=>inRange(it.targetDelivery, startStr, endStr));
+// Items whose Target Delivery Date falls inside a chosen period (regardless
+// of status) — how much was SUPPOSED to ship in the chosen periods.
+function computeTargetDeliveredInRange(granularity, selectedSet){
+  const items = activeItems().filter(it=>inSelectedPeriods(it.targetDelivery, granularity, selectedSet));
   return { count: items.length, value: items.reduce((a,i)=>a+itemAmount(i),0) };
 }
-// Items actually marked delivered (actualDeliveryDate) inside the window —
-// what ACTUALLY shipped in this range.
-function computeActualDeliveredInRange(startStr, endStr){
-  const items = activeItems().filter(it=>inRange(it.actualDeliveryDate, startStr, endStr));
+// Items actually marked delivered (actualDeliveryDate) inside a chosen
+// period — what ACTUALLY shipped in the chosen periods.
+function computeActualDeliveredInRange(granularity, selectedSet){
+  const items = activeItems().filter(it=>inSelectedPeriods(it.actualDeliveryDate, granularity, selectedSet));
   return { count: items.length, value: items.reduce((a,i)=>a+itemAmount(i),0) };
 }
 function renderTeamOverviewBanner(){
   const wrap = document.getElementById('teamOverviewStats');
   if(!wrap) return;
-  const { startStr, endStr } = periodRangeBounds(teamBannerGranularity, teamBannerRangeN);
+  const periodId = 'teamPeriodSelect_'+teamBannerGranularity;
+  if(!multiSoState[periodId]){
+    // Default: the period containing today, so the banner behaves like
+    // "today / this week / this month / this year" until the user changes it.
+    multiSoState[periodId] = new Set([ periodKey(new Date().toISOString().slice(0,10), teamBannerGranularity) ]);
+  }
+  const selectedSet = getMultiSoSet(periodId);
   const activePeople = allPeople().length;
-  const perf = computeTeamPerformanceInRange(startStr, endStr);
-  const targetD = computeTargetDeliveredInRange(startStr, endStr);
-  const actualD = computeActualDeliveredInRange(startStr, endStr);
+  const perf = computeTeamPerformanceInRange(teamBannerGranularity, selectedSet);
+  const targetD = computeTargetDeliveredInRange(teamBannerGranularity, selectedSet);
+  const actualD = computeActualDeliveredInRange(teamBannerGranularity, selectedSet);
 
-  const rangeLabel = teamBannerRangeN===1
-    ? GRANULARITY_LABELS[teamBannerGranularity]
-    : `Huling ${teamBannerRangeN} ${({day:'araw',week:'linggo',month:'buwan',year:'taon'})[teamBannerGranularity]}`;
-  const rangeSub = startStr===endStr ? formatDateLong(startStr) : `${formatDateLong(startStr)} – ${formatDateLong(endStr)}`;
+  const periodWord = ({day:'araw',week:'linggo',month:'buwan',year:'taon'})[teamBannerGranularity];
+  const periodOptions = getTeamPeriodOptions(teamBannerGranularity);
+  const rangeLabel = selectedSet.size===0
+    ? `Walang napiling ${periodWord}`
+    : selectedSet.size===1
+      ? periodLabel([...selectedSet][0], teamBannerGranularity)
+      : `${selectedSet.size} ${periodWord}`;
+  const rangeSub = selectedSet.size===0
+    ? `Wala pang napiling ${periodWord} — pumili sa dropdown sa ibaba.`
+    : [...selectedSet].sort().reverse().map(k=>periodLabel(k, teamBannerGranularity)).join(', ');
 
   const tabsHtml = Object.keys(GRANULARITY_LABELS).map(g=>
     `<div class="tab" style="color:${g===teamBannerGranularity?'#fff':'#f0d9e0'};border-bottom-color:${g===teamBannerGranularity?'#fff':'transparent'};padding:6px 12px;font-size:12.5px;" onclick="setTeamBannerGranularity('${g}')">${GRANULARITY_LABELS[g]}</div>`
   ).join('');
-  const rangeOptions = [1,2,3,5,7,10,14,30].map(n=>`<option value="${n}" ${n===teamBannerRangeN?'selected':''}>${n}</option>`).join('');
 
   const card = (icon, num, lbl, sub, accentBg) => `
     <div class="stat-card-lg" style="background:${accentBg};border:1px solid rgba(255,255,255,.25);box-shadow:0 4px 14px rgba(0,0,0,.18);">
@@ -3247,13 +3245,17 @@ function renderTeamOverviewBanner(){
       ${card('📅', targetD.count, `Target Delivered Items (${rangeLabel})`, fmtPHP(targetD.value), 'rgba(37,99,168,.28)')}
       ${card('✅', actualD.count, `Actual Delivered Items (${rangeLabel})`, fmtPHP(actualD.value), 'rgba(45,138,86,.28)')}
     </div>
-    <div style="margin-top:16px;text-align:center;color:#f0d9e0;font-size:11.5px;">Saklaw: ${rangeSub}</div>
-    <div class="tabs" style="justify-content:center;display:flex;border-bottom:1px solid rgba(255,255,255,.2);margin-top:10px;">${tabsHtml}</div>
-    <div style="margin-top:14px;display:flex;align-items:center;justify-content:center;gap:8px;color:#fff;font-size:12.5px;">
-      <label for="teamRangeN" style="display:inline;margin-bottom:0;font-size:12.5px;font-weight:700;color:#fff;white-space:nowrap;">Ilang ${({day:'araw',week:'linggo',month:'buwan',year:'taon'})[teamBannerGranularity]} isasama sa sum:</label>
-      <select id="teamRangeN" onchange="setTeamBannerRangeN(this.value)" style="width:auto;min-width:0;border-radius:8px;border:1px solid rgba(255,255,255,.4);background:rgba(255,255,255,.18);color:#fff;padding:5px 14px;font-weight:700;">${rangeOptions}</select>
+    <div class="tabs" style="justify-content:center;display:flex;border-bottom:1px solid rgba(255,255,255,.2);margin-top:16px;">${tabsHtml}</div>
+    <div style="margin-top:14px;display:flex;align-items:center;justify-content:center;gap:8px;color:#fff;font-size:12.5px;flex-wrap:wrap;">
+      <label style="display:inline;margin-bottom:0;font-size:12.5px;font-weight:700;color:#fff;white-space:nowrap;">Pumili ng ${periodWord} na isasama sa sum:</label>
+      <div class="multiso" id="${periodId}_wrap" style="min-width:220px;">
+        <button type="button" class="multiso-btn" id="${periodId}_btn" onclick="toggleMultiSoPanel('${periodId}')" style="background:rgba(255,255,255,.18);border-color:rgba(255,255,255,.4);color:#fff;">…</button>
+        <div class="multiso-panel" id="${periodId}_panel" style="display:none;"></div>
+      </div>
     </div>
+    <div style="margin-top:10px;text-align:center;color:#f0d9e0;font-size:11.5px;">Saklaw: ${escapeHtml(rangeSub)}</div>
   `;
+  populateMultiSoDropdown(periodId, periodOptions, 'renderTeamOverviewBanner', 'Pumili ng '+periodWord, periodWord, 'Wala pang datos.');
 }
 
 /* ---------- Detailed per-person profile (click a scorecard to open) ---------- */
