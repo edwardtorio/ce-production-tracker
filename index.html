@@ -4687,7 +4687,7 @@ function addItemRow(prefill, existingId){
   div.innerHTML = `
     <div class="item-index-badge">Item</div>
     <div class="item-row">
-      <input type="text" placeholder="Item code" class="f-code" value="${prefill?prefill.code:''}" oninput="scheduleSaveDraft('${id}')">
+      <input type="text" placeholder="Item code" class="f-code" value="${prefill?prefill.code:''}" oninput="scheduleSaveDraft('${id}')" onchange="checkAndSuggestReference('${id}')">
       <input type="text" placeholder="Description" class="f-desc" value="${prefill?prefill.desc:''}" oninput="scheduleSaveDraft('${id}')" onchange="checkAndSuggestReference('${id}')">
       <input type="number" placeholder="Qty" class="f-qty" value="${prefill?prefill.qty:''}" oninput="renderPartsListTable('${id}'); scheduleSaveDraft('${id}')">
       <input type="text" placeholder="Unit" class="f-unit" value="${prefill?prefill.unit:'pc'}" oninput="scheduleSaveDraft('${id}')">
@@ -4945,12 +4945,19 @@ async function detectSubAssyFromFile(rowId, file){
 // Only fills in when the row's own route/parts are still empty, so it never
 // overwrites something the person has already set up themselves.
 function normalizeMatchText(s){ return (s||'').trim().toLowerCase().replace(/\s+/g,' '); }
-function findMatchingReferenceItem(description, drawingLink){
+function findMatchingReferenceItem(description, drawingLink, itemCode){
   const descNorm = normalizeMatchText(description);
   const linkNorm = normalizeMatchText(drawingLink);
+  const codeNorm = normalizeMatchText(itemCode);
   let candidates = [];
   if(linkNorm){
     candidates = ITEMS.filter(it => normalizeMatchText(it.drawingLink) === linkNorm && ((it.route&&it.route.length) || (it.partsList&&it.partsList.length)));
+  }
+  // Item code is usually the most specific/unique identifier a part has, so
+  // it's checked before description (a description alone can be reused
+  // across genuinely different parts more easily than a code is).
+  if(candidates.length===0 && codeNorm){
+    candidates = ITEMS.filter(it => normalizeMatchText(it.itemCode) === codeNorm && ((it.route&&it.route.length) || (it.partsList&&it.partsList.length)));
   }
   if(candidates.length===0 && descNorm){
     candidates = ITEMS.filter(it => normalizeMatchText(it.description) === descNorm && ((it.route&&it.route.length) || (it.partsList&&it.partsList.length)));
@@ -4962,9 +4969,10 @@ function findMatchingReferenceItem(description, drawingLink){
 function checkAndSuggestReference(rowId){
   const wrap = document.getElementById('wrap_'+rowId);
   if(!wrap) return;
+  const itemCode = wrap.querySelector('.f-code').value;
   const description = wrap.querySelector('.f-desc').value;
   const firstDrawing = (drawingsState[rowId] && drawingsState[rowId][0]) ? drawingsState[rowId][0].url : '';
-  if(!description.trim() && !firstDrawing.trim()) return;
+  if(!itemCode.trim() && !description.trim() && !firstDrawing.trim()) return;
 
   // Untouched from creation (still exactly the default pre-selected route,
   // or empty) doesn't count as "already set up" — a real customization
@@ -4976,7 +4984,7 @@ function checkAndSuggestReference(rowId){
   const hasOwnParts = (partsListState[rowId]||[]).some(s=>s.name);
   if(hasOwnRoute || hasOwnParts) return; // don't clobber what the person already set up
 
-  const ref = findMatchingReferenceItem(description, firstDrawing);
+  const ref = findMatchingReferenceItem(description, firstDrawing, itemCode);
   if(!ref) return;
 
   if(ref.route && ref.route.length){
