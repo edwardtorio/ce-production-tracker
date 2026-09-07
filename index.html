@@ -131,8 +131,9 @@
   /* Progress by Process, v2 — bigger type and a per-stage breakdown (assigned,
      done, on track, delayed) shown right under the bar instead of just a lone
      percentage, so a stage's health is readable without opening the board. */
-  .stage-row-v2{margin-bottom:20px;padding-bottom:18px;border-bottom:2px solid var(--line);}
-  .stage-row-v2:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0;}
+  .stage-row-v2{border:1.5px solid var(--line);border-left:5px solid var(--accent-teal);border-radius:12px;
+    padding:14px 16px;margin-bottom:14px;background:#fff;box-shadow:0 4px 18px rgba(122,47,69,.16);}
+  .stage-row-v2:last-child{margin-bottom:0;}
   .stage-row-v2 .stage-row-top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
   .stage-row-v2 .name{flex:1 1 200px;min-width:160px;color:var(--steel-900);font-weight:700;font-size:13.5px;}
   .stage-row-v2 .track{flex:2 1 140px;max-width:260px;height:11px;background:var(--gray-bg);border-radius:10px;overflow:hidden;}
@@ -211,7 +212,7 @@
   table.mini-table .mini-bar .f{height:100%;background:var(--accent-teal);}
   table.mini-table tr.total-row td{border-top:2px solid var(--steel-800);background:var(--steel-50);}
 
-  .so-group{margin-bottom:20px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#fff;}
+  .so-group{margin-bottom:20px;border:1px solid var(--line);border-left:5px solid var(--accent-teal);border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 4px 18px rgba(122,47,69,.16);}
   .so-head{background:var(--steel-800);color:#fff;padding:12px 18px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;}
   .so-head .so-title{font-family:var(--font-display);font-size:15px;font-weight:600;}
   .so-head .so-meta{font-family:var(--font-mono);font-size:11.5px;color:#b9cdd3;}
@@ -312,7 +313,8 @@
   .person-chip{padding:7px 14px;border-radius:20px;border:1.5px solid var(--line);font-size:12.5px;font-weight:700;cursor:pointer;color:var(--steel-800);background:#fff;}
   .person-chip.active{background:var(--accent-teal);color:#fff;border-color:var(--accent-teal);}
   .task-card{display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid var(--line);
-    border-radius:10px;padding:12px 14px;margin-bottom:10px;background:#fff;}
+    border-left:5px solid var(--accent-teal);border-radius:10px;padding:12px 14px;margin-bottom:10px;background:#fff;
+    box-shadow:0 4px 18px rgba(122,47,69,.16);}
   .task-card .tinfo .so-tag{font-family:var(--font-mono);font-size:10.5px;color:var(--gray);}
   .task-card .tinfo .code{font-family:var(--font-mono);font-size:12px;color:var(--accent-teal-dk);font-weight:700;}
   .task-card .tinfo .desc{font-size:13px;color:var(--steel-900);margin-top:1px;}
