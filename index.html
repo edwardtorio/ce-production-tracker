@@ -336,6 +336,10 @@
   .task-card .tinfo .code{font-family:var(--font-mono);font-size:12px;color:var(--accent-teal-dk);font-weight:700;}
   .task-card .tinfo .desc{font-size:13px;color:var(--steel-900);margin-top:1px;}
   .task-card .tinfo .stagelbl{font-size:11px;color:var(--gray);margin-top:3px;}
+  /* Inside a person's profile popup, the item description is the main thing
+     they need to read at a glance, so it gets a bigger, bolder treatment
+     than the same class elsewhere in the app. */
+  .profile-tasklist .task-card .tinfo .desc{font-size:16px;font-weight:700;margin-top:3px;}
   .pill{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:78px;padding:7px 10px;border-radius:8px;
     font-size:11.5px;font-weight:700;cursor:pointer;border:1.5px solid transparent;transition:.12s;user-select:none;text-align:center;}
   .pill:active{transform:scale(.95);}
@@ -1190,6 +1194,15 @@ function formatDateLong(dateStr){
   const d = new Date(dateStr + 'T00:00:00');
   if(isNaN(d.getTime())) return dateStr;
   return d.toLocaleDateString('en-US', { month:'long', day:'numeric', year:'numeric' });
+}
+// Same as formatDateLong but keeps the time-of-day too — used for the
+// "nag-start" timestamp on a task card, which needs to show exactly when
+// (not just what day) someone tapped a task to Ongoing.
+function formatDateTimeLong(isoStr){
+  if(!isoStr) return '';
+  const d = new Date(isoStr);
+  if(isNaN(d.getTime())) return isoStr;
+  return d.toLocaleDateString('en-US', { month:'long', day:'numeric', year:'numeric' }) + ' · ' + d.toLocaleTimeString('en-US', { hour:'numeric', minute:'2-digit' });
 }
 
 // We can't store/host actual drawing files or images in this tool's shared
@@ -2377,6 +2390,11 @@ function ensureTimingFields(item){
   if(!item.routeStartedAt) item.routeStartedAt = {};
   if(!item.routeActiveSeconds) item.routeActiveSeconds = {};
   if(!item.routePaused) item.routePaused = {};
+  // Unlike routeStartedAt (the CURRENT running segment's clock, cleared once
+  // done/paused), this is a persistent "first tapped to Ongoing" timestamp
+  // that survives all the way to Done — shown on the task card so a process
+  // owner can see when they actually started and finished each task.
+  if(!item.routeStartTimestamp) item.routeStartTimestamp = {};
 }
 // Ends whatever segment is currently running (if any), banking its capped
 // elapsed time into routeActiveSeconds. Safe to call when nothing is
@@ -2677,6 +2695,7 @@ async function cycleStep(itemId, processId){
   let cappedWarning = false;
   if(newStatus==='ongoing'){
     startActiveSegment(item, processId); // first tap into ongoing starts the clock
+    if(!item.routeStartTimestamp[processId]) item.routeStartTimestamp[processId] = new Date().toISOString();
   }else if(newStatus==='done'){
     cappedWarning = finalizeActiveSegment(item, processId); // bank whatever was running
     delete item.routePaused[processId];
@@ -2850,6 +2869,7 @@ async function confirmReturn(itemId){
   ensureTimingFields(item);
   delete item.routeStartedAt[prevId]; // any running clock resets — resumes fresh once tapped to Ongoing again
   delete item.routePaused[prevId];
+  delete item.routeStartTimestamp[prevId]; // will be re-stamped fresh next time it's tapped to Ongoing
   item.lastReturn = { fromProcess: cur, toProcess: prevId, reason, timestamp: new Date().toISOString() };
   closeModal();
   renderBoard(); renderOverview();
@@ -3277,26 +3297,34 @@ function renderPersonActionableTasksHtml(name){
     const splitBadge = t.isSplit ? `<div class="hint" style="color:#6a5acd;font-weight:700;margin-top:4px;">🔗 May kasamang piraso sa ibang proseso (split)${t.item.splitNote ? ' — '+t.item.splitNote : ''}</div>` : '';
     const drawingsHtml = drawingLinkHtml(t.item);
     const partsListHtml = partsListTableHtml(t.item);
-    const editPartsBtn = `<button class="irc-edit" style="margin-top:6px;" title="I-edit ang Parts List ng item na ito" onclick="openEditItemModal('${t.item.id}')">✎ I-edit ang Parts List</button>`;
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
     const catchUpDate = catchUpDates[t.item.id];
     const origTarget = t.item.routeTargetDates[t.processId];
     const catchUpNote = (catchUpDate && catchUpDate !== origTarget)
       ? `<div class="hint" style="color:#a35d00;font-weight:700;margin-top:4px;" title="Catch-up target — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ Catch-up date: ${formatDateLong(catchUpDate)}</div>`
       : '';
+    // Persistent "started"/"finished" stamps for this task's current step —
+    // started is set the first time it's tapped to Ongoing (survives pauses
+    // and stays put even after Done), finished is the existing done timestamp.
+    // Shown right under the status pill so the process owner can see exactly
+    // when they began and when they wrapped up — same treatment applies to a
+    // partial/split-off piece, since each split keeps its own copy of these.
+    const stepStartedAt = t.item.routeStartTimestamp && t.item.routeStartTimestamp[t.processId];
+    const stepCompletedAt = t.item.routeCompletedAt && t.item.routeCompletedAt[t.processId];
+    const startStampHtml = stepStartedAt ? `<div class="hint" style="text-align:right;">🕐 Nag-start: ${formatDateTimeLong(stepStartedAt)}</div>` : '';
+    const doneStampHtml = stepCompletedAt ? `<div class="hint" style="text-align:right;color:var(--green);">✅ Natapos: ${formatDateLong(stepCompletedAt.slice(0,10))}</div>` : '';
     return `
     <div class="task-card ${cardClass}" style="${cardStyle}">
       <div class="tinfo">
-        <div class="so-tag">${escapeHtml(t.item.soNumber)} · ${escapeHtml(t.item.client)}</div>
+        <div class="so-tag">${escapeHtml(t.item.soNumber)} · ${escapeHtml(t.item.client)} · ${processLabel(t.processId)}</div>
         <div class="code">${escapeHtml(t.item.itemCode)}</div>
         <div class="desc">${escapeHtml(t.item.description)}</div>
-        <div class="stagelbl">${ownerDisplayLabel(t.processId, name)} · ${t.item.qty} ${t.item.unit}${t.overdue?' · <b style="color:var(--red);">OVERDUE</b>':''}${origTarget?' · target: '+formatDateLong(origTarget):''}</div>
+        <div class="stagelbl">${t.item.qty} ${t.item.unit}${t.overdue?' · <b style="color:var(--red);">OVERDUE</b>':''}${origTarget?' · target: '+formatDateLong(origTarget):''}</div>
         ${catchUpNote}
         ${returnNote}
         ${splitBadge}
         ${drawingsHtml}
         ${partsListHtml}
-        ${editPartsBtn}
         ${rawPartsHtml}
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
@@ -3305,6 +3333,8 @@ function renderPersonActionableTasksHtml(name){
           ${partialBtn}
           <div class="pill ${t.status}" onclick="cycleStep('${t.item.id}','${t.processId}');">${t.status}</div>
         </div>
+        ${startStampHtml}
+        ${doneStampHtml}
         <div style="display:flex;align-items:center;gap:6px;">${pauseResumeHtml(t.item, t.processId)}</div>
       </div>
     </div>`;
@@ -3783,13 +3813,14 @@ function renderScorecardProfile(name){
   box.innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px;">
       ${avatarHtml(name, 64)}
-      <div>
+      <div style="flex:1 1 auto;min-width:0;">
         <div style="font-family:var(--font-display);font-size:19px;font-weight:600;color:var(--steel-900);">${name}</div>
         <div class="hint" style="margin-top:2px;">${roles}</div>
       </div>
+      <button class="btn secondary btn-sm" style="flex:0 0 auto;" title="Isara" onclick="closeModal()">✕ Isara</button>
     </div>
     <div class="score-task-label" style="margin-top:10px;margin-bottom:8px;">Mga Tasks ni ${escapeHtml(name)}</div>
-    ${actionableTasksHtml}
+    <div class="profile-tasklist">${actionableTasksHtml}</div>
     <div class="cards-row" style="grid-template-columns:repeat(3,1fr);margin:14px 0;">
       <div class="stat-card"><div class="num" style="font-size:20px;">${totalCompleted}</div><div class="lbl">Total Done</div></div>
       <div class="stat-card"><div class="num" style="font-size:20px;color:var(--green);">${totalOnTime}</div><div class="lbl">On-time</div></div>
