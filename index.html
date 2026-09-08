@@ -169,15 +169,22 @@
     border-radius:8px;padding:10px 14px;margin-bottom:10px;font-weight:600;}
   .summary-line b{color:var(--accent-teal-dk);}
   .filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center;}
-  .ac-wrap{position:relative;flex:1;min-width:180px;}
-  .ac-wrap input{width:100%;}
-  .ac-list{position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:8px;
-    box-shadow:0 8px 20px rgba(18,32,43,.15);z-index:30;max-height:220px;overflow-y:auto;display:none;margin-top:4px;}
-  .ac-item{display:flex;align-items:center;gap:7px;padding:8px 12px;font-size:12.5px;color:var(--steel-800);cursor:pointer;border-bottom:1px solid var(--line);}
+  .ac-wrap{position:relative;flex:1 1 180px;min-width:0;max-width:100%;}
+  .ac-wrap > input{width:100%;}
+  .ac-list{position:absolute;top:100%;left:0;right:0;max-width:100%;background:#fff;border:1px solid var(--line);border-radius:8px;
+    box-shadow:0 8px 20px rgba(18,32,43,.15);z-index:30;max-height:220px;overflow-y:auto;overflow-x:hidden;display:none;margin-top:4px;}
+  .ac-item{display:flex;align-items:center;gap:7px;padding:8px 12px;font-size:12.5px;color:var(--steel-800);cursor:pointer;border-bottom:1px solid var(--line);max-width:100%;}
   .ac-item:last-child{border-bottom:none;}
   .ac-item:hover{background:var(--steel-100);}
   .ac-item b{color:var(--accent-teal-dk);}
-  .ac-item input[type=checkbox]{margin:0;flex:none;}
+  .ac-item input[type=checkbox]{margin:0;flex:none;width:auto;}
+  /* The label text is its own flex child (not raw text) specifically so it
+     can shrink and wrap — without this, a long "SO Number — Client" string
+     refuses to wrap inside the flex row and forces the whole suggestion
+     list (and the search box holding it) wider than the screen, which is
+     exactly what made the dropdown take over the layout and need
+     horizontal scrolling to read. */
+  .ac-label{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;word-break:break-word;}
   .ac-header{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;font-size:11px;font-weight:700;
     color:var(--gray);background:var(--steel-50);border-bottom:1px solid var(--line);position:sticky;top:0;}
   .ac-header a{color:var(--accent-teal-dk);text-decoration:none;cursor:pointer;margin-left:10px;}
@@ -2035,7 +2042,7 @@ function updateAutocomplete(inputId){
       ? escapeHtml(s.label.slice(0,idx))+'<b>'+escapeHtml(s.label.slice(idx,idx+val.length))+'</b>'+escapeHtml(s.label.slice(idx+val.length))
       : escapeHtml(s.label);
     const checked = pinned.has(s.value);
-    return `<label class="ac-item" onmousedown="event.preventDefault();"><input type="checkbox" ${checked?'checked':''} onchange="toggleSearchPin('${inputId}','${jsAttr(s.value)}')"> ${highlighted}</label>`;
+    return `<label class="ac-item" onmousedown="event.preventDefault();"><input type="checkbox" ${checked?'checked':''} onchange="toggleSearchPin('${inputId}','${jsAttr(s.value)}')"><span class="ac-label">${highlighted}</span></label>`;
   }).join('');
   list.style.display = 'block';
 }
