@@ -1949,10 +1949,24 @@ function rerunAcRender(inputId){
   const fnName = AC_RENDER_FN[inputId];
   if(fnName && typeof window[fnName]==='function') window[fnName]();
 }
-function getClientAndSoSuggestions(){
-  const set = new Set();
-  ITEMS.forEach(it=>{ if(it.client) set.add(it.client); if(it.soNumber) set.add(it.soNumber); });
-  return [...set];
+// One suggestion per distinct SO (soNumber + client combo), shown as its
+// full "SO Number — Client" identity — e.g. typing "wilcon" surfaces
+// "Wilcon PO 16 — Wilcon", "Wilcon PO 17 — Wilcon", etc. as separate,
+// individually-checkable rows (matched against either the SO number or the
+// client text) instead of one flat "Wilcon" entry that hides which POs
+// exist. The checked value is the SO number itself, so picking one filters
+// down to exactly that SO everywhere matchesSearch()/soNumber-based
+// filtering is used.
+function getSearchSuggestions(){
+  const map = new Map(); // soNumber -> {value, label}
+  ITEMS.forEach(it=>{
+    if(!it.soNumber) return;
+    if(!map.has(it.soNumber)) map.set(it.soNumber, { value: it.soNumber, label: it.client ? `${it.soNumber} — ${it.client}` : it.soNumber });
+  });
+  return [...map.values()];
+}
+function naturalCompare(a, b){
+  return a.localeCompare(b, undefined, {numeric:true, sensitivity:'base'});
 }
 function setupAutocomplete(){
   AUTOCOMPLETE_TARGETS.forEach(id=>{
@@ -1984,7 +1998,9 @@ function renderSearchPins(inputId){
   const pinsEl = document.getElementById(inputId+'_pins');
   if(!pinsEl) return;
   const pinned = [...getSearchPinned(inputId)];
-  pinsEl.innerHTML = pinned.map(v=>`<div class="ac-pin">${escapeHtml(v)}<span class="x" onclick="untoggleSearchPin('${inputId}','${jsAttr(v)}')">✕</span></div>`).join('');
+  const labelByValue = {};
+  getSearchSuggestions().forEach(s=>{ labelByValue[s.value] = s.label; });
+  pinsEl.innerHTML = pinned.map(v=>`<div class="ac-pin">${escapeHtml(labelByValue[v] || v)}<span class="x" onclick="untoggleSearchPin('${inputId}','${jsAttr(v)}')">✕</span></div>`).join('');
 }
 function updateAutocomplete(inputId){
   const input = document.getElementById(inputId);
@@ -1993,28 +2009,33 @@ function updateAutocomplete(inputId){
   renderSearchPins(inputId);
   const val = input.value.trim().toLowerCase();
   const pinned = getSearchPinned(inputId);
-  let matches = val ? getClientAndSoSuggestions().filter(v=>v.toLowerCase().includes(val)) : [];
+  const all = getSearchSuggestions();
+  let matches = val ? all.filter(s=>s.label.toLowerCase().includes(val)) : [];
   // Always keep already-picked suggestions visible/checkable in the list too,
   // even once the typed text no longer matches them, so nothing picked
   // silently disappears while the person keeps refining their search.
-  const matchSet = new Set(matches);
-  pinned.forEach(p=>{ if(!matchSet.has(p)){ matches.push(p); matchSet.add(p); } });
+  const matchValues = new Set(matches.map(s=>s.value));
+  all.forEach(s=>{ if(pinned.has(s.value) && !matchValues.has(s.value)){ matches.push(s); matchValues.add(s.value); } });
   if(matches.length===0){ list.style.display='none'; list.innerHTML=''; return; }
   matches.sort((a,b)=>{
-    const ap = pinned.has(a), bp = pinned.has(b);
+    const ap = pinned.has(a.value), bp = pinned.has(b.value);
     if(ap && !bp) return -1;
     if(bp && !ap) return 1;
-    return a.localeCompare(b);
+    return naturalCompare(a.value, b.value);
   });
-  matches = matches.slice(0, 20);
+  // Generous cap — enough to cover a full run of POs (16, 17, 18, 19, 20…)
+  // for one client without hiding any of them.
+  matches = matches.slice(0, 60);
   const header = pinned.size>0
     ? `<div class="ac-header"><span>${pinned.size} napili</span><span><a onmousedown="event.preventDefault();" onclick="clearSearchPins('${inputId}')">I-clear</a><a onmousedown="event.preventDefault();" onclick="closeAcList('${inputId}')">Tapos ✓</a></span></div>`
     : '';
-  list.innerHTML = header + matches.map(m=>{
-    const idx = m.toLowerCase().indexOf(val);
-    const highlighted = (val && idx>=0) ? m.slice(0,idx)+'<b>'+m.slice(idx,idx+val.length)+'</b>'+m.slice(idx+val.length) : escapeHtml(m);
-    const checked = pinned.has(m);
-    return `<label class="ac-item" onmousedown="event.preventDefault();"><input type="checkbox" ${checked?'checked':''} onchange="toggleSearchPin('${inputId}','${jsAttr(m)}')"> ${highlighted}</label>`;
+  list.innerHTML = header + matches.map(s=>{
+    const idx = val ? s.label.toLowerCase().indexOf(val) : -1;
+    const highlighted = idx>=0
+      ? escapeHtml(s.label.slice(0,idx))+'<b>'+escapeHtml(s.label.slice(idx,idx+val.length))+'</b>'+escapeHtml(s.label.slice(idx+val.length))
+      : escapeHtml(s.label);
+    const checked = pinned.has(s.value);
+    return `<label class="ac-item" onmousedown="event.preventDefault();"><input type="checkbox" ${checked?'checked':''} onchange="toggleSearchPin('${inputId}','${jsAttr(s.value)}')"> ${highlighted}</label>`;
   }).join('');
   list.style.display = 'block';
 }
