@@ -1772,8 +1772,17 @@ function renderTeamWorkload(){
   Object.keys(personMap).sort().forEach(name=>{
     const d = personMap[name];
     const isActive = name===selectedPerson;
-    wHtml += `<div class="person-card" style="cursor:pointer;${isActive?'border-color:var(--accent-teal);box-shadow:0 0 0 1px var(--accent-teal);':''}" onclick="selectPersonOverall('${jsAttr(name)}')">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">${avatarHtml(name,28)}<div class="pname">${name}</div></div>
+    // Same on-time-vs-assigned performance metric shown in the person's own
+    // scorecard detail (computePersonOverallPerformance) — surfaced here too,
+    // as a round badge top-right of the card, so it's visible at a glance
+    // without having to tap into each person's profile.
+    const perf = computePersonOverallPerformance(name);
+    const perfBadge = perf.pct===null ? '' : `<div style="position:absolute;top:10px;right:10px;width:34px;height:34px;border-radius:50%;
+        background:${perf.pct>=90?'var(--green)':perf.pct>=70?'var(--amber)':'var(--red)'};color:#fff;
+        display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;" title="${perf.onTime} on-time / ${perf.assigned} assigned">${perf.pct}%</div>`;
+    wHtml += `<div class="person-card" style="cursor:pointer;position:relative;${isActive?'border-color:var(--accent-teal);box-shadow:0 0 0 1px var(--accent-teal);':''}" onclick="selectPersonOverall('${jsAttr(name)}')">
+      ${perfBadge}
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;padding-right:${perf.pct===null?'0':'38px'};">${avatarHtml(name,28)}<div class="pname">${name}</div></div>
       <div class="prole">${[...d.roles].join(', ')}</div>
       <div class="ptasks"><span class="q">${d.q} queue</span> · <span class="o">${d.o} ongoing</span> · <span class="d">${d.d} done</span>${d.na?` · <span style="color:var(--amber);">${d.na} need assign</span>`:''}</div>
       <div class="hint" style="margin-top:6px;" onclick="event.stopPropagation(); openScorecardProfile('${jsAttr(name)}')">👤 Buksan ang buong profile</div>
@@ -2255,19 +2264,26 @@ function nextStatus(cur){ const idx = STATUS_CYCLE.indexOf(cur); return STATUS_C
 
 // Company-wide Done / On Track / Ongoing / Delayed summary, shown at the top
 // of the Production Board (maroon panel, matching the Team Scorecard).
-// "On track" = not yet started (still queued at its first step) and not
-// past its own target date; "ongoing" = actively being worked on (not its
-// first queued step) and not past its own target date; "delayed" =
-// currently past its own target date, regardless of whether it's queued or
-// ongoing. All four buckets are mutually exclusive and exhaustive.
+// "Ongoing" here means the item's CURRENT step literally has routeStatus
+// 'ongoing' — i.e. someone has actually tapped into it, the same status My
+// Tasks shows for that person — regardless of whether it has also slipped
+// past its own target date. "Delayed" is an item that's past its own target
+// date AND is not being actively worked right now (still sitting queued) —
+// a stalled bottleneck, as opposed to work-in-progress that's simply
+// running behind. "On track" = not yet started, not overdue, not ongoing.
+// All four buckets are mutually exclusive and exhaustive.
 function renderLineItemsBreakdown(){
   const el = document.getElementById('breakdownRow');
   if(!el) return;
   const ITEMS_VIEW = activeItems();
   const doneItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
-  const delayedItems = ITEMS_VIEW.filter(isItemOverdueNow);
-  const onTrackItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='stuck' && !isItemOverdueNow(i));
-  const ongoingItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='ongoing' && !isItemOverdueNow(i));
+  const ongoingItems = ITEMS_VIEW.filter(i=>{
+    const cur = currentStepId(i);
+    return cur && i.routeStatus[cur]==='ongoing';
+  });
+  const ongoingIds = new Set(ongoingItems.map(i=>i.id));
+  const delayedItems = ITEMS_VIEW.filter(i=>isItemOverdueNow(i) && !ongoingIds.has(i.id));
+  const onTrackItems = ITEMS_VIEW.filter(i=>itemCategory(i)!=='done' && !ongoingIds.has(i.id) && !isItemOverdueNow(i));
   const sumQty = arr => arr.reduce((a,i)=>a+Number(i.qty||0),0);
   const sumVal = arr => arr.reduce((a,i)=>a+itemAmount(i),0);
   const totalItemsForPct = ITEMS_VIEW.length || 1;
