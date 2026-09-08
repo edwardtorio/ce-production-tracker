@@ -678,11 +678,8 @@
     </div>
     <div class="panel">
       <h3>Team Workload (queue / ongoing / done)</h3>
-      <div class="hint" style="margin-bottom:10px;">I-tap ang pangalan/card ninyo dito para makita ang inyong tasks at performance sa ibaba.</div>
+      <div class="hint" style="margin-bottom:10px;">I-tap ang pangalan/card ninyo dito para buksan ang inyong profile — makikita doon ang inyong mga tasks at performance.</div>
       <div class="workload-grid" id="workloadGrid"></div>
-    </div>
-    <div class="panel">
-      <div id="myTasks"></div>
     </div>
   </div>
 
@@ -1896,7 +1893,7 @@ function renderTeamWorkload(){
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;padding-right:${perf.pct===null?'0':'38px'};">${avatarHtml(name,28)}<div class="pname">${name}</div></div>
       <div class="prole">${[...d.roles].join(', ')}</div>
       <div class="ptasks"><span class="q">${d.q} queue</span> · <span class="o">${d.o} ongoing</span> · <span class="d">${d.d} done</span>${d.na?` · <span style="color:var(--amber);">${d.na} need assign</span>`:''}</div>
-      <div class="hint" style="margin-top:6px;" onclick="event.stopPropagation(); openScorecardProfile('${jsAttr(name)}')">👤 Buksan ang buong profile</div>
+      <div class="hint" style="margin-top:6px;">👤 I-tap para buksan ang profile</div>
     </div>`;
   });
   wrap.innerHTML = wHtml || `<div class="hint">Wala pang naka-assign na tao.</div>`;
@@ -2426,6 +2423,7 @@ async function pauseStep(itemId, processId){
   item.routePaused[processId] = true;
   renderBoard(); renderOverview();
   if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await saveItem(item);
   showToast(wasCapped
     ? `${item.itemCode} · ${processLabel(processId)} paused — ${MAX_SEGMENT_HOURS}+ oras na tumakbo nang walang pause, na-cap na lang sa ${MAX_SEGMENT_HOURS}h. Paki-verify ang totoong oras.`
@@ -2440,6 +2438,7 @@ async function resumeStep(itemId, processId){
   startActiveSegment(item, processId);
   renderBoard(); renderOverview();
   if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await saveItem(item);
   showToast(`${item.itemCode} · ${processLabel(processId)} resumed.`);
 }
@@ -2696,6 +2695,7 @@ async function cycleStep(itemId, processId){
   renderBoard();
   renderOverview();
   if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await saveItem(item);
   const nextId = currentStepId(item);
   let msg = newStatus==='done'
@@ -2780,6 +2780,7 @@ async function confirmPartial(itemId, processId){
   closeModal();
   renderBoard(); renderOverview();
   if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await save();
   const nextId = currentStepId(clone);
   let msg = `${doneQty} ${item.unit} ng ${item.itemCode} → moved to ${nextId?processLabel(nextId):'Finished Goods'}. ${item.qty} ${item.unit} pa ang natitira sa ${processLabel(processId)}.`;
@@ -2810,6 +2811,7 @@ async function assignStep(itemId, processId, name){
   closeModal();
   renderBoard(); renderOverview();
   if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await save();
   showToast(`${item.itemCode} · ${processLabel(processId)} → inassign kay ${name}`);
 }
@@ -2852,6 +2854,7 @@ async function confirmReturn(itemId){
   closeModal();
   renderBoard(); renderOverview();
   if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await save();
   showToast(`${item.itemCode} ibinalik sa ${processLabel(prevId)}`);
 }
@@ -2860,6 +2863,7 @@ async function confirmReturn(itemId){
 function closeModal(){
   document.getElementById('modalOverlay').classList.remove('show');
   document.getElementById('modalBox').innerHTML = '';
+  profileModalOpenFor = null;
 }
 document.getElementById('modalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='modalOverlay') closeModal(); });
 
@@ -3066,7 +3070,7 @@ async function saveEditItem(itemId){
   it.routeTargetDates = computeRouteTargetDates(orderedRoute, it.dateUploaded, it.targetDelivery);
   it.updatedAt = new Date().toISOString(); // this edit is now the "latest/corrected" version for future auto-fill matching
   closeModal(); renderBoard(); renderOverview();
-  if(document.getElementById('view-team').classList.contains('active')){ renderMyTasks(); }
+  renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await save();
   showToast(`Updated ${it.itemCode}`);
 }
@@ -3207,25 +3211,30 @@ function computeTeamOverallPerformance(){
   return { onTime, late, total, pct };
 }
 function renderTeam(){
-  renderMyTasks();
   renderTeamOverviewBanner();
   renderTeamWorkload();
 }
-function selectPersonOverall(name){ selectedPerson = name; selectedProcess = null; renderTeam(); rememberTabState(); }
-function selectPerson(p, processId){ selectedPerson = p; selectedProcess = processId; renderTeam(); rememberTabState(); }
-function renderMyTasks(){
-  const box = document.getElementById('myTasks');
-  if(!selectedPerson){ box.innerHTML = `<div class="empty-state">I-tap ang pangalan/card mo sa "Team Workload" sa itaas para makita ang tasks at performance mo.</div>`; return; }
+// Tapping a person's card no longer expands an inline section on this page —
+// it opens their profile popup directly, so every process owner sees only
+// their own tasks in their own popup even if several people are using the
+// board around the same time; nothing about "who's selected" is shared
+// beyond that one person's own device/session.
+function selectPersonOverall(name){ selectedProcess = null; openScorecardProfile(name); }
+function selectPerson(p, processId){ selectedProcess = processId; openScorecardProfile(p); }
+// Builds the actionable task-card list (with the status pill, return/partial
+// buttons, drawings, parts list, catch-up date, etc.) for one person — used
+// inside their profile popup (see renderScorecardProfile).
+function renderPersonActionableTasksHtml(name){
   let tasks = [], needsAssign = [];
   const catchUpDates = computeCatchUpSchedule();
   activeItems().forEach(it=>{
     const cur = currentStepId(it);
     if(cur===null) return;
     if(selectedProcess && cur !== selectedProcess) return; // when a specific process is chosen, don't mix in the person's other processes
-    if(!ownersFor(cur).includes(selectedPerson)) return;
+    if(!ownersFor(cur).includes(name)) return;
     if(needsAssignment(it)){
       needsAssign.push({item:it, processId:cur});
-    }else if(currentAssignee(it)===selectedPerson){
+    }else if(currentAssignee(it)===name){
       tasks.push({item:it, processId:cur, status: it.routeStatus[cur], overdue: isItemOverdueNow(it), isSplit: isPartOfSplit(it)});
     }
   });
@@ -3238,10 +3247,6 @@ function renderMyTasks(){
   });
 
   let html = '';
-  // Performance/Completed Value summary used to render inline right here —
-  // it now lives only inside the "Buksan ang buong profile" popup (see
-  // renderScorecardProfile), so this page just shows the actionable task list.
-  html += `<div class="score-task-label" style="margin-bottom:8px;">Mga Tasks ni ${selectedPerson.split(' ')[0]}</div>`;
   if(needsAssign.length){
     html += `<div class="hint" style="margin-bottom:8px;font-weight:700;color:var(--amber);">⚠ Kailangan munang i-assign (maraming posibleng tao dito):</div>`;
     html += needsAssign.map(t=>`
@@ -3285,7 +3290,7 @@ function renderMyTasks(){
         <div class="so-tag">${escapeHtml(t.item.soNumber)} · ${escapeHtml(t.item.client)}</div>
         <div class="code">${escapeHtml(t.item.itemCode)}</div>
         <div class="desc">${escapeHtml(t.item.description)}</div>
-        <div class="stagelbl">${ownerDisplayLabel(t.processId, selectedPerson)} · ${t.item.qty} ${t.item.unit}${t.overdue?' · <b style="color:var(--red);">OVERDUE</b>':''}${origTarget?' · target: '+formatDateLong(origTarget):''}</div>
+        <div class="stagelbl">${ownerDisplayLabel(t.processId, name)} · ${t.item.qty} ${t.item.unit}${t.overdue?' · <b style="color:var(--red);">OVERDUE</b>':''}${origTarget?' · target: '+formatDateLong(origTarget):''}</div>
         ${catchUpNote}
         ${returnNote}
         ${splitBadge}
@@ -3305,7 +3310,14 @@ function renderMyTasks(){
     </div>`;
   }).join('');
   }
-  box.innerHTML = html;
+  return html;
+}
+// Kept so every existing call site that refreshes the team view after a
+// status/assignment change keeps working unchanged — the actionable task
+// list it used to redraw into #myTasks now lives inside the profile popup,
+// so this just keeps that popup in sync (if one happens to be open) instead.
+function renderMyTasks(){
+  refreshProfileModalIfOpen();
 }
 
 /* ---------- Team Scorecards ---------- */
@@ -3682,8 +3694,18 @@ function getPersonTaskRows(name){
   });
   return rows;
 }
+// Tracks which person's profile popup is currently open (or null if none) so
+// that a status change elsewhere (a pill click inside the popup itself, or
+// any other save/cycle that redraws the team view) can refresh it in place
+// instead of leaving it showing stale data.
+let profileModalOpenFor = null;
+function refreshProfileModalIfOpen(){
+  if(profileModalOpenFor) renderScorecardProfile(profileModalOpenFor);
+}
 function openScorecardProfile(name){
   profilePeriodState = { granularity:'day', dateFilter:'' };
+  profileModalOpenFor = name;
+  selectedPerson = name;
   renderScorecardProfile(name);
 }
 function renderScorecardProfile(name){
@@ -3755,6 +3777,8 @@ function renderScorecardProfile(name){
     </div>`;
   }).join('');
 
+  const actionableTasksHtml = renderPersonActionableTasksHtml(name);
+
   const box = document.getElementById('modalBox');
   box.innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px;">
@@ -3764,6 +3788,8 @@ function renderScorecardProfile(name){
         <div class="hint" style="margin-top:2px;">${roles}</div>
       </div>
     </div>
+    <div class="score-task-label" style="margin-top:10px;margin-bottom:8px;">Mga Tasks ni ${escapeHtml(name)}</div>
+    ${actionableTasksHtml}
     <div class="cards-row" style="grid-template-columns:repeat(3,1fr);margin:14px 0;">
       <div class="stat-card"><div class="num" style="font-size:20px;">${totalCompleted}</div><div class="lbl">Total Done</div></div>
       <div class="stat-card"><div class="num" style="font-size:20px;color:var(--green);">${totalOnTime}</div><div class="lbl">On-time</div></div>
