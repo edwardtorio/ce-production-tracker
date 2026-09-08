@@ -173,10 +173,21 @@
   .ac-wrap input{width:100%;}
   .ac-list{position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:8px;
     box-shadow:0 8px 20px rgba(18,32,43,.15);z-index:30;max-height:220px;overflow-y:auto;display:none;margin-top:4px;}
-  .ac-item{padding:8px 12px;font-size:12.5px;color:var(--steel-800);cursor:pointer;border-bottom:1px solid var(--line);}
+  .ac-item{display:flex;align-items:center;gap:7px;padding:8px 12px;font-size:12.5px;color:var(--steel-800);cursor:pointer;border-bottom:1px solid var(--line);}
   .ac-item:last-child{border-bottom:none;}
   .ac-item:hover{background:var(--steel-100);}
   .ac-item b{color:var(--accent-teal-dk);}
+  .ac-item input[type=checkbox]{margin:0;flex:none;}
+  .ac-header{display:flex;justify-content:space-between;align-items:center;padding:6px 12px;font-size:11px;font-weight:700;
+    color:var(--gray);background:var(--steel-50);border-bottom:1px solid var(--line);position:sticky;top:0;}
+  .ac-header a{color:var(--accent-teal-dk);text-decoration:none;cursor:pointer;margin-left:10px;}
+  .ac-header a:hover{text-decoration:underline;}
+  .ac-pins{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;width:100%;}
+  .ac-pin{display:inline-flex;align-items:center;gap:5px;background:var(--accent-teal);color:#fff;border-radius:20px;
+    padding:4px 6px 4px 11px;font-size:11.5px;font-weight:700;}
+  .ac-pin span.x{cursor:pointer;background:rgba(255,255,255,.28);border-radius:50%;width:16px;height:16px;
+    display:inline-flex;align-items:center;justify-content:center;font-size:11px;line-height:1;}
+  .ac-pin span.x:hover{background:rgba(255,255,255,.45);}
   .drawing-menu-wrap{position:relative;display:inline-block;}
   .drawing-menu{position:absolute;top:100%;left:0;background:#fff;border:1px solid var(--line);border-radius:8px;
     box-shadow:0 8px 20px rgba(18,32,43,.15);z-index:40;display:none;min-width:230px;margin-top:4px;overflow:hidden;}
@@ -643,7 +654,7 @@
       <div class="filter-row" style="margin-bottom:0;">
         <input type="text" id="boardSoSearch" placeholder="🔍 Maghanap ng SO Number o Client…" oninput="renderBoard()">
         <div class="multiso" id="boardSoSelect_wrap"><button type="button" class="multiso-btn" id="boardSoSelect_btn" onclick="toggleMultiSoPanel('boardSoSelect')">Lahat ng SO ▾</button><div class="multiso-panel" id="boardSoSelect_panel" style="display:none;"></div></div>
-        <button class="btn secondary btn-sm" id="boardSoSearchClear" onclick="document.getElementById('boardSoSearch').value=''; multiSoClear('boardSoSelect', renderBoard);">Clear</button>
+        <button class="btn secondary btn-sm" id="boardSoSearchClear" onclick="document.getElementById('boardSoSearch').value=''; clearSearchPins('boardSoSearch'); multiSoClear('boardSoSelect', renderBoard);">Clear</button>
       </div>
       <div class="hint" style="margin-top:6px;">Kapag walang laman ang search, ang mga SO na tapos na (lahat ng item ay Finish Good) ay nasa pinaka-baba; ang mga may ongoing/on-queue pa ay nasa taas, at ang pinakamatagal nang naka-upload na hindi pa tapos ang unang lalabas.</div>
     </div>
@@ -1900,9 +1911,44 @@ function matchesSearch(it, term){
 
 /* ---------- Autocomplete suggestions for search boxes ---------- */
 // So the person never has to type a full client name — as soon as a few
-// letters are typed, matching Client names / SO Numbers appear as a clickable
-// dropdown list to pick from.
+// letters are typed, matching Client names / SO Numbers appear as a
+// checkbox list to pick from. More than one suggestion can be checked at
+// once (e.g. "wil" → Wilcon 16, Wilcon 17, Wilcon 18 all picked together) —
+// the list stays open across picks and only closes when the person clicks
+// away or taps "Tapos ✓"; picks persist as removable chips under the box
+// even after the list closes.
 const AUTOCOMPLETE_TARGETS = ['soSearch','progressSearch','finishedSearch','stuckSearch','browseSoSearch','boardSoSearch'];
+const AC_RENDER_FN = {
+  soSearch: 'renderSoSection',
+  progressSearch: 'renderProgressSection',
+  finishedSearch: 'renderFinishedSection',
+  stuckSearch: 'renderStuckSection',
+  boardSoSearch: 'renderBoard',
+  browseSoSearch: 'renderBrowseSo',
+};
+let searchPinned = {}; // inputId -> Set of picked suggestion strings (client name or SO number)
+function getSearchPinned(id){
+  if(!searchPinned[id]) searchPinned[id] = new Set();
+  return searchPinned[id];
+}
+// The terms that should actually drive filtering for a given search box:
+// whatever's been checked/pinned from the suggestion list, falling back to
+// the raw typed text when nothing's pinned yet.
+function activeSearchTerms(inputId){
+  const pinned = [...getSearchPinned(inputId)];
+  if(pinned.length) return pinned;
+  const input = document.getElementById(inputId);
+  const v = input ? input.value.trim() : '';
+  return v ? [v] : [];
+}
+function matchesAnySearchTerm(it, terms){
+  if(!terms.length) return true;
+  return terms.some(t=>matchesSearch(it, t));
+}
+function rerunAcRender(inputId){
+  const fnName = AC_RENDER_FN[inputId];
+  if(fnName && typeof window[fnName]==='function') window[fnName]();
+}
 function getClientAndSoSuggestions(){
   const set = new Set();
   ITEMS.forEach(it=>{ if(it.client) set.add(it.client); if(it.soNumber) set.add(it.soNumber); });
@@ -1921,34 +1967,78 @@ function setupAutocomplete(){
     list.className = 'ac-list';
     list.id = id + '_ac';
     wrap.appendChild(list);
+    const pins = document.createElement('div');
+    pins.className = 'ac-pins';
+    pins.id = id + '_pins';
+    wrap.appendChild(pins);
     input.addEventListener('input', ()=>updateAutocomplete(id));
     input.addEventListener('focus', ()=>updateAutocomplete(id));
+    // Clicks inside the list (checkboxes, header links) call
+    // event.preventDefault() on mousedown so the input never loses focus —
+    // that's what keeps the list open across multiple picks. Blur only
+    // fires for an actual click-away, which is when we close it.
     input.addEventListener('blur', ()=>setTimeout(()=>{ list.style.display='none'; }, 150));
   });
+}
+function renderSearchPins(inputId){
+  const pinsEl = document.getElementById(inputId+'_pins');
+  if(!pinsEl) return;
+  const pinned = [...getSearchPinned(inputId)];
+  pinsEl.innerHTML = pinned.map(v=>`<div class="ac-pin">${escapeHtml(v)}<span class="x" onclick="untoggleSearchPin('${inputId}','${jsAttr(v)}')">✕</span></div>`).join('');
 }
 function updateAutocomplete(inputId){
   const input = document.getElementById(inputId);
   const list = document.getElementById(inputId+'_ac');
   if(!input || !list) return;
+  renderSearchPins(inputId);
   const val = input.value.trim().toLowerCase();
-  if(!val){ list.style.display='none'; list.innerHTML=''; return; }
-  const matches = getClientAndSoSuggestions()
-    .filter(v=>v.toLowerCase().includes(val) && v.toLowerCase()!==val)
-    .slice(0,8);
+  const pinned = getSearchPinned(inputId);
+  let matches = val ? getClientAndSoSuggestions().filter(v=>v.toLowerCase().includes(val)) : [];
+  // Always keep already-picked suggestions visible/checkable in the list too,
+  // even once the typed text no longer matches them, so nothing picked
+  // silently disappears while the person keeps refining their search.
+  const matchSet = new Set(matches);
+  pinned.forEach(p=>{ if(!matchSet.has(p)){ matches.push(p); matchSet.add(p); } });
   if(matches.length===0){ list.style.display='none'; list.innerHTML=''; return; }
-  list.innerHTML = matches.map(m=>{
+  matches.sort((a,b)=>{
+    const ap = pinned.has(a), bp = pinned.has(b);
+    if(ap && !bp) return -1;
+    if(bp && !ap) return 1;
+    return a.localeCompare(b);
+  });
+  matches = matches.slice(0, 20);
+  const header = pinned.size>0
+    ? `<div class="ac-header"><span>${pinned.size} napili</span><span><a onmousedown="event.preventDefault();" onclick="clearSearchPins('${inputId}')">I-clear</a><a onmousedown="event.preventDefault();" onclick="closeAcList('${inputId}')">Tapos ✓</a></span></div>`
+    : '';
+  list.innerHTML = header + matches.map(m=>{
     const idx = m.toLowerCase().indexOf(val);
-    const highlighted = idx>=0 ? m.slice(0,idx)+'<b>'+m.slice(idx,idx+val.length)+'</b>'+m.slice(idx+val.length) : m;
-    return `<div class="ac-item" onmousedown="event.preventDefault(); pickAutocomplete('${inputId}','${jsAttr(m)}')">${highlighted}</div>`;
+    const highlighted = (val && idx>=0) ? m.slice(0,idx)+'<b>'+m.slice(idx,idx+val.length)+'</b>'+m.slice(idx+val.length) : escapeHtml(m);
+    const checked = pinned.has(m);
+    return `<label class="ac-item" onmousedown="event.preventDefault();"><input type="checkbox" ${checked?'checked':''} onchange="toggleSearchPin('${inputId}','${jsAttr(m)}')"> ${highlighted}</label>`;
   }).join('');
   list.style.display = 'block';
 }
-function pickAutocomplete(inputId, value){
-  const input = document.getElementById(inputId);
-  if(!input) return;
-  input.value = value;
-  document.getElementById(inputId+'_ac').style.display = 'none';
-  input.dispatchEvent(new Event('input'));
+function toggleSearchPin(inputId, value){
+  const set = getSearchPinned(inputId);
+  if(set.has(value)) set.delete(value); else set.add(value);
+  updateAutocomplete(inputId);
+  rerunAcRender(inputId);
+}
+function untoggleSearchPin(inputId, value){
+  getSearchPinned(inputId).delete(value);
+  renderSearchPins(inputId);
+  updateAutocomplete(inputId);
+  rerunAcRender(inputId);
+}
+function clearSearchPins(inputId){
+  getSearchPinned(inputId).clear();
+  renderSearchPins(inputId);
+  updateAutocomplete(inputId);
+  rerunAcRender(inputId);
+}
+function closeAcList(inputId){
+  const list = document.getElementById(inputId+'_ac');
+  if(list) list.style.display = 'none';
 }
 
 /* ---------- Reusable multi-select SO-filter dropdown ----------
@@ -2102,9 +2192,9 @@ function renderSoSection(){
   const soOptions = [...new Set(list.map(s=>s.soNumber))].sort().map(v=>({value:v, label:v}));
   populateMultiSoDropdown('soFilterSelect', soOptions, 'renderSoSection', 'All SOs');
   const soSelected = getMultiSoSet('soFilterSelect');
-  const search = document.getElementById('soSearch').value.trim();
+  const searchTerms = activeSearchTerms('soSearch');
   const showAll = showAllFlags.so;
-  const shouldShow = showAll || !!search || soSelected.size>0;
+  const shouldShow = showAll || searchTerms.length>0 || soSelected.size>0;
 
   document.getElementById('soShowAllBtn').textContent = showAll ? 'Hide list' : 'Show all';
   document.getElementById('soTableWrap').style.display = shouldShow ? 'block' : 'none';
@@ -2113,9 +2203,11 @@ function renderSoSection(){
 
   let filtered = list;
   if(soSelected.size>0) filtered = filtered.filter(s=>soSelected.has(s.soNumber));
-  if(search){
-    const t = search.toLowerCase();
-    filtered = filtered.filter(s=>s.soNumber.toLowerCase().includes(t) || s.client.toLowerCase().includes(t));
+  if(searchTerms.length){
+    filtered = filtered.filter(s=>searchTerms.some(term=>{
+      const t = term.toLowerCase();
+      return s.soNumber.toLowerCase().includes(t) || s.client.toLowerCase().includes(t);
+    }));
   }
   let rows = '<tr><th>SO Number</th><th>Client</th><th>Line Items</th><th>Pieces</th><th>Value</th><th>Target Delivery</th><th>Progress</th><th>Actions</th></tr>';
   if(filtered.length===0){
@@ -2158,16 +2250,16 @@ function renderProgressSection(){
   const progressOptions = [...new Set(items.map(i=>i.soNumber))].sort().map(v=>({value:v, label:v}));
   populateMultiSoDropdown('progressFilterSelect', progressOptions, 'renderProgressSection', 'All SOs');
   const progressSelected = getMultiSoSet('progressFilterSelect');
-  const search = document.getElementById('progressSearch').value.trim();
+  const searchTerms = activeSearchTerms('progressSearch');
   const showAll = showAllFlags.progress;
-  const shouldShow = showAll || !!search || progressSelected.size>0;
+  const shouldShow = showAll || searchTerms.length>0 || progressSelected.size>0;
   document.getElementById('progressShowAllBtn').textContent = showAll ? 'Hide list' : 'Show all';
   document.getElementById('progressTableWrap').style.display = shouldShow ? 'block' : 'none';
   document.getElementById('progressHint').textContent = shouldShow ? '' : 'Mag-search o pumili ng SO sa dropdown para makita ang mga item.';
   if(!shouldShow) return;
   let filtered = items;
   if(progressSelected.size>0) filtered = filtered.filter(i=>progressSelected.has(i.soNumber));
-  if(search) filtered = filtered.filter(i=>matchesSearch(i, search));
+  if(searchTerms.length) filtered = filtered.filter(i=>matchesAnySearchTerm(i, searchTerms));
   let rows = '<tr><th>SO Number</th><th>Client</th><th>Item</th><th>Qty</th><th>Value</th><th>Current Step</th><th>Progress</th></tr>';
   if(filtered.length===0){
     rows += `<tr><td colspan="7" style="color:var(--gray);text-align:center;padding:16px;">Walang tugma sa search.</td></tr>`;
@@ -2195,16 +2287,16 @@ function renderFinishedSection(){
   const finishedOptions = [...new Set(items.map(i=>i.soNumber))].sort().map(v=>({value:v, label:v}));
   populateMultiSoDropdown('finishedFilterSelect', finishedOptions, 'renderFinishedSection', 'All SOs');
   const finishedSelected = getMultiSoSet('finishedFilterSelect');
-  const search = document.getElementById('finishedSearch').value.trim();
+  const searchTerms = activeSearchTerms('finishedSearch');
   const showAll = showAllFlags.finished;
-  const shouldShow = showAll || !!search || finishedSelected.size>0;
+  const shouldShow = showAll || searchTerms.length>0 || finishedSelected.size>0;
   document.getElementById('finishedShowAllBtn').textContent = showAll ? 'Hide list' : 'Show all';
   document.getElementById('finishedTableWrap').style.display = shouldShow ? 'block' : 'none';
   document.getElementById('finishedHint').textContent = shouldShow ? '' : 'Mag-search o pumili ng SO sa dropdown para makita ang mga item.';
   if(!shouldShow) return;
   let filtered = items;
   if(finishedSelected.size>0) filtered = filtered.filter(i=>finishedSelected.has(i.soNumber));
-  if(search) filtered = filtered.filter(i=>matchesSearch(i, search));
+  if(searchTerms.length) filtered = filtered.filter(i=>matchesAnySearchTerm(i, searchTerms));
   let rows = '<tr><th>SO Number</th><th>Client</th><th>Item</th><th>Qty</th><th>Value</th></tr>';
   if(filtered.length===0){
     rows += `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:16px;">Walang tugma sa search.</td></tr>`;
@@ -2226,16 +2318,16 @@ function renderStuckSection(){
   const stuckOptions = [...new Set(items.map(i=>i.soNumber))].sort().map(v=>({value:v, label:v}));
   populateMultiSoDropdown('stuckFilterSelect', stuckOptions, 'renderStuckSection', 'All SOs');
   const stuckSelected = getMultiSoSet('stuckFilterSelect');
-  const search = document.getElementById('stuckSearch').value.trim();
+  const searchTerms = activeSearchTerms('stuckSearch');
   const showAll = showAllFlags.stuck;
-  const shouldShow = showAll || !!search || stuckSelected.size>0;
+  const shouldShow = showAll || searchTerms.length>0 || stuckSelected.size>0;
   document.getElementById('stuckShowAllBtn').textContent = showAll ? 'Hide list' : 'Show all';
   document.getElementById('stuckTableWrap').style.display = shouldShow ? 'block' : 'none';
   document.getElementById('stuckHint').textContent = shouldShow ? '' : 'Mag-search o pumili ng SO sa dropdown para makita ang mga item.';
   if(!shouldShow) return;
   let filtered = items;
   if(stuckSelected.size>0) filtered = filtered.filter(i=>stuckSelected.has(i.soNumber));
-  if(search) filtered = filtered.filter(i=>matchesSearch(i, search));
+  if(searchTerms.length) filtered = filtered.filter(i=>matchesAnySearchTerm(i, searchTerms));
   let rows = '<tr><th>SO Number</th><th>Client</th><th>Item</th><th>Qty</th><th>Value</th></tr>';
   if(filtered.length===0){
     rows += `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:16px;">Walang tugma sa search.</td></tr>`;
@@ -2418,15 +2510,15 @@ function renderBoard(){
   populateMultiSoDropdown('boardSoSelect', boardOptions, 'renderBoard', 'Lahat ng SO');
   const boardSelected = getMultiSoSet('boardSoSelect');
 
-  const searchEl = document.getElementById('boardSoSearch');
-  const search = searchEl ? searchEl.value.trim().toLowerCase() : '';
+  const boardSearchTerms = activeSearchTerms('boardSoSearch').map(t=>t.toLowerCase());
   let keys = allKeys;
   if(boardSelected.size>0){
     keys = keys.filter(key=>boardSelected.has(key));
-  }else if(search){
+  }else if(boardSearchTerms.length){
     keys = keys.filter(key=>{
       const [soNumber, client] = key.split('||');
-      return soNumber.toLowerCase().includes(search) || client.toLowerCase().includes(search);
+      const soL = soNumber.toLowerCase(), clientL = client.toLowerCase();
+      return boardSearchTerms.some(t=>soL.includes(t) || clientL.includes(t));
     });
   }
   // Default (no search/select) ordering: SOs that still have ongoing/queued
@@ -4200,16 +4292,17 @@ function renderBrowseSo(){
   const browseSelected = getMultiSoSet('browseSoSelect');
   renderDuplicateSoPanel();
 
-  const search = document.getElementById('browseSoSearch').value.trim().toLowerCase();
+  const browseSearchTerms = activeSearchTerms('browseSoSearch').map(t=>t.toLowerCase());
   const resultEl = document.getElementById('browseSoResult');
   const hintEl = document.getElementById('browseSoHint');
+  const soMatchesTerms = (so, terms) => terms.some(t=>so.soNumber.toLowerCase().includes(t) || so.client.toLowerCase().includes(t));
 
   let matches = list;
   if(browseSelected.size>0){
     matches = matches.filter(so=>browseSelected.has(so.soNumber+'||'+so.client));
-    if(search) matches = matches.filter(so=>so.soNumber.toLowerCase().includes(search) || so.client.toLowerCase().includes(search));
-  }else if(search){
-    matches = list.filter(so=>so.soNumber.toLowerCase().includes(search) || so.client.toLowerCase().includes(search));
+    if(browseSearchTerms.length) matches = matches.filter(so=>soMatchesTerms(so, browseSearchTerms));
+  }else if(browseSearchTerms.length){
+    matches = list.filter(so=>soMatchesTerms(so, browseSearchTerms));
   }else{ resultEl.innerHTML=''; hintEl.style.display='block'; return; }
   hintEl.style.display = 'none';
   if(matches.length===0){ resultEl.innerHTML = `<div class="empty-state" style="padding:20px;">Walang tugmang SO.</div>`; return; }
@@ -4238,6 +4331,7 @@ function renderBrowseSo(){
 // whole board.
 function viewDuplicateSo(soNumber, client){
   document.getElementById('browseSoSearch').value = '';
+  getSearchPinned('browseSoSearch').clear();
   getMultiSoSet('browseSoSelect').clear();
   getMultiSoSet('browseSoSelect').add(soNumber + '||' + client);
   renderBrowseSo();
