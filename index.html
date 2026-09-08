@@ -1074,6 +1074,99 @@ function computeRouteTargetDates(route, dateUploaded, targetDelivery){
   return dates;
 }
 
+/* ---------- Catch-up scheduling ----------
+   Regular + special (non-working) Philippine holidays, per the official
+   proclamation for each year. Only 2026 is filled in for now — a year not
+   listed here just means no holiday gets skipped for it (Sundays still do).
+   Movable Islamic holidays (Eid'l Fitr / Eid'l Adha) are proclaimed
+   separately closer to the date based on the lunar calendar, so they're not
+   included here yet. */
+const PH_HOLIDAYS_BY_YEAR = {
+  2026: [
+    '2026-01-01', // New Year's Day
+    '2026-02-17', // Chinese New Year (special non-working)
+    '2026-04-02', // Maundy Thursday
+    '2026-04-03', // Good Friday
+    '2026-04-04', // Black Saturday (special non-working)
+    '2026-04-09', // Araw ng Kagitingan
+    '2026-05-01', // Labor Day
+    '2026-06-12', // Independence Day
+    '2026-08-21', // Ninoy Aquino Day (special non-working)
+    '2026-08-31', // National Heroes Day
+    '2026-11-01', // All Saints' Day (special non-working)
+    '2026-11-02', // All Souls' Day (special non-working)
+    '2026-11-30', // Bonifacio Day
+    '2026-12-08', // Feast of the Immaculate Conception (special non-working)
+    '2026-12-24', // Christmas Eve (special non-working)
+    '2026-12-25', // Christmas Day
+    '2026-12-30', // Rizal Day
+    '2026-12-31', // Last Day of the Year (special non-working)
+  ],
+};
+function isNonWorkingDay(dateStr){
+  const d = new Date(dateStr+'T00:00:00');
+  if(d.getDay()===0) return true; // Sunday
+  const holidays = PH_HOLIDAYS_BY_YEAR[d.getFullYear()];
+  return !!(holidays && holidays.includes(dateStr));
+}
+// Next working day on/after the given date (returns the SAME date if it's
+// already a working day).
+function nextWorkingDay(dateStr){
+  let d = new Date(dateStr+'T00:00:00');
+  let cur = d.toISOString().slice(0,10);
+  while(isNonWorkingDay(cur)){
+    d = new Date(d.getTime() + 86400000);
+    cur = d.toISOString().slice(0,10);
+  }
+  return cur;
+}
+function addWorkingDays(dateStr, n){
+  let d = new Date(dateStr+'T00:00:00');
+  let added = 0;
+  while(added < n){
+    d = new Date(d.getTime() + 86400000);
+    if(!isNonWorkingDay(d.toISOString().slice(0,10))) added++;
+  }
+  return d.toISOString().slice(0,10);
+}
+// Builds a "catch-up" schedule for every item that's currently ongoing,
+// queued, or delayed — WITHOUT touching routeTargetDates (the original
+// target date each item was given stays exactly as-is; this is a separate,
+// always-fresh plan of when the backlog can realistically get worked,
+// recomputed live every time the Board renders rather than persisted).
+// Every working day (Mon–Sat, minus PH holidays) gets filled with backlog
+// before moving to the next: for each process, its own queued/ongoing items
+// are lined up (most overdue first, then oldest-uploaded first) and handed
+// out across consecutive working days starting today, at a daily capacity
+// of one item per owner of that process (so a 3-person process catches up
+// 3x faster than a 1-person one). Returns { itemId: 'YYYY-MM-DD' }.
+function computeCatchUpSchedule(){
+  const items = activeItems().filter(it=>itemCategory(it)!=='done');
+  const today = nextWorkingDay(new Date().toISOString().slice(0,10));
+  const catchUpDates = {};
+  PROCESS_LIST.forEach(p=>{
+    const queue = items.filter(it=>currentStepId(it)===p.id);
+    if(queue.length===0) return;
+    queue.sort((a,b)=>{
+      const targetA = (a.routeTargetDates && a.routeTargetDates[p.id]) || '9999-12-31';
+      const targetB = (b.routeTargetDates && b.routeTargetDates[p.id]) || '9999-12-31';
+      if(targetA !== targetB) return targetA < targetB ? -1 : 1; // most overdue / earliest target first
+      const upA = a.dateUploaded || a.dateAdded || '';
+      const upB = b.dateUploaded || b.dateAdded || '';
+      return upA < upB ? -1 : (upA > upB ? 1 : 0); // oldest uploaded first
+    });
+    const capacity = Math.max(1, ownersFor(p.id).length);
+    let day = today;
+    let filledToday = 0;
+    queue.forEach(it=>{
+      if(filledToday >= capacity){ day = addWorkingDays(day, 1); filledToday = 0; }
+      catchUpDates[it.id] = day;
+      filledToday++;
+    });
+  });
+  return catchUpDates;
+}
+
 function fmtPHP(n){
   return '₱' + Number(n||0).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
@@ -2304,6 +2397,7 @@ function renderLineItemsBreakdown(){
 }
 function renderBoard(){
   renderLineItemsBreakdown();
+  const catchUpDates = computeCatchUpSchedule();
   const groups = {};
   activeItems().forEach(it=>{
     const key = it.soNumber + '||' + it.client;
@@ -2376,6 +2470,13 @@ function renderBoard(){
         const cls = status==='done' ? 'done' : (isCurrent ? 'current'+(overdue?' overdue':'') : 'upcoming');
         const dateLbl = it.routeTargetDates[pid] ? formatDateLong(it.routeTargetDates[pid]) : '';
         const assignee = pid===cur ? currentAssignee(it) : null;
+        // Catch-up target — a separately-computed, always-live re-plan of
+        // when the backlog can realistically get worked (see
+        // computeCatchUpSchedule), shown ONLY on the current step and only
+        // when it differs from the original target date above it. The
+        // original target (dateLbl) is never touched by this.
+        const catchUpDate = isCurrent ? catchUpDates[it.id] : null;
+        const catchUpLbl = (catchUpDate && catchUpDate !== it.routeTargetDates[pid]) ? formatDateLong(catchUpDate) : '';
         // Read-only on the Production Board on purpose — status moves only
         // from My Tasks now (the "pill" there still calls cycleStep), so
         // this stays a live, always-in-sync mirror instead of a second place
@@ -2384,6 +2485,7 @@ function renderBoard(){
           <div>${processLabel(pid)}</div>
           ${unassigned ? `<div class="step-date">👤 pumili ng tao</div>` : (assignee ? `<div class="step-date">${assignee}</div>` : '')}
           ${dateLbl?`<div class="step-date">${dateLbl}</div>`:''}
+          ${catchUpLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Catch-up target — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpLbl}</div>`:''}
         </div>`;
       });
       const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${it.id}')">↩ Ibalik sa nakaraan</button>` : '';
@@ -2532,6 +2634,15 @@ async function confirmPartial(itemId, processId){
   delete clone.routePaused[processId];
   if(!clone.routeCompletedAt) clone.routeCompletedAt = {};
   clone.routeCompletedAt[processId] = new Date().toISOString();
+  // If the process being partially completed is the LAST step of the route,
+  // this split-off portion has now finished its entire fabrication route —
+  // so it's genuinely delivered, not just "done at this step". Without this,
+  // a partial delivery would sit as a fully-done line item that never shows
+  // up as delivered anywhere (Actual Delivered count, Team Performance,
+  // etc.), since actualDeliveryDate is otherwise only ever set by hand.
+  if(processId === item.route[item.route.length-1] && !clone.actualDeliveryDate){
+    clone.actualDeliveryDate = new Date().toISOString().slice(0,10);
+  }
   clone.splitNote = `${doneQty} ${item.unit} na-split mula sa orihinal na ${totalQty} ${item.unit} noong ${formatDateLong(new Date().toISOString().slice(0,10))}`;
   item.qty = totalQty - doneQty;
   if(item.routeStatus[processId]==='ongoing') startActiveSegment(item, processId); // remainder keeps working — fresh segment
