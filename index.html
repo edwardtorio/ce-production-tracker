@@ -233,8 +233,7 @@
   }
   .route-step .step-date{font-size:9px;font-weight:400;color:inherit;opacity:.85;}
   .route-step.done{background:var(--green-bg);color:var(--green);border-color:#bfe6cd;}
-  .route-step.current{background:var(--amber-bg);color:var(--amber);border-color:#f3d9a8;cursor:pointer;}
-  .route-step.current:active{transform:scale(.96);}
+  .route-step.current{background:var(--amber-bg);color:var(--amber);border-color:#f3d9a8;}
   .route-step.current.overdue{background:var(--red-bg);color:var(--red);border-color:#f0c3c3;}
   .route-step.upcoming{background:var(--gray-bg);color:var(--gray);}
   .route-arrow{color:var(--line);align-self:center;font-size:13px;padding-top:8px;}
@@ -638,7 +637,7 @@
       <div class="breakdown-row cards-row" id="breakdownRow"></div>
     </div>
     <div class="panel" style="padding:12px 16px;margin-bottom:12px;">
-      <span class="hint">Bawat item ay may sariling fabrication route. Ang <b style="color:var(--amber)">amber na hakbang</b> lang ang kasalukuyang ma-cli-click (tap para mag-cycle: Queue → Ongoing → Done). Pag na-Done, awtomatikong lilipat sa susunod na proseso.</span>
+      <span class="hint">Bawat item ay may sariling fabrication route. Ang <b style="color:var(--amber)">amber na hakbang</b> ang kasalukuyang proseso — ito ay display lang dito sa Production Board. Ang pag-update ng status (Queue → Ongoing → Done) ay ginagawa na lang sa <b>My Tasks</b> ng taong naka-assign, para iisang lugar lang ang pinagmumulan ng status.</span>
     </div>
     <div class="panel" style="padding:12px 16px;margin-bottom:12px;">
       <div class="filter-row" style="margin-bottom:0;">
@@ -1424,6 +1423,19 @@ async function loadInitialState(){
     if(it.soPdfName===undefined){ it.soPdfName = ''; changed = true; }
     if(it.actualStartDate===undefined){ it.actualStartDate = ''; changed = true; }
     if(it.actualDeliveryDate===undefined){ it.actualDeliveryDate = ''; changed = true; }
+    // One-time cleanup: some older items were fully completed (every step in
+    // their route marked done) back when routes didn't necessarily end at a
+    // "Delivery" step, so they never got an Actual Delivery Date recorded.
+    // A fully-done item is, by definition, already delivered — so backfill
+    // its delivery date from whenever its last route step was actually
+    // finished (falling back to the target date or today if that's missing)
+    // instead of leaving it looking "not yet delivered" forever.
+    if(it.route && !it.actualDeliveryDate && itemCategory(it)==='done'){
+      const lastProcessId = it.route[it.route.length-1];
+      const completedAt = it.routeCompletedAt && it.routeCompletedAt[lastProcessId];
+      it.actualDeliveryDate = completedAt ? String(completedAt).slice(0,10) : (it.targetDelivery || it.dateUploaded || new Date().toISOString().slice(0,10));
+      changed = true;
+    }
     if((!it.partsList || it.partsList.length===0) && SEED_PARTS_BY_CODE[it.itemCode]){
       it.partsList = buildPartsListForCode(it.itemCode, it.qty);
       changed = true;
@@ -2348,7 +2360,11 @@ function renderBoard(){
         const cls = status==='done' ? 'done' : (isCurrent ? 'current'+(overdue?' overdue':'') : 'upcoming');
         const dateLbl = it.routeTargetDates[pid] ? formatDateLong(it.routeTargetDates[pid]) : '';
         const assignee = pid===cur ? currentAssignee(it) : null;
-        trackHtml += `<div class="route-step ${cls}" ${isCurrent?`onclick="cycleStep('${it.id}','${pid}')"`:''}>
+        // Read-only on the Production Board on purpose — status moves only
+        // from My Tasks now (the "pill" there still calls cycleStep), so
+        // this stays a live, always-in-sync mirror instead of a second place
+        // that can also change the status.
+        trackHtml += `<div class="route-step ${cls}">
           <div>${processLabel(pid)}</div>
           ${unassigned ? `<div class="step-date">👤 pumili ng tao</div>` : (assignee ? `<div class="step-date">${assignee}</div>` : '')}
           ${dateLbl?`<div class="step-date">${dateLbl}</div>`:''}
