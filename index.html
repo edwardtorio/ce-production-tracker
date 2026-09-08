@@ -3238,9 +3238,10 @@ function renderMyTasks(){
   });
 
   let html = '';
-  html += `<div class="score-task-label" style="margin-bottom:8px;">Performance ni ${selectedPerson.split(' ')[0]}</div>`;
-  html += renderPersonScorecardDetail(selectedPerson);
-  html += `<div class="score-task-label" style="margin-top:18px;border-top:1px solid var(--line);padding-top:10px;margin-bottom:8px;">Mga Tasks ni ${selectedPerson.split(' ')[0]}</div>`;
+  // Performance/Completed Value summary used to render inline right here —
+  // it now lives only inside the "Buksan ang buong profile" popup (see
+  // renderScorecardProfile), so this page just shows the actionable task list.
+  html += `<div class="score-task-label" style="margin-bottom:8px;">Mga Tasks ni ${selectedPerson.split(' ')[0]}</div>`;
   if(needsAssign.length){
     html += `<div class="hint" style="margin-bottom:8px;font-weight:700;color:var(--amber);">⚠ Kailangan munang i-assign (maraming posibleng tao dito):</div>`;
     html += needsAssign.map(t=>`
@@ -3366,6 +3367,40 @@ function computeDailyCompletedValues(){
     });
   });
   return perPerson;
+}
+// Same shape as computeDailyCompletedValues() but keeps the actual completed
+// items (not their peso value) bucketed by the day each was finished, so the
+// profile popup can show "which items, and how many" per day/week/month/year
+// instead of a value total.
+function computeDailyCompletedItemsByPerson(){
+  const items = activeItems();
+  const perPerson = {}; // name -> { date -> [{item, processId}] }
+  PROCESS_LIST.forEach(p=>{
+    const multiOwner = ownersFor(p.id).length>1;
+    items.forEach(it=>{
+      if(!it.route.includes(p.id)) return;
+      if(it.routeStatus[p.id] !== 'done') return;
+      const completedAt = it.routeCompletedAt && it.routeCompletedAt[p.id];
+      if(!completedAt) return;
+      const who = multiOwner ? (it.stepAssignee && it.stepAssignee[p.id]) : ownersFor(p.id)[0];
+      if(!who) return;
+      const date = completedAt.slice(0,10);
+      if(!perPerson[who]) perPerson[who] = {};
+      if(!perPerson[who][date]) perPerson[who][date] = [];
+      perPerson[who][date].push({item: it, processId: p.id});
+    });
+  });
+  return perPerson;
+}
+// Re-buckets a by-date list of completed items into the chosen granularity.
+function regroupItemsByPeriod(byDate, granularity){
+  const result = {};
+  Object.entries(byDate||{}).forEach(([date,list])=>{
+    const key = periodKey(date, granularity);
+    if(!result[key]) result[key] = [];
+    result[key].push(...list);
+  });
+  return result;
 }
 function isoWeekStart(dateStr){
   const d = new Date(dateStr+'T00:00:00');
@@ -3599,7 +3634,19 @@ function renderTeamOverviewBanner(){
 }
 
 /* ---------- Detailed per-person profile (click a scorecard to open) ---------- */
-let profileGranularity = 'day';
+// The popup's own day/week/month/year granularity + optional single-period
+// filter for the "Natapos na Items" breakdown — independent from any other
+// dropdown state elsewhere, reset fresh each time the popup is opened.
+let profilePeriodState = { granularity:'day', dateFilter:'' };
+function setProfileGranularity(name, val){
+  profilePeriodState.granularity = val;
+  profilePeriodState.dateFilter = '';
+  renderScorecardProfile(name);
+}
+function setProfileDateFilter(name, val){
+  profilePeriodState.dateFilter = val;
+  renderScorecardProfile(name);
+}
 // Every task (in-progress or already finished) that belongs to this person,
 // across every process they own — one row per item per step. Used by the
 // profile modal to show "kailan dapat matapos" (target date) alongside
@@ -3636,6 +3683,7 @@ function getPersonTaskRows(name){
   return rows;
 }
 function openScorecardProfile(name){
+  profilePeriodState = { granularity:'day', dateFilter:'' };
   renderScorecardProfile(name);
 }
 function renderScorecardProfile(name){
@@ -3646,6 +3694,38 @@ function renderScorecardProfile(name){
   const totalOnTime = sc.tasks.reduce((a,t)=>a+t.onTime,0);
   const totalLate = sc.tasks.reduce((a,t)=>a+t.late,0);
   const roles = sc.tasks.map(t=>t.stageLabel).join(', ');
+
+  // "Natapos na Items" — how many items (and which ones) this person finished
+  // per day/week/month/year, replacing the old peso-value breakdown.
+  const granularity = profilePeriodState.granularity;
+  const dailyItems = computeDailyCompletedItemsByPerson()[name] || {};
+  const groupedItems = regroupItemsByPeriod(dailyItems, granularity);
+  const periodOptions = Object.keys(groupedItems).sort().reverse();
+  let periodEntries = Object.entries(groupedItems).sort((a,b)=>b[0].localeCompare(a[0]));
+  if(profilePeriodState.dateFilter) periodEntries = periodEntries.filter(([k])=>k===profilePeriodState.dateFilter);
+  const totalItemCount = periodEntries.reduce((a,[,list])=>a+list.length,0);
+  const periodItemsHtml = periodEntries.length ? `<div class="mini-table-wrap" style="margin-top:10px;"><table class="mini-table">
+      <tr><th>Panahon</th><th>Bilang</th><th>Mga Item</th></tr>
+      ${periodEntries.map(([k,list])=>`<tr>
+        <td>${periodLabel(k,granularity)}</td>
+        <td style="font-weight:700;">${list.length}</td>
+        <td>${list.map(x=>escapeHtml(x.item.itemCode)).join(', ')}</td>
+      </tr>`).join('')}
+      <tr class="total-row"><td style="font-weight:700;">TOTAL</td><td style="font-weight:700;">${totalItemCount}</td><td></td></tr>
+    </table></div>`
+    : `<div class="hint" style="margin-top:8px;">Wala pang natapos${profilePeriodState.dateFilter?' sa panahong ito':''}.</div>`;
+  const periodDropdowns = `<div class="filter-row" style="margin-top:10px;margin-bottom:0;">
+    <select onchange="setProfileGranularity('${jsAttr(name)}', this.value)">
+      <option value="day" ${granularity==='day'?'selected':''}>Araw-araw</option>
+      <option value="week" ${granularity==='week'?'selected':''}>Lingguhan</option>
+      <option value="month" ${granularity==='month'?'selected':''}>Buwanan</option>
+      <option value="year" ${granularity==='year'?'selected':''}>Taunan</option>
+    </select>
+    <select onchange="setProfileDateFilter('${jsAttr(name)}', this.value)">
+      <option value="">Lahat</option>
+      ${periodOptions.map(k=>`<option value="${k}" ${profilePeriodState.dateFilter===k?'selected':''}>${periodLabel(k,granularity)}</option>`).join('')}
+    </select>
+  </div>`;
 
   const personTasks = getPersonTaskRows(name);
   const taskListRows = personTasks.length ? personTasks.map(r=>{
@@ -3696,6 +3776,9 @@ function renderScorecardProfile(name){
       <tr><th>Item</th><th>Target Date</th><th>Actual na Natapos</th></tr>
       ${taskListRows}
     </table></div>
+    <div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Natapos na Items — sariling panahon</div>
+    ${periodDropdowns}
+    ${periodItemsHtml}
     <div class="modal-actions">
       <button class="btn secondary" onclick="closeModal()">Isara</button>
     </div>
