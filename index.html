@@ -2548,19 +2548,12 @@ async function cycleStep(itemId, processId){
     return;
   }
   const newStatus = nextStatus(item.routeStatus[processId]);
-  // Guard the FINAL step of the route: don't allow it to complete until all
-  // split-off siblings of this line item have collectively reached this same
-  // final step, matching the original ordered quantity.
+  // NOTE: previously this blocked the FINAL step of the route from completing
+  // until all split-off siblings of this line item collectively reached it.
+  // Per updated instructions, a partial/split-off piece must be free to
+  // proceed all the way to delivery on its own — it should NOT wait for its
+  // sibling piece(s) still working through earlier processes.
   const isLastStep = item.route.indexOf(processId) === item.route.length-1;
-  if(isLastStep && newStatus==='done'){
-    const originalQty = item.originalQty || item.qty;
-    const otherSiblingsDone = lineageQtyDoneAtStep(item, processId, item.id);
-    const projected = otherSiblingsDone + Number(item.qty||0);
-    if(projected < originalQty){
-      showToast(`Hindi pa makokompleto — ${projected} out of ${originalQty} ${item.unit} pa lang ang narating dito. Hintayin munang makarating ang lahat ng piraso ng item na ito.`);
-      return;
-    }
-  }
   ensureTimingFields(item);
   let cappedWarning = false;
   if(newStatus==='ongoing'){
@@ -2574,6 +2567,9 @@ async function cycleStep(itemId, processId){
   if(newStatus==='done'){
     item.routeCompletedAt[processId] = new Date().toISOString();
     if(item.lastReturn && item.lastReturn.toProcess===processId) delete item.lastReturn;
+    if(isLastStep && !item.actualDeliveryDate){
+      item.actualDeliveryDate = new Date().toISOString().slice(0,10);
+    }
   }else{
     delete item.routeCompletedAt[processId];
   }
@@ -3101,6 +3097,7 @@ function renderMyTasks(){
   const box = document.getElementById('myTasks');
   if(!selectedPerson){ box.innerHTML = `<div class="empty-state">I-tap ang pangalan/card mo sa "Team Workload" sa itaas para makita ang tasks at performance mo.</div>`; return; }
   let tasks = [], needsAssign = [];
+  const catchUpDates = computeCatchUpSchedule();
   activeItems().forEach(it=>{
     const cur = currentStepId(it);
     if(cur===null) return;
@@ -3156,13 +3153,19 @@ function renderMyTasks(){
     const partsListHtml = partsListTableHtml(t.item);
     const editPartsBtn = `<button class="irc-edit" style="margin-top:6px;" title="I-edit ang Parts List ng item na ito" onclick="openEditItemModal('${t.item.id}')">✎ I-edit ang Parts List</button>`;
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
+    const catchUpDate = catchUpDates[t.item.id];
+    const origTarget = t.item.routeTargetDates[t.processId];
+    const catchUpNote = (catchUpDate && catchUpDate !== origTarget)
+      ? `<div class="hint" style="color:#a35d00;font-weight:700;margin-top:4px;" title="Catch-up target — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ Catch-up date: ${formatDateLong(catchUpDate)}</div>`
+      : '';
     return `
     <div class="task-card ${cardClass}" style="${cardStyle}">
       <div class="tinfo">
         <div class="so-tag">${escapeHtml(t.item.soNumber)} · ${escapeHtml(t.item.client)}</div>
         <div class="code">${escapeHtml(t.item.itemCode)}</div>
         <div class="desc">${escapeHtml(t.item.description)}</div>
-        <div class="stagelbl">${ownerDisplayLabel(t.processId, selectedPerson)} · ${t.item.qty} ${t.item.unit}${t.overdue?' · <b style="color:var(--red);">OVERDUE</b>':''}${t.item.routeTargetDates[t.processId]?' · target: '+formatDateLong(t.item.routeTargetDates[t.processId]):''}</div>
+        <div class="stagelbl">${ownerDisplayLabel(t.processId, selectedPerson)} · ${t.item.qty} ${t.item.unit}${t.overdue?' · <b style="color:var(--red);">OVERDUE</b>':''}${origTarget?' · target: '+formatDateLong(origTarget):''}</div>
+        ${catchUpNote}
         ${returnNote}
         ${splitBadge}
         ${drawingsHtml}
