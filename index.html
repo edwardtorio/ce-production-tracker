@@ -3200,13 +3200,18 @@ function openDetourModal(itemId){
   if(!item) return;
   const cur = currentStepId(item);
   if(!cur){ showToast('Tapos na ang item na ito.'); return; }
-  const choices = PROCESS_LIST.filter(p=>!item.route.includes(p.id));
-  if(!choices.length){ showToast('Nasa route na ang lahat ng proseso — wala nang ibang mapipili.'); return; }
-  const optionsHtml = choices.map(p=>`<option value="${p.id}">${escapeHtml(p.label)}</option>`).join('');
+  // ALL processes are selectable here — including ones already part of this
+  // item's own route (already done, or waiting its normal turn later) — the
+  // only one excluded is the item's own current step (detouring to yourself
+  // doesn't mean anything). See confirmDetour() for how an already-in-route
+  // pick gets safely re-spliced without colliding with its existing entry.
+  const choices = PROCESS_LIST.filter(p=>p.id!==cur);
+  if(!choices.length){ showToast('Wala nang ibang proseso na mapipili.'); return; }
+  const optionsHtml = choices.map(p=>`<option value="${p.id}">${escapeHtml(p.label)}${item.route.includes(p.id) ? ' (bahagi na ng route)' : ''}</option>`).join('');
   const box = document.getElementById('modalBox');
   box.innerHTML = `
     <h4>Kailangan ng Ibang Proseso</h4>
-    <p><b>${escapeHtml(item.itemCode)}</b> — piliin ang proseso na kailangan munang gawin, kahit hindi ito kasama sa orihinal na fabrication route ng item na ito. Makikita agad ito sa taong may-ari ng napiling proseso bilang Queue, at kapag na-mark na Done doon, awtomatiko itong babalik dito sa <b>${processLabel(cur)}</b> para ituloy.</p>
+    <p><b>${escapeHtml(item.itemCode)}</b> — piliin ang proseso na kailangan munang gawin, maging ito man ay bahagi na ng route ng item na ito (ire-request ulit) o hindi. Makikita agad ito sa taong may-ari ng napiling proseso bilang Queue, at kapag na-mark na Done doon, awtomatiko itong babalik dito sa <b>${processLabel(cur)}</b> para ituloy.</p>
     <div class="field"><label>Proseso na kailangan</label>
       <select id="detourProcess">${optionsHtml}</select>
     </div>
@@ -3226,8 +3231,17 @@ async function confirmDetour(itemId){
   const cur = currentStepId(item);
   if(!cur) return;
   const chosen = document.getElementById('detourProcess').value;
-  if(!chosen || item.route.includes(chosen)){ showToast('Pumili ng valid na proseso.'); return; }
+  if(!chosen || chosen===cur){ showToast('Pumili ng valid na proseso.'); return; }
   const reason = (document.getElementById('detourReason').value || '').trim();
+  // If the chosen process is already somewhere else in this item's own route
+  // (an earlier step already marked Done, or a later one still waiting its
+  // normal turn), pull it out of that position first — a process id can only
+  // ever appear once in `route` since routeStatus/routeTargetDates/etc. are
+  // keyed by process id, so re-splicing (not duplicating) is what makes
+  // re-requesting an in-route process safe.
+  if(item.route.includes(chosen)){
+    item.route = item.route.filter(pid=>pid!==chosen);
+  }
   const idx = item.route.indexOf(cur);
   item.route.splice(idx, 0, chosen); // inserted right before `cur` — becomes the new current step
   item.routeStatus[chosen] = 'queue';
@@ -3236,6 +3250,12 @@ async function confirmDetour(itemId){
   delete item.routePaused[chosen];
   delete item.routeStartTimestamp[chosen];
   if(item.routeCompletedAt) delete item.routeCompletedAt[chosen];
+  // Wipe any leftover catch-up tracking this process might have accumulated
+  // from before it got borrowed here — it's starting fresh in its new spot.
+  if(item.catchUpAttempt) delete item.catchUpAttempt[chosen];
+  if(item.catchUpDate) delete item.catchUpDate[chosen];
+  if(item.catchUpCritical) delete item.catchUpCritical[chosen];
+  if(item.catchUpHistory) delete item.catchUpHistory[chosen];
   if(!item.routeTargetDates) item.routeTargetDates = {};
   // Borrows the requesting step's own target date (or today) so the inserted
   // process still shows *some* target/overdue signal instead of having none.
@@ -3781,6 +3801,50 @@ function computeScorecards(){
   });
   return scorecards;
 }
+// Same per-process Assigned/Done/On-time/Late breakdown as computeScorecards()
+// above, but scoped to ONE person and — when a specific period is chosen —
+// filtered the same way the Team Scorecard banner filters its own Target/
+// Actual Delivered cards (see computeTargetDeliveredInRange): "Assigned" for
+// a period means this step's own target date falls in that period, PLUS any
+// still-undone item whose target period is EARLIER than the chosen one
+// (rolling backlog — it's still "owed" for that period until finished), and
+// "Done"/"On-time"/"Late" are computed only among that assigned set. Passing
+// an empty/falsy periodKey (the "Lahat" choice) falls back to the exact
+// all-time behavior computeScorecards() already had, so nothing changes for
+// anyone who hasn't picked a specific period.
+function computePersonScorecardForPeriod(name, granularity, selectedKey){
+  const items = activeItems();
+  const tasks = [];
+  PROCESS_LIST.forEach(p=>{
+    if(!ownersFor(p.id).includes(name)) return;
+    const multiOwner = ownersFor(p.id).length>1;
+    const relevant = items.filter(it=>{
+      if(!it.route.includes(p.id)) return false;
+      if(!multiOwner) return true;
+      return (it.stepAssignee && it.stepAssignee[p.id]) === name;
+    });
+    const assignedSet = selectedKey ? relevant.filter(it=>{
+      const target = it.routeTargetDates && it.routeTargetDates[p.id];
+      if(!target) return false;
+      const itemPeriod = periodKey(target, granularity);
+      if(itemPeriod===selectedKey) return true;
+      return it.routeStatus[p.id]!=='done' && itemPeriod<selectedKey; // rolled-over backlog
+    }) : relevant;
+    let completed=0, onTime=0, late=0, notTracked=0;
+    assignedSet.forEach(it=>{
+      if(it.routeStatus[p.id]==='done'){
+        completed++;
+        const completedAt = it.routeCompletedAt && it.routeCompletedAt[p.id];
+        const target = it.routeTargetDates && it.routeTargetDates[p.id];
+        if(target && completedAt){
+          if(new Date(completedAt) <= new Date(target+'T23:59:59')) onTime++; else late++;
+        }else{ notTracked++; }
+      }
+    });
+    tasks.push({ stageLabel: ownerDisplayLabel(p.id,name)!==name ? ownerDisplayLabel(p.id,name) : p.label, assigned: assignedSet.length, completed, onTime, late, notTracked });
+  });
+  return { name, tasks };
+}
 
 // Value (₱) of items completed by each person, grouped by calendar day
 // (raw completion date). Per-day values get re-bucketed into week/month/year
@@ -4153,20 +4217,46 @@ function openScorecardProfile(name){
   renderScorecardProfile(name);
 }
 function renderScorecardProfile(name){
-  const scorecards = computeScorecards();
-  const sc = scorecards[name];
-  if(!sc){ return; }
-  const totalCompleted = sc.tasks.reduce((a,t)=>a+t.completed,0);
-  const totalOnTime = sc.tasks.reduce((a,t)=>a+t.onTime,0);
-  const totalLate = sc.tasks.reduce((a,t)=>a+t.late,0);
-  const roles = sc.tasks.map(t=>t.stageLabel).join(', ');
+  // "roles" (the subtitle under the person's name/avatar) always reflects
+  // every process they own, regardless of the period filter below — only
+  // pulled from the unfiltered scorecard so it never goes blank just because
+  // a period with no activity happens to be selected.
+  const allTimeSc = computeScorecards()[name];
+  if(!allTimeSc){ return; }
+  const roles = allTimeSc.tasks.map(t=>t.stageLabel).join(', ');
 
   // "Natapos na Items" — how many items (and which ones) this person finished
   // per day/week/month/year, replacing the old peso-value breakdown.
   const granularity = profilePeriodState.granularity;
+  // Performance per Process (and the 3 summary cards above it) now respects
+  // the SAME day/week/month/year + specific-period picker as the Team
+  // Scorecard banner (see computePersonScorecardForPeriod) — "Lahat" (empty
+  // dateFilter) falls back to the exact all-time numbers this always showed.
+  const sc = computePersonScorecardForPeriod(name, granularity, profilePeriodState.dateFilter);
+  const totalCompleted = sc.tasks.reduce((a,t)=>a+t.completed,0);
+  const totalOnTime = sc.tasks.reduce((a,t)=>a+t.onTime,0);
+  const totalLate = sc.tasks.reduce((a,t)=>a+t.late,0);
+  const perfPeriodLabel = profilePeriodState.dateFilter ? periodLabel(profilePeriodState.dateFilter, granularity) : 'Lahat ng Panahon';
   const dailyItems = computeDailyCompletedItemsByPerson()[name] || {};
   const groupedItems = regroupItemsByPeriod(dailyItems, granularity);
-  const periodOptions = Object.keys(groupedItems).sort().reverse();
+  // The period dropdown needs to offer more than just periods with a
+  // completed item — otherwise picking "this month" for Performance per
+  // Process would be impossible until something actually finishes in it.
+  // So it's the union of: periods with a completion, periods where ANY of
+  // this person's tasks are due (assigned), and today's own period.
+  const periodOptionKeys = new Set(Object.keys(groupedItems));
+  PROCESS_LIST.forEach(p=>{
+    if(!ownersFor(p.id).includes(name)) return;
+    const multiOwner = ownersFor(p.id).length>1;
+    activeItems().forEach(it=>{
+      if(!it.route.includes(p.id)) return;
+      if(multiOwner && (it.stepAssignee && it.stepAssignee[p.id]) !== name) return;
+      const target = it.routeTargetDates && it.routeTargetDates[p.id];
+      if(target) periodOptionKeys.add(periodKey(target, granularity));
+    });
+  });
+  periodOptionKeys.add(periodKey(new Date().toISOString().slice(0,10), granularity));
+  const periodOptions = [...periodOptionKeys].sort().reverse();
   let periodEntries = Object.entries(groupedItems).sort((a,b)=>b[0].localeCompare(a[0]));
   if(profilePeriodState.dateFilter) periodEntries = periodEntries.filter(([k])=>k===profilePeriodState.dateFilter);
   const totalItemCount = periodEntries.reduce((a,[,list])=>a+list.length,0);
@@ -4240,15 +4330,15 @@ function renderScorecardProfile(name){
       <div class="stat-card"><div class="num" style="font-size:20px;color:var(--green);">${totalOnTime}</div><div class="lbl">On-time</div></div>
       <div class="stat-card"><div class="num" style="font-size:20px;color:var(--red);">${totalLate}</div><div class="lbl">Late</div></div>
     </div>
-    <div class="score-task-label" style="margin-bottom:6px;">Performance per Process</div>
+    <div class="score-task-label" style="margin-bottom:6px;">Performance per Process — ${escapeHtml(perfPeriodLabel)}</div>
+    ${periodDropdowns}
     ${taskRows}
     <div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Lahat ng Task — Target vs. Actual na Natapos</div>
     <div class="mini-table-wrap"><table class="mini-table">
       <tr><th>Item</th><th>Target Date</th><th>Actual na Natapos</th></tr>
       ${taskListRows}
     </table></div>
-    <div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Natapos na Items — sariling panahon</div>
-    ${periodDropdowns}
+    <div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Natapos na Items — sariling panahon (parehong pili sa itaas)</div>
     ${periodItemsHtml}
     <div class="modal-actions">
       <button class="btn secondary" onclick="closeModal()">Isara</button>
