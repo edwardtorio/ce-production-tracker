@@ -273,6 +273,10 @@
   }
   textarea{font-family:var(--font-mono);font-size:12px;min-height:90px;resize:vertical;}
   .field{margin-bottom:14px;}
+  /* Blinking red highlight for the SO Number field when it matches an SO
+     already active on the board — see checkSoNumberDuplicate(). */
+  @keyframes soDupBlink{0%,100%{border-color:var(--red);background:#fff;}50%{border-color:var(--red);background:#fde8e8;}}
+  input.input-dup-blink{animation:soDupBlink 1s ease-in-out infinite;border-color:var(--red)!important;}
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
   .item-row{display:grid;grid-template-columns:1.2fr 2fr .6fr .6fr .8fr 32px;gap:8px;margin-bottom:8px;align-items:end;}
   .item-row input{font-size:12.5px;padding:7px 8px;}
@@ -728,7 +732,9 @@
     <div class="panel">
       <h3>2. Check the details</h3>
       <div class="form-grid">
-        <div class="field"><label>SO Number</label><input type="text" id="soNumber" placeholder="e.g. SO-CEMPC-019646" oninput="scheduleSaveSoContext()"></div>
+        <div class="field"><label>SO Number</label><input type="text" id="soNumber" placeholder="e.g. SO-CEMPC-019646" oninput="scheduleSaveSoContext(); checkSoNumberDuplicate();">
+          <div id="soNumberDupWarning" class="hint" style="display:none;color:var(--red);font-weight:700;margin-top:4px;">⚠ Existing na sa board ang SO Number na ito.</div>
+        </div>
         <div class="field"><label>Client Name</label><input type="text" id="soClient" placeholder="e.g. Wilcon" oninput="scheduleSaveSoContext()"></div>
       </div>
       <div class="form-grid">
@@ -4850,6 +4856,7 @@ async function handlePdfUpload(file){
     itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; DRAFT_ROWS = {}; saveDraftsLocal();
     if(parsed.items.length){ parsed.items.forEach(it=>{ const newId = addItemRow(it); captureDraftRow(newId); checkAndSuggestReference(newId); }); } else { addItemRow(); }
     scheduleSaveSoContext();
+    checkSoNumberDuplicate();
     const note = document.getElementById('autofillNote');
     note.style.display = 'block';
     note.innerHTML = `Auto-filled from <b>${file.name}</b> — ${parsed.items.length} item row(s) found. Client field shows what was detected (often just an internal code) — edit if needed. Piliin pa rin ang fabrication route ng bawat item.`;
@@ -5209,6 +5216,26 @@ function captureDraftRow(rowId){
   };
   saveDraftsLocal();
 }
+// Warns the moment the user types an SO Number that's already active on the
+// board — same SO number re-entered by mistake is a common mis-encode, and
+// catching it here (blinking red input + inline message) is much cheaper
+// than finding it later mixed into the board. This is the soft/visual half;
+// submitSO() below is the hard block that actually refuses to add it.
+function checkSoNumberDuplicate(){
+  const input = document.getElementById('soNumber');
+  const warnEl = document.getElementById('soNumberDupWarning');
+  if(!input || !warnEl) return false;
+  const val = input.value.trim().toLowerCase();
+  const isDup = !!val && activeItems().some(it=>(it.soNumber||'').trim().toLowerCase()===val);
+  input.classList.toggle('input-dup-blink', isDup);
+  if(isDup){
+    warnEl.textContent = `⚠ Existing na sa board ang SO Number na "${input.value.trim()}" — hindi ito pwedeng idagdag ulit.`;
+    warnEl.style.display = 'block';
+  }else{
+    warnEl.style.display = 'none';
+  }
+  return isDup;
+}
 let soContextSaveTimer = null;
 function scheduleSaveSoContext(){
   clearTimeout(soContextSaveTimer);
@@ -5237,6 +5264,7 @@ function loadDraftsLocal(){
     if(c.client) document.getElementById('soClient').value = c.client;
     if(c.dateUploaded) document.getElementById('soDateUploaded').value = c.dateUploaded;
     if(c.targetDelivery) document.getElementById('soTargetDelivery').value = c.targetDelivery;
+    checkSoNumberDuplicate();
   }
   const ids = Object.keys(DRAFT_ROWS).filter(k=>k!=='_soContext');
   if(ids.length===0) return;
@@ -5510,6 +5538,11 @@ function buildItemFromRow(wrap, ctx){
 async function addSingleItem(rowId){
   const ctx = getSoContext();
   if(!ctx.soNumber || !ctx.client){ showToast('Lagyan muna ng SO Number at Client Name sa taas bago mag-add ng item.'); return; }
+  if(checkSoNumberDuplicate()){
+    document.getElementById('soNumber').focus();
+    showToast(`⚠ Existing na sa board ang SO Number na "${ctx.soNumber}" — hindi ito na-add.`);
+    return;
+  }
   const wrap = document.getElementById('wrap_'+rowId);
   if(!wrap) return;
   const result = buildItemFromRow(wrap, ctx);
@@ -5550,6 +5583,14 @@ function parsePaste(){
 async function submitSO(){
   const ctx = getSoContext();
   if(!ctx.soNumber || !ctx.client){ showToast('Enter both SO Number and Client'); return; }
+  // Hard block: never let a SO Number that's already active on the board get
+  // added again, even if the on-input warning was somehow missed/bypassed
+  // (draft restore, pasted value with no input event, etc.).
+  if(checkSoNumberDuplicate()){
+    document.getElementById('soNumber').focus();
+    showToast(`⚠ Existing na sa board ang SO Number na "${ctx.soNumber}" — hindi ito na-add.`);
+    return;
+  }
   const wraps = [...document.querySelectorAll('#itemRows .item-row-wrap')];
   const newItems = [];
   const remainingWraps = [];
@@ -5583,6 +5624,7 @@ async function submitSO(){
     document.getElementById('soDateUploaded').value = new Date().toISOString().slice(0,10);
     document.getElementById('soTargetDelivery').value='';
     document.getElementById('pasteArea').value='';
+    checkSoNumberDuplicate();
     itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; DRAFT_ROWS = {}; saveDraftsLocal();
     currentSoPdf = null;
     addItemRow();
