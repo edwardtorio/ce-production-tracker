@@ -4284,11 +4284,10 @@ function renderScorecardProfile(name){
     </select>
   </div>`;
 
-  const personTasks = getPersonTaskRows(name, granularity, profilePeriodState.dateFilter);
+  const personTasks = getPersonTaskRows(name, granularity, profilePeriodState.dateFilter).filter(r=>r.done);
   const taskListRows = personTasks.length ? personTasks.map(r=>{
-    const overdue = !r.done && r.target && new Date() > new Date(r.target+'T23:59:59');
     let durationCell = '<span style="color:var(--gray);">—</span>';
-    if(r.done && r.target && r.actualAt){
+    if(r.target && r.actualAt){
       const diffMs = new Date(r.target+'T23:59:59') - new Date(r.actualAt);
       const abs = Math.abs(diffMs);
       const days = Math.floor(abs/86400000);
@@ -4302,11 +4301,11 @@ function renderScorecardProfile(name){
         <div class="hint">${escapeHtml(r.item.soNumber)} · ${escapeHtml(r.item.client)} · ${processLabel(r.processId)}</div>
       </td>
       <td>${escapeHtml(String(r.item.qty!=null?r.item.qty:''))} ${escapeHtml(r.item.unit||'')}</td>
-      <td style="${overdue?'color:var(--red);font-weight:700;':''}">${r.target?formatDateLong(r.target):'—'}${overdue?' ⚠':''}</td>
-      <td>${r.done ? (r.actual ? formatDateLong(r.actual) : '—') : `<span style="color:var(--gray);">${overdue?'Overdue pa':'Hindi pa'}</span>`}</td>
+      <td>${r.target?formatDateLong(r.target):'—'}</td>
+      <td>${r.actual ? formatDateLong(r.actual) : '—'}</td>
       <td>${durationCell}</td>
     </tr>`;
-  }).join('') : `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:14px;">Wala pang task.</td></tr>`;
+  }).join('') : `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:14px;">Wala pang natapos na task.</td></tr>`;
 
   const taskRows = sc.tasks.map(t=>{
     const pct = t.assigned ? Math.round(t.completed/t.assigned*100) : 0;
@@ -4359,7 +4358,7 @@ function renderScorecardProfile(name){
     ${periodDropdowns}
     ${taskRows}
     <div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Mga Task — Target vs. Actual na Natapos — ${escapeHtml(perfPeriodLabel)}</div>
-    <div class="mini-table-wrap"><table class="mini-table">
+    <div class="mini-table-wrap"><table class="mini-table" style="min-width:560px;">
       <tr><th>Item</th><th>Quantity</th><th>Target Date</th><th>Actual na Natapos</th><th>Duration</th></tr>
       ${taskListRows}
     </table></div>
