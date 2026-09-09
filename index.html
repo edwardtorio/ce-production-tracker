@@ -147,6 +147,8 @@
   .meta-chip.meta-ontrack{background:var(--blue-bg);color:var(--blue);}
   .meta-chip.meta-delay{background:var(--red-bg);color:var(--red);}
   .meta-chip.meta-notyet{background:#eceff1;color:#57636b;}
+  .meta-chip.clickable{cursor:pointer;transition:filter .15s,transform .15s;}
+  .meta-chip.clickable:hover{filter:brightness(.93);transform:translateY(-1px);}
 
   @media (max-width:720px){
     .stage-row-v2 .name{flex-basis:100%;}
@@ -1924,6 +1926,12 @@ function renderOverview(){
     }).length;
     const onTrackN = currentHereItems.length - delayN;
     const notYetN = notYetItems.length;
+    // Share of this stage's assigned total that each badge represents —
+    // shown next to the raw count on the badge itself.
+    const pctOf = n => assignedN ? Math.round(n/assignedN*100) : 0;
+    // Each badge is clickable — opens a list of exactly which items make up
+    // that count, with piece counts and (for natapos) the actual completion
+    // date, or (for the rest) the target date. See openStageDetailModal().
     progHtml += `<div class="stage-row-v2">
       <div class="stage-row-top">
         <div class="name">${p.label}</div>
@@ -1931,11 +1939,11 @@ function renderOverview(){
         <div class="pct">${pct}%</div>
       </div>
       <div class="stage-meta">
-        <span class="meta-chip meta-assigned">👤 <b>${assignedN}</b> naka-assign</span>
-        <span class="meta-chip meta-done">✓ <b>${doneN}</b> natapos</span>
-        <span class="meta-chip meta-ontrack">🟢 <b>${onTrackN}</b> on track</span>
-        <span class="meta-chip meta-delay">🔴 <b>${delayN}</b> delayed</span>
-        <span class="meta-chip meta-notyet">⏳ <b>${notYetN}</b> not yet on hand</span>
+        <span class="meta-chip meta-assigned clickable" onclick="openStageDetailModal('${p.id}','assigned')">👤 <b>${assignedN}</b> naka-assign</span>
+        <span class="meta-chip meta-done clickable" onclick="openStageDetailModal('${p.id}','done')">✓ <b>${doneN}</b> natapos (${pctOf(doneN)}%)</span>
+        <span class="meta-chip meta-ontrack clickable" onclick="openStageDetailModal('${p.id}','ontrack')">🟢 <b>${onTrackN}</b> on track (${pctOf(onTrackN)}%)</span>
+        <span class="meta-chip meta-delay clickable" onclick="openStageDetailModal('${p.id}','delayed')">🔴 <b>${delayN}</b> delayed (${pctOf(delayN)}%)</span>
+        <span class="meta-chip meta-notyet clickable" onclick="openStageDetailModal('${p.id}','notyet')">⏳ <b>${notYetN}</b> not yet on hand (${pctOf(notYetN)}%)</span>
       </div>
     </div>`;
   });
@@ -1943,6 +1951,70 @@ function renderOverview(){
 
   document.getElementById('hdrSub').textContent =
     `${soCount} sales order${soCount===1?'':'s'} · ${totalItems} line items · ${totalUnits} pcs total · ${pctDone}% in finished goods${bottleneckCount?` · ${bottleneckCount} delayed`:''}`;
+}
+
+// Clicking any of the Progress-by-Process badges (naka-assign / natapos /
+// on track / delayed / not yet on hand) opens exactly which items make up
+// that count — with piece count and, per item, either this step's target
+// date (queue/on track/delayed/not yet on hand) or its actual completion
+// date (natapos), matching what those categories mean above.
+const STAGE_DETAIL_TITLES = {
+  assigned: 'Naka-assign', done: 'Natapos', ontrack: 'On Track',
+  delayed: 'Delayed', notyet: 'Not Yet On Hand'
+};
+function openStageDetailModal(processId, category){
+  const ITEMS_VIEW = activeItems();
+  const relevant = ITEMS_VIEW.filter(it=>it.route.includes(processId));
+  const isDelayedNow = it=>{
+    const target = it.routeTargetDates && it.routeTargetDates[processId];
+    return !!(target && new Date() > new Date(target+'T23:59:59'));
+  };
+  let items;
+  if(category==='assigned'){
+    items = relevant;
+  }else if(category==='done'){
+    items = relevant.filter(it=>it.routeStatus[processId]==='done');
+  }else{
+    const notDone = relevant.filter(it=>it.routeStatus[processId]!=='done');
+    const currentHere = notDone.filter(it=>currentStepId(it)===processId);
+    if(category==='notyet') items = notDone.filter(it=>currentStepId(it)!==processId);
+    else if(category==='delayed') items = currentHere.filter(isDelayedNow);
+    else items = currentHere.filter(it=>!isDelayedNow(it)); // ontrack
+  }
+  const dateColLabel = category==='done' ? 'Petsa ng Pagkatapos' : 'Target Date';
+  let rows = `<tr><th>SO Number</th><th>Client</th><th>Item</th><th>Piraso</th><th>${dateColLabel}</th></tr>`;
+  if(items.length===0){
+    rows += `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:14px;">Walang item dito.</td></tr>`;
+  }else{
+    items.forEach(it=>{
+      const isDoneHere = it.routeStatus[processId]==='done';
+      let dateLbl;
+      if(isDoneHere){
+        const completedAt = it.routeCompletedAt && it.routeCompletedAt[processId];
+        dateLbl = completedAt ? formatDateLong(completedAt.slice(0,10)) : '—';
+      }else{
+        dateLbl = it.routeTargetDates && it.routeTargetDates[processId] ? formatDateLong(it.routeTargetDates[processId]) : '—';
+      }
+      rows += `<tr>
+        <td class="so-num">${escapeHtml(it.soNumber)}</td>
+        <td class="client-name">${escapeHtml(it.client)}</td>
+        <td><b>${escapeHtml(it.itemCode)}</b><br><span style="color:var(--gray);font-size:11px;">${escapeHtml(it.description)}</span></td>
+        <td>${escapeHtml(String(it.qty))} ${escapeHtml(it.unit||'')}</td>
+        <td>${dateLbl}</td>
+      </tr>`;
+    });
+  }
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `
+    <h4>${processLabel(processId)} — ${STAGE_DETAIL_TITLES[category] || category} (${items.length})</h4>
+    <div style="max-height:60vh;overflow:auto;">
+      <div class="mini-table-wrap"><table class="mini-table">${rows}</table></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Isara</button>
+    </div>
+  `;
+  document.getElementById('modalOverlay').classList.add('show');
 }
 
 // Per-person workload (queue/ongoing/done, actionable-now only) — lives in
