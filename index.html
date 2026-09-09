@@ -4172,7 +4172,7 @@ function setProfileDateFilter(name, val){
 // profile modal to show "kailan dapat matapos" (target date) alongside
 // "kailan talaga natapos" (actual completion date) for each of their tasks,
 // instead of a peso-value breakdown.
-function getPersonTaskRows(name){
+function getPersonTaskRows(name, granularity, selectedKey){
   const items = activeItems();
   const rows = [];
   PROCESS_LIST.forEach(p=>{
@@ -4184,12 +4184,21 @@ function getPersonTaskRows(name){
         if(multiOwner && (it.stepAssignee && it.stepAssignee[p.id]) !== name) return;
         const target = it.routeTargetDates && it.routeTargetDates[p.id];
         const completedAt = it.routeCompletedAt && it.routeCompletedAt[p.id];
-        rows.push({ item: it, processId: p.id, target, actual: completedAt ? completedAt.slice(0,10) : '', done: true });
+        if(selectedKey){
+          if(!target) return;
+          if(periodKey(target, granularity)!==selectedKey) return;
+        }
+        rows.push({ item: it, processId: p.id, target, actual: completedAt ? completedAt.slice(0,10) : '', actualAt: completedAt, done: true });
       }else if(currentStepId(it)===p.id){
         if(needsAssignment(it)) return;
         if(currentAssignee(it)!==name) return;
         const target = it.routeTargetDates && it.routeTargetDates[p.id];
-        rows.push({ item: it, processId: p.id, target, actual: '', done: false });
+        if(selectedKey){
+          if(!target) return;
+          const itemPeriod = periodKey(target, granularity);
+          if(!(itemPeriod===selectedKey || itemPeriod<selectedKey)) return;
+        }
+        rows.push({ item: it, processId: p.id, target, actual: '', actualAt: '', done: false });
       }
     });
   });
@@ -4275,18 +4284,29 @@ function renderScorecardProfile(name){
     </select>
   </div>`;
 
-  const personTasks = getPersonTaskRows(name);
+  const personTasks = getPersonTaskRows(name, granularity, profilePeriodState.dateFilter);
   const taskListRows = personTasks.length ? personTasks.map(r=>{
     const overdue = !r.done && r.target && new Date() > new Date(r.target+'T23:59:59');
+    let durationCell = '<span style="color:var(--gray);">—</span>';
+    if(r.done && r.target && r.actualAt){
+      const diffMs = new Date(r.target+'T23:59:59') - new Date(r.actualAt);
+      const abs = Math.abs(diffMs);
+      const days = Math.floor(abs/86400000);
+      const hours = Math.floor((abs%86400000)/3600000);
+      const label = diffMs>=0 ? 'maaga' : 'huli';
+      durationCell = `<span style="${diffMs>=0?'color:var(--green);':'color:var(--red);'}">${days} araw ${hours} oras ${label}</span>`;
+    }
     return `<tr>
       <td>
         <div style="font-weight:700;">${escapeHtml(r.item.itemCode)}</div>
         <div class="hint">${escapeHtml(r.item.soNumber)} · ${escapeHtml(r.item.client)} · ${processLabel(r.processId)}</div>
       </td>
+      <td>${escapeHtml(String(r.item.qty!=null?r.item.qty:''))} ${escapeHtml(r.item.unit||'')}</td>
       <td style="${overdue?'color:var(--red);font-weight:700;':''}">${r.target?formatDateLong(r.target):'—'}${overdue?' ⚠':''}</td>
       <td>${r.done ? (r.actual ? formatDateLong(r.actual) : '—') : `<span style="color:var(--gray);">${overdue?'Overdue pa':'Hindi pa'}</span>`}</td>
+      <td>${durationCell}</td>
     </tr>`;
-  }).join('') : `<tr><td colspan="3" style="color:var(--gray);text-align:center;padding:14px;">Wala pang task.</td></tr>`;
+  }).join('') : `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:14px;">Wala pang task.</td></tr>`;
 
   const taskRows = sc.tasks.map(t=>{
     const pct = t.assigned ? Math.round(t.completed/t.assigned*100) : 0;
@@ -4338,9 +4358,9 @@ function renderScorecardProfile(name){
     <div class="score-task-label" style="margin-bottom:6px;">Performance per Process — ${escapeHtml(perfPeriodLabel)}</div>
     ${periodDropdowns}
     ${taskRows}
-    <div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Lahat ng Task — Target vs. Actual na Natapos</div>
+    <div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Mga Task — Target vs. Actual na Natapos — ${escapeHtml(perfPeriodLabel)}</div>
     <div class="mini-table-wrap"><table class="mini-table">
-      <tr><th>Item</th><th>Target Date</th><th>Actual na Natapos</th></tr>
+      <tr><th>Item</th><th>Quantity</th><th>Target Date</th><th>Actual na Natapos</th><th>Duration</th></tr>
       ${taskListRows}
     </table></div>
   `;
