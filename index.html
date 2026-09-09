@@ -1142,6 +1142,18 @@ const PH_HOLIDAYS_BY_YEAR = {
     '2026-12-31', // Last Day of the Year (special non-working)
   ],
 };
+// "Today" as a YYYY-MM-DD string using the BROWSER'S LOCAL calendar date
+// (this app is used entirely within the Philippines, so local time is PH
+// time) — deliberately NOT new Date().toISOString().slice(0,10), which
+// reads the UTC calendar date instead. PH is UTC+8, so for the first ~8
+// hours of every PH day (roughly 12mn–8am) that UTC-based idiom still
+// reports YESTERDAY's date, which was silently corrupting catch-up-schedule
+// day-rollover comparisons during that window. Used anywhere "today" needs
+// to be compared against a stored YYYY-MM-DD business date.
+function todayDateStr(){
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
 function isNonWorkingDay(dateStr){
   const d = new Date(dateStr+'T00:00:00');
   if(d.getDay()===0) return true; // Sunday
@@ -1181,7 +1193,7 @@ function addWorkingDays(dateStr, n){
 // 3x faster than a 1-person one). Returns { itemId: 'YYYY-MM-DD' }.
 function computeCatchUpSchedule(){
   const items = activeItems().filter(it=>itemCategory(it)!=='done');
-  const today = nextWorkingDay(new Date().toISOString().slice(0,10));
+  const today = nextWorkingDay(todayDateStr());
   const catchUpDates = {};
   PROCESS_LIST.forEach(p=>{
     const queue = items.filter(it=>currentStepId(it)===p.id);
@@ -1217,18 +1229,30 @@ function addCalendarDays(dateStr, days){
 // output, does NOT silently shift on every render. Only once that committed
 // date has actually come and gone with the item still sitting there does it
 // advance to a "2nd", then "3rd" Catch-up Schedule (re-pulling the live plan
-// at that moment). If even the 3rd one is missed, the item is flagged
-// critical and stays that way — blinking in the UI — until the step is
-// actually finished (cleared in cycleStep). If an item catches back up to
+// at that moment) — one advance per missed date, never more than one stage
+// per call, so an item can only ever reach critical after genuinely being
+// given and missing a 1st AND a 2nd AND a 3rd schedule, each requiring its
+// own date to actually pass. If even the 3rd one is missed, the item is
+// flagged critical and stays that way — blinking in the UI — until the step
+// is actually finished (cleared in cycleStep). If an item catches back up to
 // its live plan before its committed date even arrives, the (non-critical)
 // tracking is cleared. Called once per page load (see loadInitialState) —
 // same cadence as this app's other one-time-per-load self-heal checks —
 // which fits a tool that's opened fresh every working day. Mutates `items`
 // in place; returns true if anything changed (so the caller knows to save).
+//
+// Every 1st/2nd/3rd schedule ever issued for the item's CURRENT stretch at
+// this step is also appended (never overwritten or erased) to
+// item.catchUpHistory[processId] as {attempt, date} — so once an item
+// reaches its 3rd Catch-up Schedule / critical, its 1st and 2nd are still
+// there to review, not silently replaced by the latest one. This history is
+// only cleared once the item genuinely catches up (no longer behind) or the
+// step is actually completed (see cycleStep) — never just because a later
+// attempt superseded it.
 function advanceCatchUpSchedules(items){
   let changed = false;
   const livePlan = computeCatchUpSchedule();
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayDateStr();
   items.forEach(it=>{
     if(itemCategory(it)==='done') return;
     const cur = currentStepId(it);
@@ -1236,6 +1260,7 @@ function advanceCatchUpSchedules(items){
     if(!it.catchUpAttempt) it.catchUpAttempt = {};
     if(!it.catchUpDate) it.catchUpDate = {};
     if(!it.catchUpCritical) it.catchUpCritical = {};
+    if(!it.catchUpHistory) it.catchUpHistory = {};
     const planDate = livePlan[it.id];
     const origTarget = it.routeTargetDates && it.routeTargetDates[cur];
     const isBehindPlan = !!(planDate && origTarget && planDate !== origTarget);
@@ -1244,6 +1269,8 @@ function advanceCatchUpSchedules(items){
       if(isBehindPlan){
         it.catchUpAttempt[cur] = 1;
         it.catchUpDate[cur] = planDate;
+        if(!it.catchUpHistory[cur]) it.catchUpHistory[cur] = [];
+        it.catchUpHistory[cur].push({attempt:1, date:planDate});
         changed = true;
       }
       return;
@@ -1255,8 +1282,12 @@ function advanceCatchUpSchedules(items){
       // the 3rd was the one that just got missed, flag it critical instead.
       const attempt = it.catchUpAttempt[cur] || 1;
       if(attempt < 3){
-        it.catchUpAttempt[cur] = attempt + 1;
-        it.catchUpDate[cur] = planDate || existingDate;
+        const nextAttempt = attempt + 1;
+        const nextDate = planDate || existingDate;
+        it.catchUpAttempt[cur] = nextAttempt;
+        it.catchUpDate[cur] = nextDate;
+        if(!it.catchUpHistory[cur]) it.catchUpHistory[cur] = [];
+        it.catchUpHistory[cur].push({attempt:nextAttempt, date:nextDate});
       }else{
         it.catchUpCritical[cur] = true;
       }
@@ -1266,6 +1297,7 @@ function advanceCatchUpSchedules(items){
       // even arrived — no longer behind, so nothing left to track.
       delete it.catchUpAttempt[cur];
       delete it.catchUpDate[cur];
+      if(it.catchUpHistory) delete it.catchUpHistory[cur];
       changed = true;
     }
   });
@@ -2783,9 +2815,17 @@ function renderBoard(){
       // advanceCatchUpSchedules) — a stable, persisted commitment (1st/2nd/3rd)
       // rather than computeCatchUpSchedule()'s always-shifting live plan.
       // Once the 3rd one is also missed, the item is flagged critical.
-      const catchUpAttempt = cur && it.catchUpAttempt ? it.catchUpAttempt[cur] : null;
       const catchUpStoredDate = cur && it.catchUpDate ? it.catchUpDate[cur] : null;
       const isCatchUpCritical = !!(cur && it.catchUpCritical && it.catchUpCritical[cur]);
+      // Every 1st/2nd/3rd Catch-up Schedule ever issued for this step is kept
+      // (see advanceCatchUpSchedules) — shown here as its own line so the
+      // full escalation history stays visible even after it reaches critical,
+      // instead of only ever showing the latest/current one.
+      const catchUpHistory = (cur && it.catchUpHistory && it.catchUpHistory[cur]) || [];
+      const catchUpHistoryHtml = catchUpHistory.map((h,idx)=>{
+        const missed = idx < catchUpHistory.length-1 || isCatchUpCritical;
+        return `<div class="step-date" style="color:#a35d00;font-weight:700;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpOrdinal(h.attempt)} Catch-up Schedule: ${formatDateLong(h.date)}${missed?' (nalagpasan)':''}</div>`;
+      }).join('');
       // How many calendar days has the current step's committed catch-up
       // date already slipped past that same step's original target date?
       // Every downstream (not-yet-started) step gets pushed by that same
@@ -2804,7 +2844,6 @@ function renderBoard(){
         const cls = status==='done' ? 'done' : (isCurrent ? 'current'+(overdue?' overdue':'') : 'upcoming');
         const dateLbl = it.routeTargetDates[pid] ? formatDateLong(it.routeTargetDates[pid]) : '';
         const assignee = pid===cur ? currentAssignee(it) : null;
-        const catchUpLbl = (isCurrent && catchUpStoredDate) ? `${catchUpOrdinal(catchUpAttempt)} Catch-up Schedule: ${formatDateLong(catchUpStoredDate)}` : '';
         // Cascaded projection for downstream steps: shift this step's own
         // original target date forward by the same delay the current step
         // has already accumulated. Purely a live display projection — not
@@ -2819,7 +2858,7 @@ function renderBoard(){
           <div>${processLabel(pid)}</div>
           ${unassigned ? `<div class="step-date">👤 pumili ng tao</div>` : (assignee ? `<div class="step-date">${assignee}</div>` : '')}
           ${dateLbl?`<div class="step-date">${dateLbl}</div>`:''}
-          ${catchUpLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpLbl}</div>`:''}
+          ${isCurrent ? catchUpHistoryHtml : ''}
           ${cascadedLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Projected na bagong petsa dahil sa pagkaantala sa naunang proseso — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${cascadedLbl}</div>`:''}
           ${(isCurrent && isCatchUpCritical)?`<div class="step-date" style="color:#fff;background:var(--red);font-weight:800;border-radius:4px;padding:1px 5px;">🔴 CRITICAL</div>`:''}
         </div>`;
@@ -2929,6 +2968,7 @@ async function cycleStep(itemId, processId){
     if(item.catchUpAttempt) delete item.catchUpAttempt[processId];
     if(item.catchUpDate) delete item.catchUpDate[processId];
     if(item.catchUpCritical) delete item.catchUpCritical[processId];
+    if(item.catchUpHistory) delete item.catchUpHistory[processId];
     if(isLastStep && !item.actualDeliveryDate){
       item.actualDeliveryDate = new Date().toISOString().slice(0,10);
     }
@@ -3608,12 +3648,14 @@ function renderPersonActionableTasksHtml(name){
     const origTarget = t.item.routeTargetDates[t.processId];
     // Numbered catch-up schedule (1st/2nd/3rd, then critical) for THIS task's
     // current step — see advanceCatchUpSchedules() for the full rationale.
-    const catchUpAttempt = t.item.catchUpAttempt ? t.item.catchUpAttempt[t.processId] : null;
-    const catchUpStoredDate = t.item.catchUpDate ? t.item.catchUpDate[t.processId] : null;
+    // Every schedule ever issued for this stretch is shown (not just the
+    // latest) so 1st/2nd stay visible even once it's reached 3rd/critical.
     const isCatchUpCritical = !!(t.item.catchUpCritical && t.item.catchUpCritical[t.processId]);
-    const catchUpNote = catchUpStoredDate
-      ? `<div class="hint" style="color:#a35d00;font-weight:700;margin-top:4px;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpOrdinal(catchUpAttempt)} Catch-up Schedule: ${formatDateLong(catchUpStoredDate)}</div>`
-      : '';
+    const catchUpHistoryForTask = (t.item.catchUpHistory && t.item.catchUpHistory[t.processId]) || [];
+    const catchUpNote = catchUpHistoryForTask.map((h,idx)=>{
+      const missed = idx < catchUpHistoryForTask.length-1 || isCatchUpCritical;
+      return `<div class="hint" style="color:#a35d00;font-weight:700;margin-top:4px;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpOrdinal(h.attempt)} Catch-up Schedule: ${formatDateLong(h.date)}${missed?' (nalagpasan)':''}</div>`;
+    }).join('');
     const criticalNote = isCatchUpCritical
       ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:5px 8px;border-radius:6px;margin-top:4px;">🔴 CRITICAL — Lumagpas na sa 3rd Catch-up Schedule! Kailangan na ng agarang aksyon.</div>`
       : '';
