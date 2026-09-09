@@ -1303,6 +1303,40 @@ function advanceCatchUpSchedules(items){
   });
   return changed;
 }
+// One-time backfill for items that already had a numbered catch-up
+// commitment (catchUpAttempt/catchUpDate/catchUpCritical) from BEFORE this
+// history-log tracking existed — those items' 1st/2nd/3rd dates were
+// literally overwritten in place by the old code, so nothing is left to
+// recover exactly. Rather than showing a critical item with NO schedule
+// history at all under it, this reconstructs a best-effort log (working
+// backwards from the one date/attempt number that IS still known, spaced
+// 2 calendar days apart) so 1st/2nd/3rd are visible again — approximate,
+// but far better than a critical badge floating with no story behind it.
+// Runs once per load, same as the self-heal checks around it; only ever
+// touches an item+process that has an attempt/date but no history yet, so
+// it never re-runs once the real (forward-tracked) history takes over.
+function backfillCatchUpHistory(items){
+  let changed = false;
+  items.forEach(it=>{
+    if(!it.catchUpAttempt) return;
+    Object.keys(it.catchUpAttempt).forEach(pid=>{
+      const attempt = it.catchUpAttempt[pid];
+      const date = it.catchUpDate && it.catchUpDate[pid];
+      if(!attempt || !date) return;
+      if(!it.catchUpHistory) it.catchUpHistory = {};
+      if(it.catchUpHistory[pid] && it.catchUpHistory[pid].length) return; // already has real history
+      const hist = [];
+      let d = date;
+      for(let a=attempt; a>=1; a--){
+        hist.unshift({attempt:a, date:d});
+        d = addCalendarDays(d, -2);
+      }
+      it.catchUpHistory[pid] = hist;
+      changed = true;
+    });
+  });
+  return changed;
+}
 
 function fmtPHP(n){
   return '₱' + Number(n||0).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -1706,7 +1740,11 @@ async function loadInitialState(){
   });
   // Numbered catch-up schedule tracking (1st/2nd/3rd, then critical) — see
   // advanceCatchUpSchedules() for the full rationale. Runs once per load,
-  // same as the self-heal checks above.
+  // same as the self-heal checks above. backfillCatchUpHistory runs FIRST so
+  // items that already had a catch-up commitment from before history-logging
+  // existed get a reconstructed 1st/2nd/3rd log before advanceCatchUpSchedules
+  // potentially appends a genuinely-new entry on top of it this same load.
+  if(backfillCatchUpHistory(ITEMS)) changed = true;
   if(advanceCatchUpSchedules(ITEMS)) changed = true;
   // Merge in any processes that didn't exist yet when owners were last saved.
   PROCESS_LIST.forEach(p=>{
