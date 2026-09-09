@@ -4715,9 +4715,14 @@ function extractItemsFromPositions(items){
     const nextY = idx+1 < unitItems.length ? unitItems[idx+1].y : (boundaryItem ? boundaryItem.y : rowY - 80);
     const qtyItem = items.filter(it=> Math.abs(it.y-rowY)<=Y_TOL && it.x < u.x && /^\d+(\.\d+)?$/.test(norm(it.str)))
       .sort((a,b)=> b.x-a.x)[0];
-    const amounts = items.filter(it=> Math.abs(it.y-rowY)<=Y_TOL && it.x > u.x && /PHP|₱/.test(it.str))
+    // Some supplier/customer SO templates price in Dollars instead of Pesos
+    // (e.g. "$8.906" instead of "₱500.00") — matched here too so the rate
+    // still gets picked up; parseSoText()/handlePdfUpload() converts it to
+    // pesos afterward using that day's FX rate instead of leaving it blank.
+    const amounts = items.filter(it=> Math.abs(it.y-rowY)<=Y_TOL && it.x > u.x && /PHP|₱|\$/.test(it.str))
       .sort((a,b)=> a.x-b.x);
     const rateStr = amounts[0] ? amounts[0].str.replace(/[^\d.,]/g,'') : '';
+    const rateCurrency = (amounts[0] && /\$/.test(amounts[0].str)) ? 'USD' : 'PHP';
     const descItems = items.filter(it=>
       it.y <= rowY + Y_TOL && it.y > nextY + Y_TOL &&
       it.x >= descX0 - 5 && it.x < descX1 - 3
@@ -4733,6 +4738,7 @@ function extractItemsFromPositions(items){
       qty: qtyItem ? norm(qtyItem.str) : '',
       unit: norm(u.str).replace(/s$/,'') || 'pc',
       rate: rateStr ? (Number(rateStr.replace(/,/g,'')) || 0) : 0,
+      rateCurrency,
     });
   });
   return results;
@@ -4812,7 +4818,11 @@ function parseSoText(text, items){
   let parsedItems = extractItemsFromPositions(items);
   if(!parsedItems){
     parsedItems = [];
-    const rowRegex = /(\d+(?:\.\d+)?)\s+(pcs?|units?|sets?|boxes?|kgs?|pairs?|lots?|pc|pcs|lot)\b\s*(?:PHP|₱)\s?([\d,]+\.?\d*)\s+(?:PHP|₱)\s?[\d,]+\.?\d*/gi;
+    // Rate/Amount can be prefixed with PHP/₱ (pesos) or $ (dollars) —
+    // whichever currency symbol precedes the Rate figure decides
+    // rateCurrency; parseSoText()'s caller converts USD rows to pesos
+    // afterward using that day's FX rate instead of leaving them blank.
+    const rowRegex = /(\d+(?:\.\d+)?)\s+(pcs?|units?|sets?|boxes?|kgs?|pairs?|lots?|pc|pcs|lot)\b\s*(PHP|₱|\$)\s?([\d,]+\.?\d*)\s+(?:PHP|₱|\$)\s?[\d,]+\.?\d*/gi;
     let lastIndex = 0, rm;
     while((rm = rowRegex.exec(clean)) !== null){
       const chunk = clean.slice(lastIndex, rm.index).trim();
@@ -4827,8 +4837,9 @@ function parseSoText(text, items){
       }
       if(!desc) desc = chunk;
       if(/subtotal|tax total|shipping cost|handling cost|^total$/i.test(desc)) continue;
-      const rate = Number(rm[3].replace(/,/g,'')) || 0;
-      parsedItems.push({code: code || '(check code)', desc: desc || '(check description)', qty: rm[1], unit: rm[2].replace(/s$/,'') || 'pc', rate});
+      const rate = Number(rm[4].replace(/,/g,'')) || 0;
+      const rateCurrency = rm[3]==='$' ? 'USD' : 'PHP';
+      parsedItems.push({code: code || '(check code)', desc: desc || '(check description)', qty: rm[1], unit: rm[2].replace(/s$/,'') || 'pc', rate, rateCurrency});
     }
   }
   return {soNumber, client, items: parsedItems};
@@ -4863,12 +4874,40 @@ async function handlePdfUpload(file){
     if(parsed.client) document.getElementById('soClient').value = parsed.client;
     document.getElementById('itemRows').innerHTML = '';
     itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; DRAFT_ROWS = {}; saveDraftsLocal();
-    if(parsed.items.length){ parsed.items.forEach(it=>{ const newId = addItemRow(it); captureDraftRow(newId); checkAndSuggestReference(newId); }); } else { addItemRow(); }
+    let usdConvertedCount = 0, usdPendingCount = 0;
+    if(parsed.items.length){
+      for(const it of parsed.items){
+        const newId = addItemRow(it);
+        // The PDF's own Rate/Amount column may be priced in Dollars instead of
+        // Pesos (e.g. "$8.906") — parseSoText() tags those as rateCurrency:
+        // 'USD'. Reuse the exact same conversion path as the manual $/₱
+        // toggle (maybeConvertRateCurrency) so the Rate field comes out
+        // already converted to pesos, using the SO's own Date Uploaded for
+        // the historical FX rate — no manual toggling needed on the user's
+        // part. If the FX lookup fails, leave the row in Dollar mode (with
+        // the raw dollar figure still visible) so the user can see it still
+        // needs converting, instead of silently showing a wrong/blank value.
+        if(it.rateCurrency==='USD' && it.rate){
+          rowCurrency[newId] = 'USD';
+          const btn = document.getElementById('curBtn_'+newId);
+          if(btn) btn.textContent = '$';
+          const inp = document.getElementById('rate_'+newId);
+          if(inp) inp.placeholder = 'Rate $';
+          const dateForFx = document.getElementById('soDateUploaded').value || '';
+          await maybeConvertRateCurrency(newId, dateForFx);
+          if(rowCurrency[newId]==='USD') usdPendingCount++; else usdConvertedCount++;
+        }
+        captureDraftRow(newId); checkAndSuggestReference(newId);
+      }
+    } else { addItemRow(); }
     scheduleSaveSoContext();
     checkSoNumberDuplicate();
     const note = document.getElementById('autofillNote');
     note.style.display = 'block';
-    note.innerHTML = `Auto-filled from <b>${file.name}</b> — ${parsed.items.length} item row(s) found. Client field shows what was detected (often just an internal code) — edit if needed. Piliin pa rin ang fabrication route ng bawat item.`;
+    let fxNote = '';
+    if(usdConvertedCount) fxNote += ` ${usdConvertedCount} dollar-priced item(s) auto-converted to pesos.`;
+    if(usdPendingCount) fxNote += ` ⚠ ${usdPendingCount} dollar-priced item(s) could not be auto-converted (FX lookup failed) — please convert manually using the $/₱ button beside the Rate field.`;
+    note.innerHTML = `Auto-filled from <b>${file.name}</b> — ${parsed.items.length} item row(s) found. Client field shows what was detected (often just an internal code) — edit if needed. Piliin pa rin ang fabrication route ng bawat item.${fxNote}`;
     dz.className = 'dropzone dz-success';
     dzText.innerHTML = `<b>${file.name}</b> uploaded — details filled in below. Click to upload a different file.`;
   }catch(err){
