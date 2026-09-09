@@ -277,6 +277,12 @@
      already active on the board — see checkSoNumberDuplicate(). */
   @keyframes soDupBlink{0%,100%{border-color:var(--red);background:#fff;}50%{border-color:var(--red);background:#fde8e8;}}
   input.input-dup-blink{animation:soDupBlink 1s ease-in-out infinite;border-color:var(--red)!important;}
+  /* Blinking red outline for an item that has missed its 3rd Catch-up
+     Schedule (see advanceCatchUpSchedules()) — a "critical, needs
+     immediate attention" flag on the whole card, on both the Production
+     Board's item-route-card and My Tasks' task-card. */
+  @keyframes criticalItemBlink{0%,100%{box-shadow:0 0 0 2px var(--red);}50%{box-shadow:0 0 0 2px var(--red),0 0 0 6px #fbdada;}}
+  .critical-blink{animation:criticalItemBlink 1.1s ease-in-out infinite;}
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
   .item-row{display:grid;grid-template-columns:1.2fr 2fr .6fr .6fr .8fr 32px;gap:8px;margin-bottom:8px;align-items:end;}
   .item-row input{font-size:12.5px;padding:7px 8px;}
@@ -1197,6 +1203,68 @@ function computeCatchUpSchedule(){
   });
   return catchUpDates;
 }
+function catchUpOrdinal(n){ return n===1?'1st':(n===2?'2nd':(n===3?'3rd':(n||1)+'th')); }
+// Turns the always-fresh, ephemeral plan above into a persisted, NUMBERED
+// commitment per item+process: the first time an item is genuinely behind
+// (the live plan's date differs from its own original target date), it gets
+// a "1st Catch-up Schedule" — a date that, unlike computeCatchUpSchedule()'s
+// output, does NOT silently shift on every render. Only once that committed
+// date has actually come and gone with the item still sitting there does it
+// advance to a "2nd", then "3rd" Catch-up Schedule (re-pulling the live plan
+// at that moment). If even the 3rd one is missed, the item is flagged
+// critical and stays that way — blinking in the UI — until the step is
+// actually finished (cleared in cycleStep). If an item catches back up to
+// its live plan before its committed date even arrives, the (non-critical)
+// tracking is cleared. Called once per page load (see loadInitialState) —
+// same cadence as this app's other one-time-per-load self-heal checks —
+// which fits a tool that's opened fresh every working day. Mutates `items`
+// in place; returns true if anything changed (so the caller knows to save).
+function advanceCatchUpSchedules(items){
+  let changed = false;
+  const livePlan = computeCatchUpSchedule();
+  const today = new Date().toISOString().slice(0,10);
+  items.forEach(it=>{
+    if(itemCategory(it)==='done') return;
+    const cur = currentStepId(it);
+    if(!cur) return;
+    if(!it.catchUpAttempt) it.catchUpAttempt = {};
+    if(!it.catchUpDate) it.catchUpDate = {};
+    if(!it.catchUpCritical) it.catchUpCritical = {};
+    const planDate = livePlan[it.id];
+    const origTarget = it.routeTargetDates && it.routeTargetDates[cur];
+    const isBehindPlan = !!(planDate && origTarget && planDate !== origTarget);
+    const existingDate = it.catchUpDate[cur];
+    if(!existingDate){
+      if(isBehindPlan){
+        it.catchUpAttempt[cur] = 1;
+        it.catchUpDate[cur] = planDate;
+        changed = true;
+      }
+      return;
+    }
+    if(it.catchUpCritical[cur]) return; // locked once critical — only cycleStep's Done handler clears this
+    if(existingDate < today){
+      // The committed catch-up date has come and gone and the item is still
+      // sitting right here — advance to the next numbered schedule, or, if
+      // the 3rd was the one that just got missed, flag it critical instead.
+      const attempt = it.catchUpAttempt[cur] || 1;
+      if(attempt < 3){
+        it.catchUpAttempt[cur] = attempt + 1;
+        it.catchUpDate[cur] = planDate || existingDate;
+      }else{
+        it.catchUpCritical[cur] = true;
+      }
+      changed = true;
+    }else if(!isBehindPlan){
+      // Caught back up to its own original target before the committed date
+      // even arrived — no longer behind, so nothing left to track.
+      delete it.catchUpAttempt[cur];
+      delete it.catchUpDate[cur];
+      changed = true;
+    }
+  });
+  return changed;
+}
 
 function fmtPHP(n){
   return '₱' + Number(n||0).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -1598,6 +1666,10 @@ async function loadInitialState(){
     if(it.soMaterialsCostTotal===undefined){ it.soMaterialsCostTotal = null; changed = true; }
     if(it.soConsumablesCostTotal===undefined){ it.soConsumablesCostTotal = null; changed = true; }
   });
+  // Numbered catch-up schedule tracking (1st/2nd/3rd, then critical) — see
+  // advanceCatchUpSchedules() for the full rationale. Runs once per load,
+  // same as the self-heal checks above.
+  if(advanceCatchUpSchedules(ITEMS)) changed = true;
   // Merge in any processes that didn't exist yet when owners were last saved.
   PROCESS_LIST.forEach(p=>{
     if(PROCESS_OWNERS[p.id]===undefined){
@@ -2526,27 +2598,39 @@ function renderLineItemsBreakdown(){
   const ongoingIds = new Set(ongoingItems.map(i=>i.id));
   const delayedItems = ITEMS_VIEW.filter(i=>isItemOverdueNow(i) && !ongoingIds.has(i.id));
   const onTrackItems = ITEMS_VIEW.filter(i=>itemCategory(i)!=='done' && !ongoingIds.has(i.id) && !isItemOverdueNow(i));
+  // Within "Ongoing" (currently being worked on), split further into ones
+  // still within their own target date vs ones already past it — i.e. work
+  // that's happening but has itself slipped behind schedule. Shown as a
+  // sub-breakdown inside the same Ongoing card rather than a 5th card, since
+  // both numbers are just a further split of that one card's own count.
+  const ongoingOnTrackItems = ongoingItems.filter(i=>!isItemOverdueNow(i));
+  const ongoingDelayedItems = ongoingItems.filter(i=>isItemOverdueNow(i));
   const sumQty = arr => arr.reduce((a,i)=>a+Number(i.qty||0),0);
   const sumVal = arr => arr.reduce((a,i)=>a+itemAmount(i),0);
   const totalItemsForPct = ITEMS_VIEW.length || 1;
   const totalPiecesForPct = sumQty(ITEMS_VIEW) || 1;
   const pctOf = (arr) => Math.round(arr.length/totalItemsForPct*100);
   const pctOfPieces = (arr) => Math.round(sumQty(arr)/totalPiecesForPct*100);
-  const bCard = (icon, label, arr, accentBg) => `
+  const bCard = (icon, label, arr, accentBg, extraHtml) => `
     <div class="stat-card-lg" style="background:${accentBg};border:1px solid rgba(255,255,255,.25);box-shadow:0 4px 14px rgba(0,0,0,.18);">
       <div class="icon">${icon}</div>
       <div class="num" style="color:#fff;">${arr.length} item${arr.length===1?'':'s'} <span style="font-size:19px;">(${pctOf(arr)}%)</span></div>
       <div class="lbl" style="color:#f5e4e9;">${label}</div>
       <div class="sub" style="color:#fff;border-top-color:rgba(255,255,255,.3);">${fmtPHP(sumVal(arr))}<br>${sumQty(arr).toLocaleString()} pcs (${pctOfPieces(arr)}%)</div>
+      ${extraHtml||''}
+    </div>`;
+  const ongoingSplitHtml = `
+    <div style="margin-top:8px;padding-top:8px;border-top:1px dashed rgba(255,255,255,.3);display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:#fff;">
+      <span title="Ongoing pa rin at nasa loob ng target date">🟢 On track: ${ongoingOnTrackItems.length}</span>
+      <span title="Ongoing pero lampas na sa target date">⚠️ Delayed: ${ongoingDelayedItems.length}</span>
     </div>`;
   el.innerHTML = bCard('✓','Natapos (Done)', doneItems, 'rgba(45,138,86,.28)')
     + bCard('🟢','On Track', onTrackItems, 'rgba(37,99,168,.28)')
-    + bCard('⚙️','Ongoing', ongoingItems, 'rgba(150,110,40,.32)')
+    + bCard('⚙️','Ongoing', ongoingItems, 'rgba(150,110,40,.32)', ongoingSplitHtml)
     + bCard('⚠️','Delayed', delayedItems, 'rgba(196,60,60,.32)');
 }
 function renderBoard(){
   renderLineItemsBreakdown();
-  const catchUpDates = computeCatchUpSchedule();
   const groups = {};
   activeItems().forEach(it=>{
     const key = it.soNumber + '||' + it.client;
@@ -2609,6 +2693,13 @@ function renderBoard(){
       const pct = itemPctDone(it);
       const cur = currentStepId(it);
       const curIdx = cur ? it.route.indexOf(cur) : -1;
+      // Numbered catch-up schedule for the CURRENT step only (see
+      // advanceCatchUpSchedules) — a stable, persisted commitment (1st/2nd/3rd)
+      // rather than computeCatchUpSchedule()'s always-shifting live plan.
+      // Once the 3rd one is also missed, the item is flagged critical.
+      const catchUpAttempt = cur && it.catchUpAttempt ? it.catchUpAttempt[cur] : null;
+      const catchUpStoredDate = cur && it.catchUpDate ? it.catchUpDate[cur] : null;
+      const isCatchUpCritical = !!(cur && it.catchUpCritical && it.catchUpCritical[cur]);
       let trackHtml = '';
       it.route.forEach((pid,i)=>{
         if(i>0) trackHtml += `<div class="route-arrow">→</div>`;
@@ -2619,13 +2710,7 @@ function renderBoard(){
         const cls = status==='done' ? 'done' : (isCurrent ? 'current'+(overdue?' overdue':'') : 'upcoming');
         const dateLbl = it.routeTargetDates[pid] ? formatDateLong(it.routeTargetDates[pid]) : '';
         const assignee = pid===cur ? currentAssignee(it) : null;
-        // Catch-up target — a separately-computed, always-live re-plan of
-        // when the backlog can realistically get worked (see
-        // computeCatchUpSchedule), shown ONLY on the current step and only
-        // when it differs from the original target date above it. The
-        // original target (dateLbl) is never touched by this.
-        const catchUpDate = isCurrent ? catchUpDates[it.id] : null;
-        const catchUpLbl = (catchUpDate && catchUpDate !== it.routeTargetDates[pid]) ? formatDateLong(catchUpDate) : '';
+        const catchUpLbl = (isCurrent && catchUpStoredDate) ? `${catchUpOrdinal(catchUpAttempt)} Catch-up Schedule: ${formatDateLong(catchUpStoredDate)}` : '';
         // Read-only on the Production Board on purpose — status moves only
         // from My Tasks now (the "pill" there still calls cycleStep), so
         // this stays a live, always-in-sync mirror instead of a second place
@@ -2634,7 +2719,8 @@ function renderBoard(){
           <div>${processLabel(pid)}</div>
           ${unassigned ? `<div class="step-date">👤 pumili ng tao</div>` : (assignee ? `<div class="step-date">${assignee}</div>` : '')}
           ${dateLbl?`<div class="step-date">${dateLbl}</div>`:''}
-          ${catchUpLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Catch-up target — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpLbl}</div>`:''}
+          ${catchUpLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpLbl}</div>`:''}
+          ${(isCurrent && isCatchUpCritical)?`<div class="step-date" style="color:#fff;background:var(--red);font-weight:800;border-radius:4px;padding:1px 5px;">🔴 CRITICAL</div>`:''}
         </div>`;
       });
       const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${it.id}')">↩ Ibalik sa nakaraan</button>` : '';
@@ -2642,13 +2728,14 @@ function renderBoard(){
       const detourBtn = cur ? `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${it.id}')">🔧 Kailangan ng ibang proseso</button>` : '';
       const returnNote = it.lastReturn ? `<div class="hint" style="color:var(--red);margin-top:6px;">↩ Ibinalik mula sa ${processLabel(it.lastReturn.fromProcess)}${it.lastReturn.reason ? ': "'+it.lastReturn.reason+'"' : ''}</div>` : '';
       const detourPendingNote = (cur && it.detourFrom && it.detourFrom[cur]) ? `<div class="hint" style="color:#6a5acd;margin-top:6px;">🔧 Kinakailangan ito ni ${processLabel(it.detourFrom[cur])} bago magpatuloy${(it.detourReason && it.detourReason[cur]) ? ': "'+it.detourReason[cur]+'"' : ''} — babalik doon pagkatapos dito.</div>` : '';
+      const criticalNote = isCatchUpCritical ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:6px 9px;border-radius:6px;margin-top:6px;">🔴 CRITICAL — Lumagpas na sa 3rd Catch-up Schedule sa ${processLabel(cur)}! Kailangan na ng agarang aksyon dito.</div>` : '';
       const splitNote = it.splitNote ? `<div class="hint" style="color:var(--accent-teal-dk);margin-top:6px;">➗ ${it.splitNote}</div>` : '';
       const partsHtml = it.partsBreakdown ? `<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(it.partsBreakdown)}</div></details>` : '';
       const drawingHtml = drawingLinkHtml(it);
       const partsListHtml = partsListTableHtml(it);
       const isSplitItem = isPartOfSplit(it);
       const stripeCls = itemIdx%2===0 ? 'stripe-a' : 'stripe-b';
-      html += `<div class="item-route-card ${isSplitItem?'':stripeCls}" style="${isSplitItem?'border-left:4px solid #6a5acd;background:#faf9fd;':''}">
+      html += `<div class="item-route-card ${isSplitItem?'':stripeCls}${isCatchUpCritical?' critical-blink':''}" style="${isSplitItem?'border-left:4px solid #6a5acd;background:#faf9fd;':''}">
         <div class="irc-top">
           <div>
             <div class="irc-code">${escapeHtml(it.itemCode)}${isSplitItem?' <span class="hint" style="color:#6a5acd;font-weight:700;">🔗 split</span>':''}</div>
@@ -2666,6 +2753,7 @@ function renderBoard(){
         <div class="route-track">${trackHtml}</div>
         ${returnNote}
         ${detourPendingNote}
+        ${criticalNote}
         ${splitNote}
         ${drawingHtml}
         ${partsListHtml}
@@ -2734,6 +2822,12 @@ async function cycleStep(itemId, processId){
       delete item.detourFrom[processId];
       if(item.detourReason) delete item.detourReason[processId];
     }
+    // The step is genuinely finished now — whatever catch-up schedule
+    // (1st/2nd/3rd) or critical flag it had accumulated no longer applies;
+    // a fresh one only starts if the item falls behind again at its NEXT step.
+    if(item.catchUpAttempt) delete item.catchUpAttempt[processId];
+    if(item.catchUpDate) delete item.catchUpDate[processId];
+    if(item.catchUpCritical) delete item.catchUpCritical[processId];
     if(isLastStep && !item.actualDeliveryDate){
       item.actualDeliveryDate = new Date().toISOString().slice(0,10);
     }
@@ -3355,7 +3449,6 @@ function selectPerson(p, processId){ selectedProcess = processId; openScorecardP
 // inside their profile popup (see renderScorecardProfile).
 function renderPersonActionableTasksHtml(name){
   let tasks = [], needsAssign = [];
-  const catchUpDates = computeCatchUpSchedule();
   activeItems().forEach(it=>{
     const cur = currentStepId(it);
     if(cur===null) return;
@@ -3411,10 +3504,17 @@ function renderPersonActionableTasksHtml(name){
     const drawingsHtml = drawingLinkHtml(t.item);
     const partsListHtml = partsListTableHtml(t.item);
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
-    const catchUpDate = catchUpDates[t.item.id];
     const origTarget = t.item.routeTargetDates[t.processId];
-    const catchUpNote = (catchUpDate && catchUpDate !== origTarget)
-      ? `<div class="hint" style="color:#a35d00;font-weight:700;margin-top:4px;" title="Catch-up target — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ Catch-up date: ${formatDateLong(catchUpDate)}</div>`
+    // Numbered catch-up schedule (1st/2nd/3rd, then critical) for THIS task's
+    // current step — see advanceCatchUpSchedules() for the full rationale.
+    const catchUpAttempt = t.item.catchUpAttempt ? t.item.catchUpAttempt[t.processId] : null;
+    const catchUpStoredDate = t.item.catchUpDate ? t.item.catchUpDate[t.processId] : null;
+    const isCatchUpCritical = !!(t.item.catchUpCritical && t.item.catchUpCritical[t.processId]);
+    const catchUpNote = catchUpStoredDate
+      ? `<div class="hint" style="color:#a35d00;font-weight:700;margin-top:4px;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpOrdinal(catchUpAttempt)} Catch-up Schedule: ${formatDateLong(catchUpStoredDate)}</div>`
+      : '';
+    const criticalNote = isCatchUpCritical
+      ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:5px 8px;border-radius:6px;margin-top:4px;">🔴 CRITICAL — Lumagpas na sa 3rd Catch-up Schedule! Kailangan na ng agarang aksyon.</div>`
       : '';
     // Persistent "started"/"finished" stamps for this task's current step —
     // started is set the first time it's tapped to Ongoing (survives pauses
@@ -3427,13 +3527,14 @@ function renderPersonActionableTasksHtml(name){
     const startStampHtml = stepStartedAt ? `<div class="hint" style="text-align:right;">🕐 Nag-start: ${formatDateTimeLong(stepStartedAt)}</div>` : '';
     const doneStampHtml = stepCompletedAt ? `<div class="hint" style="text-align:right;color:var(--green);">✅ Natapos: ${formatDateLong(stepCompletedAt.slice(0,10))}</div>` : '';
     return `
-    <div class="task-card ${cardClass}" style="${cardStyle}">
+    <div class="task-card ${cardClass}${isCatchUpCritical?' critical-blink':''}" style="${cardStyle}">
       <div class="tinfo">
         <div class="so-tag">${escapeHtml(t.item.soNumber)} · ${escapeHtml(t.item.client)}</div>
         <div class="code">${escapeHtml(t.item.itemCode)}</div>
         <div class="desc">${escapeHtml(t.item.description)}</div>
         <div class="stagelbl">${t.item.qty} ${t.item.unit}${t.overdue?' · <b style="color:var(--red);">OVERDUE</b>':''}${origTarget?' · target: '+formatDateLong(origTarget):''}</div>
         ${catchUpNote}
+        ${criticalNote}
         ${returnNote}
         ${detourPendingNote}
         ${splitBadge}
@@ -3711,10 +3812,26 @@ function inSelectedPeriods(dateStr, granularity, selectedSet){
   if(!dateStr || !selectedSet || selectedSet.size===0) return false;
   return selectedSet.has(periodKey(dateStr, granularity));
 }
-// Items whose Target Delivery Date falls inside a chosen period (regardless
-// of status) — how much was SUPPOSED to ship in the chosen periods.
+// Items whose Target Delivery Date falls inside a chosen period, PLUS any
+// still-undelivered item whose target period is EARLIER than the earliest
+// chosen period — how much was SUPPOSED to ship in the chosen periods,
+// counting the whole rolling backlog as still "owed" for as long as it stays
+// undelivered. E.g. an item targeted for August that's still not done keeps
+// counting toward September's target, then October's, and so on — it only
+// stops rolling forward once it's actually delivered (its own delivery month
+// is what finally "clears" it, via computeActualDeliveredInRange below).
 function computeTargetDeliveredInRange(granularity, selectedSet){
-  const items = activeItems().filter(it=>inSelectedPeriods(it.targetDelivery, granularity, selectedSet));
+  if(!selectedSet || selectedSet.size===0) return { count: 0, value: 0 };
+  const earliestSelected = [...selectedSet].sort()[0];
+  const seen = new Set();
+  const items = activeItems().filter(it=>{
+    if(!it.targetDelivery || seen.has(it.id)) return false;
+    const itemPeriod = periodKey(it.targetDelivery, granularity);
+    const inChosenPeriod = selectedSet.has(itemPeriod);
+    const rolledOverBacklog = !inChosenPeriod && itemCategory(it)!=='done' && itemPeriod < earliestSelected;
+    if(inChosenPeriod || rolledOverBacklog){ seen.add(it.id); return true; }
+    return false;
+  });
   return { count: items.length, value: items.reduce((a,i)=>a+itemAmount(i),0) };
 }
 // Items actually marked delivered (actualDeliveryDate) inside a chosen
@@ -3768,7 +3885,7 @@ function renderTeamOverviewBanner(){
     <div class="cards-row" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));max-width:1000px;margin:0 auto;">
       ${card('👥', activePeople, 'Active Team Members', '', 'rgba(255,255,255,.10)')}
       ${card('🎯', perfPct!==null ? perfPct+'%' : '—', `Team Performance (${rangeLabel})`, `${actualD.count} naihatid / ${targetD.count} target`, 'rgba(214,158,44,.28)')}
-      ${card('📅', targetD.count, `Target Delivered Items (${rangeLabel})`, fmtPHP(targetD.value), 'rgba(37,99,168,.28)')}
+      ${card('📅', targetD.count, `Target Delivered Items (${rangeLabel})`, `${fmtPHP(targetD.value)}<br><span style="font-size:10.5px;font-weight:600;opacity:.85;">kasama ang backlog na hindi pa natapos mula noong nakaraan</span>`, 'rgba(37,99,168,.28)')}
       ${card('✅', actualD.count, `Actual Delivered Items (${rangeLabel})`, fmtPHP(actualD.value), 'rgba(45,138,86,.28)')}
     </div>
     <div class="tabs" style="justify-content:center;display:flex;border-bottom:1px solid rgba(255,255,255,.2);margin-top:16px;">${tabsHtml}</div>
