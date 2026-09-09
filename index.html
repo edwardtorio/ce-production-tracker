@@ -1204,6 +1204,10 @@ function computeCatchUpSchedule(){
   return catchUpDates;
 }
 function catchUpOrdinal(n){ return n===1?'1st':(n===2?'2nd':(n===3?'3rd':(n||1)+'th')); }
+function addCalendarDays(dateStr, days){
+  const d = new Date(dateStr+'T00:00:00');
+  return new Date(d.getTime() + days*86400000).toISOString().slice(0,10);
+}
 // Turns the always-fresh, ephemeral plan above into a persisted, NUMBERED
 // commitment per item+process: the first time an item is genuinely behind
 // (the live plan's date differs from its own original target date), it gets
@@ -2700,17 +2704,31 @@ function renderBoard(){
       const catchUpAttempt = cur && it.catchUpAttempt ? it.catchUpAttempt[cur] : null;
       const catchUpStoredDate = cur && it.catchUpDate ? it.catchUpDate[cur] : null;
       const isCatchUpCritical = !!(cur && it.catchUpCritical && it.catchUpCritical[cur]);
+      // How many calendar days has the current step's committed catch-up
+      // date already slipped past that same step's original target date?
+      // Every downstream (not-yet-started) step gets pushed by that same
+      // number of days, so the whole remaining route visibly reflects the
+      // upstream delay instead of only the currently-stuck step.
+      const curOrigTarget = cur ? it.routeTargetDates[cur] : null;
+      const catchUpDeltaDays = (catchUpStoredDate && curOrigTarget) ? Math.round((new Date(catchUpStoredDate+'T00:00:00') - new Date(curOrigTarget+'T00:00:00')) / 86400000) : 0;
       let trackHtml = '';
       it.route.forEach((pid,i)=>{
         if(i>0) trackHtml += `<div class="route-arrow">→</div>`;
         const status = it.routeStatus[pid];
         const isCurrent = pid===cur;
+        const isDownstream = !isCurrent && status!=='done' && curIdx>=0 && i>curIdx;
         const overdue = isCurrent && isItemOverdueNow(it);
         const unassigned = isCurrent && needsAssignment(it);
         const cls = status==='done' ? 'done' : (isCurrent ? 'current'+(overdue?' overdue':'') : 'upcoming');
         const dateLbl = it.routeTargetDates[pid] ? formatDateLong(it.routeTargetDates[pid]) : '';
         const assignee = pid===cur ? currentAssignee(it) : null;
         const catchUpLbl = (isCurrent && catchUpStoredDate) ? `${catchUpOrdinal(catchUpAttempt)} Catch-up Schedule: ${formatDateLong(catchUpStoredDate)}` : '';
+        // Cascaded projection for downstream steps: shift this step's own
+        // original target date forward by the same delay the current step
+        // has already accumulated. Purely a live display projection — not
+        // persisted, and it does not replace this step's own original
+        // target date shown above it.
+        const cascadedLbl = (isDownstream && catchUpDeltaDays>0 && it.routeTargetDates[pid]) ? `Catch-up Schedule: ${formatDateLong(addCalendarDays(it.routeTargetDates[pid], catchUpDeltaDays))}` : '';
         // Read-only on the Production Board on purpose — status moves only
         // from My Tasks now (the "pill" there still calls cycleStep), so
         // this stays a live, always-in-sync mirror instead of a second place
@@ -2720,6 +2738,7 @@ function renderBoard(){
           ${unassigned ? `<div class="step-date">👤 pumili ng tao</div>` : (assignee ? `<div class="step-date">${assignee}</div>` : '')}
           ${dateLbl?`<div class="step-date">${dateLbl}</div>`:''}
           ${catchUpLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpLbl}</div>`:''}
+          ${cascadedLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Projected na bagong petsa dahil sa pagkaantala sa naunang proseso — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${cascadedLbl}</div>`:''}
           ${(isCurrent && isCatchUpCritical)?`<div class="step-date" style="color:#fff;background:var(--red);font-weight:800;border-radius:4px;padding:1px 5px;">🔴 CRITICAL</div>`:''}
         </div>`;
       });
