@@ -156,8 +156,8 @@
     .stage-row-v2 .pct{width:auto;}
   }
 
-  .workload-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;}
-  .person-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--steel-50);}
+  .workload-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;}
+  .person-card{border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--steel-50);box-shadow:0 2px 9px rgba(122,47,69,.10);}
   .person-card .pname{font-weight:700;font-size:13px;color:var(--steel-900);}
   .person-card .prole{font-size:11px;color:var(--gray);margin-bottom:6px;}
   .person-card .ptasks{font-family:var(--font-mono);font-size:12px;}
@@ -2026,7 +2026,7 @@ function renderTeamWorkload(){
   const personMap = {};
   PROCESS_LIST.forEach(p=>{
     ownersFor(p.id).forEach(name=>{
-      if(!personMap[name]) personMap[name] = {roles:new Set(), q:0,o:0,d:0,na:0};
+      if(!personMap[name]) personMap[name] = {roles:new Set(), q:0,o:0,d:0,na:0,critical:false};
       personMap[name].roles.add(p.label);
       const multiOwner = ownersFor(p.id).length>1;
       ITEMS_VIEW.forEach(it=>{
@@ -2040,6 +2040,15 @@ function renderTeamWorkload(){
           // process was getting credit for work a teammate did.
           if(multiOwner && (it.stepAssignee && it.stepAssignee[p.id]) !== name) return;
           personMap[name].d++; return;
+        }
+        // A process owner's whole card blinks once ANY item currently stuck
+        // at their station has passed its 3rd Catch-up Schedule (see
+        // advanceCatchUpSchedules) — same "critical" flag the Production
+        // Board already blinks on, surfaced here so a boss scanning the
+        // team grid can immediately spot who needs urgent attention.
+        if(isCurrent && it.catchUpCritical && it.catchUpCritical[p.id]){
+          const assignedTo = multiOwner ? (it.stepAssignee && it.stepAssignee[p.id]) : name;
+          if(assignedTo===name) personMap[name].critical = true;
         }
         if(!isCurrent) return;
         if(needsAssignment(it)){ personMap[name].na++; return; }
@@ -2061,11 +2070,12 @@ function renderTeamWorkload(){
     const perfBadge = perf.pct===null ? '' : `<div style="position:absolute;top:10px;right:10px;width:34px;height:34px;border-radius:50%;
         background:${perf.pct>=90?'var(--green)':perf.pct>=70?'var(--amber)':'var(--red)'};color:#fff;
         display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;" title="${perf.onTime} on-time / ${perf.assigned} assigned">${perf.pct}%</div>`;
-    wHtml += `<div class="person-card" style="cursor:pointer;position:relative;${isActive?'border-color:var(--accent-teal);box-shadow:0 0 0 1px var(--accent-teal);':''}" onclick="selectPersonOverall('${jsAttr(name)}')">
+    wHtml += `<div class="person-card${d.critical?' critical-blink':''}" style="cursor:pointer;position:relative;${isActive?'border-color:var(--accent-teal);box-shadow:0 0 0 1px var(--accent-teal);':''}" onclick="selectPersonOverall('${jsAttr(name)}')">
       ${perfBadge}
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;padding-right:${perf.pct===null?'0':'38px'};">${avatarHtml(name,28)}<div class="pname">${name}</div></div>
       <div class="prole">${[...d.roles].join(', ')}</div>
       <div class="ptasks"><span class="q">${d.q} queue</span> · <span class="o">${d.o} ongoing</span> · <span class="d">${d.d} done</span>${d.na?` · <span style="color:var(--amber);">${d.na} need assign</span>`:''}</div>
+      ${d.critical?`<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:4px 8px;border-radius:6px;margin-top:6px;">🔴 May critical na item — lagpas na sa 3rd Catch-up Schedule</div>`:''}
       <div class="hint" style="margin-top:6px;">👤 I-tap para buksan ang profile</div>
     </div>`;
   });
