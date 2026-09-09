@@ -2639,7 +2639,9 @@ function renderBoard(){
       });
       const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${it.id}')">↩ Ibalik sa nakaraan</button>` : '';
       const partialBtn = (cur && Number(it.qty)>1) ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${it.id}','${cur}')">➗ Partial</button>` : '';
+      const detourBtn = cur ? `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${it.id}')">🔧 Kailangan ng ibang proseso</button>` : '';
       const returnNote = it.lastReturn ? `<div class="hint" style="color:var(--red);margin-top:6px;">↩ Ibinalik mula sa ${processLabel(it.lastReturn.fromProcess)}${it.lastReturn.reason ? ': "'+it.lastReturn.reason+'"' : ''}</div>` : '';
+      const detourPendingNote = (cur && it.detourFrom && it.detourFrom[cur]) ? `<div class="hint" style="color:#6a5acd;margin-top:6px;">🔧 Kinakailangan ito ni ${processLabel(it.detourFrom[cur])} bago magpatuloy${(it.detourReason && it.detourReason[cur]) ? ': "'+it.detourReason[cur]+'"' : ''} — babalik doon pagkatapos dito.</div>` : '';
       const splitNote = it.splitNote ? `<div class="hint" style="color:var(--accent-teal-dk);margin-top:6px;">➗ ${it.splitNote}</div>` : '';
       const partsHtml = it.partsBreakdown ? `<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(it.partsBreakdown)}</div></details>` : '';
       const drawingHtml = drawingLinkHtml(it);
@@ -2657,11 +2659,13 @@ function renderBoard(){
             ${pauseResumeHtml(it, cur)}
             ${returnBtn}
             ${partialBtn}
+            ${detourBtn}
             <button class="irc-edit" title="Edit item" onclick="openEditItemModal('${it.id}')">✎ Edit</button>
           </div>
         </div>
         <div class="route-track">${trackHtml}</div>
         ${returnNote}
+        ${detourPendingNote}
         ${splitNote}
         ${drawingHtml}
         ${partsListHtml}
@@ -2717,6 +2721,19 @@ async function cycleStep(itemId, processId){
   if(newStatus==='done'){
     item.routeCompletedAt[processId] = new Date().toISOString();
     if(item.lastReturn && item.lastReturn.toProcess===processId) delete item.lastReturn;
+    // If this step was a borrowed/ad-hoc process requested mid-route by
+    // another step that isn't normally part of this item's fabrication route
+    // (see openDetourModal/confirmDetour), hand the item straight back to
+    // whoever asked for it — currentStepId() already lands there naturally
+    // since it was spliced in right before that step, this just adds the
+    // confirmation note so the requester sees it came back.
+    if(item.detourFrom && item.detourFrom[processId]){
+      const backTo = item.detourFrom[processId];
+      const detourReason = (item.detourReason && item.detourReason[processId]) || '';
+      item.lastReturn = { fromProcess: processId, toProcess: backTo, reason: detourReason ? `Natapos na sa ${processLabel(processId)}: "${detourReason}"` : `Natapos na sa ${processLabel(processId)}`, timestamp: new Date().toISOString() };
+      delete item.detourFrom[processId];
+      if(item.detourReason) delete item.detourReason[processId];
+    }
     if(isLastStep && !item.actualDeliveryDate){
       item.actualDeliveryDate = new Date().toISOString().slice(0,10);
     }
@@ -2889,6 +2906,77 @@ async function confirmReturn(itemId){
   renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await save();
   showToast(`${item.itemCode} ibinalik sa ${processLabel(prevId)}`);
+}
+
+/* ---------- Detour: borrow a process that isn't part of this item's own
+   fabrication route (e.g. the route never included Welding and Assembly, but
+   mid-way through some other step it turns out this specific item needs
+   welding done first). Only processes NOT already in item.route are offered,
+   since routeStatus/routeTargetDates/etc. are keyed by processId — reusing a
+   process id already in the route would make the two occurrences share the
+   same status and collide. The borrowed process is spliced into item.route
+   right before the requesting step, so currentStepId() (which is just "the
+   first non-done entry in route order") naturally treats it as the new
+   current step; once it's marked Done, currentStepId() naturally advances
+   right back to the requesting step — the "return to whoever asked for it"
+   behavior falls out of the existing routing logic for free, no special
+   return-path bookkeeping needed beyond the item.detourFrom lookup used to
+   generate the confirmation note (see cycleStep). ---------- */
+function openDetourModal(itemId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const cur = currentStepId(item);
+  if(!cur){ showToast('Tapos na ang item na ito.'); return; }
+  const choices = PROCESS_LIST.filter(p=>!item.route.includes(p.id));
+  if(!choices.length){ showToast('Nasa route na ang lahat ng proseso — wala nang ibang mapipili.'); return; }
+  const optionsHtml = choices.map(p=>`<option value="${p.id}">${escapeHtml(p.label)}</option>`).join('');
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `
+    <h4>Kailangan ng Ibang Proseso</h4>
+    <p><b>${escapeHtml(item.itemCode)}</b> — piliin ang proseso na kailangan munang gawin, kahit hindi ito kasama sa orihinal na fabrication route ng item na ito. Makikita agad ito sa taong may-ari ng napiling proseso bilang Queue, at kapag na-mark na Done doon, awtomatiko itong babalik dito sa <b>${processLabel(cur)}</b> para ituloy.</p>
+    <div class="field"><label>Proseso na kailangan</label>
+      <select id="detourProcess">${optionsHtml}</select>
+    </div>
+    <div class="field"><label>Dahilan (optional — halimbawa: kailangan i-weld muna)</label>
+      <textarea id="detourReason" placeholder="I-describe kung bakit kailangan ang prosesong ito..."></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn" style="background:#6a5acd;" onclick="confirmDetour('${itemId}')">Ipadala</button>
+    </div>
+  `;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+async function confirmDetour(itemId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const cur = currentStepId(item);
+  if(!cur) return;
+  const chosen = document.getElementById('detourProcess').value;
+  if(!chosen || item.route.includes(chosen)){ showToast('Pumili ng valid na proseso.'); return; }
+  const reason = (document.getElementById('detourReason').value || '').trim();
+  const idx = item.route.indexOf(cur);
+  item.route.splice(idx, 0, chosen); // inserted right before `cur` — becomes the new current step
+  item.routeStatus[chosen] = 'queue';
+  ensureTimingFields(item);
+  delete item.routeStartedAt[chosen];
+  delete item.routePaused[chosen];
+  delete item.routeStartTimestamp[chosen];
+  if(item.routeCompletedAt) delete item.routeCompletedAt[chosen];
+  if(!item.routeTargetDates) item.routeTargetDates = {};
+  // Borrows the requesting step's own target date (or today) so the inserted
+  // process still shows *some* target/overdue signal instead of having none.
+  item.routeTargetDates[chosen] = item.routeTargetDates[cur] || new Date().toISOString().slice(0,10);
+  if(!item.detourFrom) item.detourFrom = {};
+  if(!item.detourReason) item.detourReason = {};
+  item.detourFrom[chosen] = cur; // remembers who to hand back to once `chosen` is marked Done
+  item.detourReason[chosen] = reason;
+  closeModal();
+  renderBoard(); renderOverview();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
+  await save();
+  showToast(`${item.itemCode} ipinadala sa ${processLabel(chosen)} — babalik sa ${processLabel(cur)} pagkatapos.`);
 }
 
 /* ---------- Manage Sales Orders: edit / archive / restore / delete ---------- */
@@ -3309,11 +3397,15 @@ function renderPersonActionableTasksHtml(name){
     const curIdx = t.item.route.indexOf(t.processId);
     const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${t.item.id}')">↩</button>` : '';
     const partialBtn = Number(t.item.qty)>1 ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${t.item.id}','${t.processId}')">➗</button>` : '';
+    const detourBtn = `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${t.item.id}')">🔧</button>`;
     const stripeCls = taskIdx%2===0 ? 'stripe-a' : 'stripe-b';
     const cardClass = (t.overdue || t.isSplit) ? '' : stripeCls;
     const cardStyle = t.overdue ? 'border-color:#f0c3c3;background:var(--red-bg);' : (t.isSplit ? 'border-color:#c9b8e8;background:#f4f0fb;border-left:4px solid #6a5acd;' : '');
     const returnNote = (t.item.lastReturn && t.item.lastReturn.toProcess===t.processId)
       ? `<div class="hint" style="color:var(--red);margin-top:4px;">↩ Ibinalik mula sa ${processLabel(t.item.lastReturn.fromProcess)}${t.item.lastReturn.reason ? ': "'+t.item.lastReturn.reason+'"' : ' (walang dahilan na nilagay)'}</div>`
+      : '';
+    const detourPendingNote = (t.item.detourFrom && t.item.detourFrom[t.processId])
+      ? `<div class="hint" style="color:#6a5acd;margin-top:4px;">🔧 Kinakailangan ito ni ${processLabel(t.item.detourFrom[t.processId])} bago magpatuloy${(t.item.detourReason && t.item.detourReason[t.processId]) ? ': "'+t.item.detourReason[t.processId]+'"' : ''} — babalik doon pagkatapos dito.</div>`
       : '';
     const splitBadge = t.isSplit ? `<div class="hint" style="color:#6a5acd;font-weight:700;margin-top:4px;">🔗 May kasamang piraso sa ibang proseso (split)${t.item.splitNote ? ' — '+t.item.splitNote : ''}</div>` : '';
     const drawingsHtml = drawingLinkHtml(t.item);
@@ -3343,6 +3435,7 @@ function renderPersonActionableTasksHtml(name){
         <div class="stagelbl">${t.item.qty} ${t.item.unit}${t.overdue?' · <b style="color:var(--red);">OVERDUE</b>':''}${origTarget?' · target: '+formatDateLong(origTarget):''}</div>
         ${catchUpNote}
         ${returnNote}
+        ${detourPendingNote}
         ${splitBadge}
         ${drawingsHtml}
         ${partsListHtml}
@@ -3353,6 +3446,7 @@ function renderPersonActionableTasksHtml(name){
         <div style="display:flex;align-items:center;gap:6px;">
           ${returnBtn}
           ${partialBtn}
+          ${detourBtn}
           <div class="pill ${t.status}" onclick="cycleStep('${t.item.id}','${t.processId}');">${t.status}</div>
         </div>
         ${startStampHtml}
