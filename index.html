@@ -4236,6 +4236,11 @@ function renderScorecardProfile(name){
   const totalCompleted = sc.tasks.reduce((a,t)=>a+t.completed,0);
   const totalOnTime = sc.tasks.reduce((a,t)=>a+t.onTime,0);
   const totalLate = sc.tasks.reduce((a,t)=>a+t.late,0);
+  // Of everything actually finished (on-time + late — notTracked items with
+  // no target/completion date to compare are excluded from the rate itself,
+  // same as they're excluded from both counts above), what share landed
+  // on time. Null (shown as "—") when nothing comparable has been done yet.
+  const onTimeRatePct = (totalOnTime+totalLate)>0 ? Math.round(totalOnTime/(totalOnTime+totalLate)*100) : null;
   const perfPeriodLabel = profilePeriodState.dateFilter ? periodLabel(profilePeriodState.dateFilter, granularity) : 'Lahat ng Panahon';
   const dailyItems = computeDailyCompletedItemsByPerson()[name] || {};
   const groupedItems = regroupItemsByPeriod(dailyItems, granularity);
@@ -4325,10 +4330,23 @@ function renderScorecardProfile(name){
     </div>
     <div class="score-task-label" style="margin-top:10px;margin-bottom:8px;">Mga Tasks ni ${escapeHtml(name)}</div>
     <div class="profile-tasklist">${actionableTasksHtml}</div>
-    <div class="cards-row" style="grid-template-columns:repeat(3,1fr);margin:14px 0;">
-      <div class="stat-card"><div class="num" style="font-size:20px;">${totalCompleted}</div><div class="lbl">Total Done</div></div>
-      <div class="stat-card"><div class="num" style="font-size:20px;color:var(--green);">${totalOnTime}</div><div class="lbl">On-time</div></div>
-      <div class="stat-card"><div class="num" style="font-size:20px;color:var(--red);">${totalLate}</div><div class="lbl">Late</div></div>
+    <div class="cards-row" style="grid-template-columns:repeat(4,1fr);margin:14px 0;">
+      <div class="stat-card-lg" style="--sc-accent:var(--blue);--sc-bg:var(--blue-bg);padding:14px 14px 12px;">
+        <div class="icon" style="font-size:16px;margin-bottom:5px;">📊</div>
+        <div class="num" style="font-size:24px;">${totalCompleted}</div><div class="lbl" style="font-size:10.5px;">Total Done</div>
+      </div>
+      <div class="stat-card-lg" style="--sc-accent:var(--green);--sc-bg:var(--green-bg);padding:14px 14px 12px;">
+        <div class="icon" style="font-size:16px;margin-bottom:5px;">🟢</div>
+        <div class="num" style="font-size:24px;">${totalOnTime}</div><div class="lbl" style="font-size:10.5px;">On-time</div>
+      </div>
+      <div class="stat-card-lg" style="--sc-accent:var(--red);--sc-bg:var(--red-bg);padding:14px 14px 12px;">
+        <div class="icon" style="font-size:16px;margin-bottom:5px;">🔴</div>
+        <div class="num" style="font-size:24px;">${totalLate}</div><div class="lbl" style="font-size:10.5px;">Late</div>
+      </div>
+      <div class="stat-card-lg" style="--sc-accent:var(--amber);--sc-bg:var(--amber-bg);padding:14px 14px 12px;">
+        <div class="icon" style="font-size:16px;margin-bottom:5px;">🎯</div>
+        <div class="num" style="font-size:24px;">${onTimeRatePct===null?'—':onTimeRatePct+'%'}</div><div class="lbl" style="font-size:10.5px;">On-time Rate</div>
+      </div>
     </div>
     <div class="score-task-label" style="margin-bottom:6px;">Performance per Process — ${escapeHtml(perfPeriodLabel)}</div>
     ${periodDropdowns}
