@@ -3016,6 +3016,7 @@ function removeEditItemDrawingImage(){
 function openEditItemModal(itemId){
   const it = ITEMS.find(i=>i.id===itemId);
   if(!it) return;
+  delete rowCurrency['edit']; delete rowFxInfo['edit']; // fresh state each time this modal opens
   editItemRoute = it.route.slice();
   editItemDrawingImageData = it.drawingImage || '';
   partsListState['edit'] = (it.partsList || []).map(p=>({name:p.name, qtyPerUnit:p.qtyPerUnit, childParts:(p.childParts||[]).map(c=>({name:c.name, qtyPerUnit:c.qtyPerUnit}))}));
@@ -3029,7 +3030,13 @@ function openEditItemModal(itemId){
       <div class="field"><label>Qty</label><input type="number" id="editItemQty" value="${it.qty}" oninput="renderPartsListTable('edit')"></div>
       <div class="field"><label>Unit</label><input type="text" id="editItemUnit" value="${it.unit}"></div>
     </div>
-    <div class="field"><label>Rate (₱ per unit)</label><input type="number" id="editItemRate" value="${it.rate||0}"></div>
+    <div class="field"><label>Rate (per unit)</label>
+      <div style="display:flex;gap:3px;align-items:center;">
+        <button type="button" class="irc-edit" style="flex:0 0 auto;padding:6px 7px;font-size:11px;" title="I-toggle kung Dollar ang currency ng rate na ito — awtomatiko itong iko-convert sa piso." id="curBtn_edit" onclick="toggleRateCurrency('edit')">₱</button>
+        <input type="number" id="rate_edit" value="${it.rate||0}" onblur="maybeConvertRateCurrency('edit', '${it.dateUploaded||''}')">
+      </div>
+      <div class="hint" id="rateFxNote_edit" style="display:none;"></div>
+    </div>
     <div class="form-grid">
       <div class="field"><label>Materials Cost (₱, optional)</label><input type="number" id="editItemMaterials" value="${it.materialsCost!==null&&it.materialsCost!==undefined?it.materialsCost:''}" placeholder="kung wala, titingnan ang SO-level o period-level"></div>
       <div class="field"><label>Consumables Cost (₱, optional)</label><input type="number" id="editItemConsumables" value="${it.consumablesCost!==null&&it.consumablesCost!==undefined?it.consumablesCost:''}" placeholder="kung wala, titingnan ang SO-level o period-level"></div>
@@ -3072,7 +3079,9 @@ async function saveEditItem(itemId){
   it.description = document.getElementById('editItemDesc').value.trim() || it.description;
   it.qty = Number(document.getElementById('editItemQty').value) || 0;
   it.unit = document.getElementById('editItemUnit').value.trim() || 'pc';
-  it.rate = Number(document.getElementById('editItemRate').value) || 0;
+  it.rate = Number(document.getElementById('rate_edit').value) || 0;
+  if(rowFxInfo['edit']) it.rateFx = rowFxInfo['edit']; // audit trail if this Rate was just converted from Dollars
+  delete rowCurrency['edit']; delete rowFxInfo['edit'];
   const matRaw = document.getElementById('editItemMaterials').value;
   const conRaw = document.getElementById('editItemConsumables').value;
   it.materialsCost = matRaw==='' ? null : Number(matRaw);
@@ -5118,6 +5127,15 @@ async function openDrawingDrivePicker(id){
 let itemRowCount = 0;
 let partsListState = {}; // rowId -> [{name, qtyPerUnit}]
 let drawingsState = {}; // rowId -> [{url, name}] — an item can have more than one attached drawing
+// rowId -> 'PHP' | 'USD' — which currency the Rate field for that row is
+// currently showing. Only ever 'USD' briefly, between the user typing a
+// dollar amount and it getting auto-converted to pesos on blur (see
+// maybeConvertRateCurrency) — the item itself always stores a peso rate.
+let rowCurrency = {};
+// rowId -> {usd, phpRate, fxRate, fxDate} — kept only for the confirmation
+// note shown right after a conversion and to tag the resulting item with
+// where its peso rate came from (see buildItemFromRow).
+let rowFxInfo = {};
 function renumberItemRows(){
   document.querySelectorAll('#itemRows .item-row-wrap').forEach((wrap, idx)=>{
     const badge = wrap.querySelector('.item-index-badge');
@@ -5146,9 +5164,13 @@ function addItemRow(prefill, existingId){
       <input type="text" placeholder="Description" class="f-desc" value="${prefill?prefill.desc:''}" oninput="scheduleSaveDraft('${id}')" onchange="checkAndSuggestReference('${id}')">
       <input type="number" placeholder="Qty" class="f-qty" value="${prefill?prefill.qty:''}" oninput="renderPartsListTable('${id}'); scheduleSaveDraft('${id}')">
       <input type="text" placeholder="Unit" class="f-unit" value="${prefill?prefill.unit:'pc'}" oninput="scheduleSaveDraft('${id}')">
-      <input type="number" placeholder="Rate ₱" class="f-rate" value="${prefill&&prefill.rate?prefill.rate:''}" oninput="scheduleSaveDraft('${id}')">
+      <div style="display:flex;gap:3px;align-items:center;">
+        <button type="button" class="irc-edit" style="flex:0 0 auto;padding:6px 7px;font-size:11px;" title="I-toggle kung Dollar ang currency ng rate na ito — awtomatiko itong iko-convert sa piso." id="curBtn_${id}" onclick="toggleRateCurrency('${id}')">₱</button>
+        <input type="number" placeholder="Rate ₱" class="f-rate" id="rate_${id}" value="${prefill&&prefill.rate?prefill.rate:''}" oninput="scheduleSaveDraft('${id}')" onblur="maybeConvertRateCurrency('${id}')">
+      </div>
       <button class="btn ghost" onclick="removeItemRow('${id}')">✕</button>
     </div>
+    <div class="hint" id="rateFxNote_${id}" style="display:none;margin-top:-4px;margin-bottom:8px;"></div>
     <div class="route-picker">
       <div class="route-picker-label">Fabrication Route (piliin ang mga process na dadaanan ng item na ito — hindi bababa sa 2)</div>
       <div class="route-chips">${routeChipsHtml(id, [])}</div>
@@ -5181,10 +5203,91 @@ function addItemRow(prefill, existingId){
   renumberItemRows();
   return id;
 }
+// Toggles whether this row's Rate field is being entered in Dollars or
+// Pesos. Switching TO Dollar just changes the label/placeholder — nothing
+// converts until the field is actually filled in and blurred (see
+// maybeConvertRateCurrency), since there's nothing to convert yet.
+function toggleRateCurrency(id){
+  rowCurrency[id] = (rowCurrency[id]==='USD') ? 'PHP' : 'USD';
+  const btn = document.getElementById('curBtn_'+id);
+  const input = document.getElementById('rate_'+id);
+  if(btn) btn.textContent = rowCurrency[id]==='USD' ? '$' : '₱';
+  if(input) input.placeholder = rowCurrency[id]==='USD' ? 'Rate $' : 'Rate ₱';
+  const note = document.getElementById('rateFxNote_'+id);
+  if(note && rowCurrency[id]!=='USD') note.style.display='none';
+}
+// Fetches the ECB-referenced USD→PHP rate for a given date from the free
+// Frankfurter API (no key needed) — tries the current api.frankfurter.dev
+// host first, falls back to the older api.frankfurter.app alias, since both
+// return the same {date, rates:{PHP:...}} shape. Never requests a future
+// date (falls back to "latest" instead), and if the exact date has no
+// published rate (weekend/holiday), the API itself returns the nearest
+// prior business day's rate under that same date's response.
+async function fetchUsdToPhpRate(dateStr){
+  const todayStr = new Date().toISOString().slice(0,10);
+  const d = (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr) && dateStr<=todayStr) ? dateStr : 'latest';
+  const urls = [
+    `https://api.frankfurter.dev/v1/${d}?base=USD&symbols=PHP`,
+    `https://api.frankfurter.app/${d}?from=USD&to=PHP`
+  ];
+  let lastErr = null;
+  for(const url of urls){
+    try{
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      const data = await res.json();
+      const rate = data && data.rates && data.rates.PHP;
+      if(!rate) throw new Error('No PHP rate in response');
+      return { rate: Number(rate), date: data.date || d };
+    }catch(e){ lastErr = e; }
+  }
+  throw lastErr || new Error('FX fetch failed');
+}
+// Runs when a Rate field marked as Dollar loses focus — converts whatever
+// dollar amount was typed into pesos using the FX rate on the SO's own
+// "Date Uploaded" (so the peso value reflects the rate on the day the SO
+// actually came in, not whatever the rate happens to be right now), then
+// replaces the field's value with the peso amount so everything downstream
+// (buildItemFromRow, totals, etc.) keeps working with a plain peso number
+// exactly like before — this is the only place currency conversion happens.
+async function maybeConvertRateCurrency(id, dateOverride){
+  if(rowCurrency[id]!=='USD') return;
+  const input = document.getElementById('rate_'+id);
+  const note = document.getElementById('rateFxNote_'+id);
+  const btn = document.getElementById('curBtn_'+id);
+  if(!input) return;
+  const usdVal = Number(input.value);
+  if(!usdVal || usdVal<=0) return;
+  // The "Add New SO" rows use the SO's shared Date Uploaded field; the Edit
+  // Item modal (no such field visible) instead passes the item's own
+  // dateUploaded in directly — either way, falls back to today if neither
+  // is available.
+  const dateStr = (dateOverride && /^\d{4}-\d{2}-\d{2}$/.test(dateOverride)) ? dateOverride
+    : (document.getElementById('soDateUploaded') && document.getElementById('soDateUploaded').value) || new Date().toISOString().slice(0,10);
+  if(note){ note.style.display='block'; note.style.color='var(--gray)'; note.textContent='Kinukuha ang FX rate…'; }
+  try{
+    const fx = await fetchUsdToPhpRate(dateStr);
+    const phpVal = Math.round(usdVal * fx.rate * 100) / 100;
+    input.value = phpVal;
+    rowFxInfo[id] = { usd: usdVal, phpRate: phpVal, fxRate: fx.rate, fxDate: fx.date };
+    rowCurrency[id] = 'PHP';
+    if(btn) btn.textContent = '₱';
+    input.placeholder = 'Rate ₱';
+    if(note){
+      note.style.color = 'var(--accent-teal-dk)';
+      note.textContent = `✓ Na-convert mula $${usdVal.toFixed(2)} → ₱${phpVal.toFixed(2)} gamit ang FX rate na 1 USD = ₱${fx.rate.toFixed(4)} (${formatDateLong(fx.date)})`;
+    }
+    scheduleSaveDraft(id);
+  }catch(e){
+    if(note){ note.style.color='var(--red)'; note.textContent = '⚠ Hindi nakuha ang FX rate — subukan ulit, o i-encode na lang manually sa pesos (i-toggle pabalik sa ₱).'; }
+  }
+}
 function removeItemRow(id){
   delete rowRoutes[id];
   delete partsListState[id];
   delete drawingsState[id];
+  delete rowCurrency[id];
+  delete rowFxInfo[id];
   delete DRAFT_ROWS[id];
   saveDraftsLocal();
   const el = document.getElementById('wrap_'+id);
@@ -5531,6 +5634,11 @@ function buildItemFromRow(wrap, ctx){
   item.lineageId = item.id; // tracks the original line item across any future partial splits
   item.originalQty = Number(item.qty) || 0; // the true ordered quantity, never reduced by splits
   item.updatedAt = new Date().toISOString(); // used to find the most recently corrected route/parts for a matching item
+  // If this row's Rate started out as a Dollar amount and got auto-converted
+  // (see maybeConvertRateCurrency), keep a small audit trail on the item so
+  // it's traceable later — the item's own `rate` stays a plain peso number,
+  // exactly like every other item, so nothing downstream needs to change.
+  if(rowFxInfo[rowId]) item.rateFx = rowFxInfo[rowId];
   return {item};
 }
 // Adds just ONE item row to the board immediately — so an item whose route
@@ -5551,6 +5659,8 @@ async function addSingleItem(rowId){
   ITEMS.push(result.item);
   delete rowRoutes[rowId];
   delete partsListState[rowId];
+  delete rowCurrency[rowId];
+  delete rowFxInfo[rowId];
   delete DRAFT_ROWS[rowId];
   saveDraftsLocal();
   wrap.remove();
@@ -5602,6 +5712,8 @@ async function submitSO(){
       newItems.push(result.item);
       delete rowRoutes[rowId];
       delete partsListState[rowId];
+      delete rowCurrency[rowId];
+      delete rowFxInfo[rowId];
       delete DRAFT_ROWS[rowId];
     }else{
       if(result.error==='route') routeSkipped++;
@@ -5625,7 +5737,7 @@ async function submitSO(){
     document.getElementById('soTargetDelivery').value='';
     document.getElementById('pasteArea').value='';
     checkSoNumberDuplicate();
-    itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; DRAFT_ROWS = {}; saveDraftsLocal();
+    itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; rowCurrency = {}; rowFxInfo = {}; DRAFT_ROWS = {}; saveDraftsLocal();
     currentSoPdf = null;
     addItemRow();
     renderBoard(); renderOverview(); renderBrowseSo();
