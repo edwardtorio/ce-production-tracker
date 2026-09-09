@@ -3586,7 +3586,7 @@ function renderPersonScorecardDetail(name){
 // any set of specific periods (e.g. Aug 3 + Aug 9 + Aug 20, not necessarily
 // consecutive) via a multi-select checkbox dropdown, and the team totals sum
 // across exactly those chosen periods.
-let teamBannerGranularity = 'day';
+let teamBannerGranularity = 'month';
 function setTeamBannerGranularity(val){ teamBannerGranularity = val; closeAllMultiSoPanels(''); renderTeamOverviewBanner(); }
 // Every date-ish value (target delivery, actual delivery, last-step
 // completion) that could ever matter to the team banner, so the dropdown
