@@ -2883,7 +2883,26 @@ function renderBoard(){
         const overdue = isCurrent && isItemOverdueNow(it);
         const unassigned = isCurrent && needsAssignment(it);
         const cls = status==='done' ? 'done' : (isCurrent ? 'current'+(overdue?' overdue':'') : 'upcoming');
-        const dateLbl = it.routeTargetDates[pid] ? formatDateLong(it.routeTargetDates[pid]) : '';
+        // Once a step is done, its original target date matters less than
+        // when it actually finished — swap the target-date line for the
+        // actual completion date plus how long the step took (start ->
+        // finish), when a start timestamp was recorded for it.
+        const dateLbl = (status!=='done' && it.routeTargetDates[pid]) ? formatDateLong(it.routeTargetDates[pid]) : '';
+        const stepCompletedAt = status==='done' ? (it.routeCompletedAt && it.routeCompletedAt[pid]) : null;
+        const stepStartedAt = status==='done' ? (it.routeStartTimestamp && it.routeStartTimestamp[pid]) : null;
+        let doneCompletedHtml = '';
+        if(stepCompletedAt){
+          let durationStr = '';
+          if(stepStartedAt){
+            const diffMs = new Date(stepCompletedAt) - new Date(stepStartedAt);
+            if(diffMs>=0){
+              const days = Math.floor(diffMs/86400000);
+              const hours = Math.floor((diffMs%86400000)/3600000);
+              durationStr = ` — ${days} araw ${hours} oras`;
+            }
+          }
+          doneCompletedHtml = `<div class="step-date" style="color:var(--green);">✅ Natapos: ${formatDateLong(stepCompletedAt.slice(0,10))}${durationStr}</div>`;
+        }
         const assignee = pid===cur ? currentAssignee(it) : null;
         // Cascaded projection for downstream steps: shift this step's own
         // original target date forward by the same delay the current step
@@ -2899,6 +2918,7 @@ function renderBoard(){
           <div>${processLabel(pid)}</div>
           ${unassigned ? `<div class="step-date">👤 pumili ng tao</div>` : (assignee ? `<div class="step-date">${assignee}</div>` : '')}
           ${dateLbl?`<div class="step-date">${dateLbl}</div>`:''}
+          ${doneCompletedHtml}
           ${isCurrent ? catchUpHistoryHtml : ''}
           ${cascadedLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Projected na bagong petsa dahil sa pagkaantala sa naunang proseso — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${cascadedLbl}</div>`:''}
           ${(isCurrent && isCatchUpCritical)?`<div class="step-date" style="color:#fff;background:var(--red);font-weight:800;border-radius:4px;padding:1px 5px;">🔴 CRITICAL</div>`:''}
