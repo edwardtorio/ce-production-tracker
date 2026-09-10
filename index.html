@@ -2890,6 +2890,7 @@ function renderBoard(){
         const dateLbl = (status!=='done' && it.routeTargetDates[pid]) ? formatDateLong(it.routeTargetDates[pid]) : '';
         const stepCompletedAt = status==='done' ? (it.routeCompletedAt && it.routeCompletedAt[pid]) : null;
         const stepStartedAt = status==='done' ? (it.routeStartTimestamp && it.routeStartTimestamp[pid]) : null;
+        const doneStartedHtml = stepStartedAt ? `<div class="step-date">🕐 Nagsimula: ${formatDateLong(stepStartedAt.slice(0,10))}</div>` : '';
         let doneCompletedHtml = '';
         if(stepCompletedAt){
           let durationStr = '';
@@ -2918,6 +2919,7 @@ function renderBoard(){
           <div>${processLabel(pid)}</div>
           ${unassigned ? `<div class="step-date">👤 pumili ng tao</div>` : (assignee ? `<div class="step-date">${assignee}</div>` : '')}
           ${dateLbl?`<div class="step-date">${dateLbl}</div>`:''}
+          ${doneStartedHtml}
           ${doneCompletedHtml}
           ${isCurrent ? catchUpHistoryHtml : ''}
           ${cascadedLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Projected na bagong petsa dahil sa pagkaantala sa naunang proseso — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${cascadedLbl}</div>`:''}
