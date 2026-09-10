@@ -4223,7 +4223,11 @@ function refreshProfileModalIfOpen(){
   if(profileModalOpenFor) renderScorecardProfile(profileModalOpenFor);
 }
 function openScorecardProfile(name){
-  profilePeriodState = { granularity:'day', dateFilter:'' };
+  // Default to the current month rather than "Lahat" (all-time) — the
+  // person's manager almost always wants to see how this month is going
+  // first, and can always switch back to Lahat or another period from
+  // the dropdown themselves.
+  profilePeriodState = { granularity:'month', dateFilter: periodKey(todayDateStr(), 'month') };
   profileModalOpenFor = name;
   selectedPerson = name;
   renderScorecardProfile(name);
