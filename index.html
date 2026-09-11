@@ -3752,12 +3752,26 @@ function renderPersonActionableTasksHtml(name){
     const stepCompletedAt = t.item.routeCompletedAt && t.item.routeCompletedAt[t.processId];
     const startStampHtml = stepStartedAt ? `<div class="hint" style="text-align:right;">🕐 Nag-start: ${formatDateTimeLong(stepStartedAt)}</div>` : '';
     const doneStampHtml = stepCompletedAt ? `<div class="hint" style="text-align:right;color:var(--green);">✅ Natapos: ${formatDateLong(stepCompletedAt.slice(0,10))}</div>` : '';
+    // Required-quantity badge beside the description — plain "{qty} {unit}"
+    // normally, or "{qty} out of {originalQty} {unit}" when this piece is a
+    // partial/split-off portion of a bigger original order (originalQty is
+    // set once, the first time an item is split, and never changes after).
+    const isPartialQty = t.item.originalQty!==undefined && Number(t.item.originalQty)!==Number(t.item.qty);
+    const qtyDisplay = isPartialQty ? `${t.item.qty} out of ${t.item.originalQty} ${t.item.unit}` : `${t.item.qty} ${t.item.unit}`;
+    const requiredQtyBadgeHtml = `
+      <div style="flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:2px;">
+        <div style="border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--gray);white-space:nowrap;">Required Quantity</div>
+        <div style="border:2px solid #e91e8c;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:800;color:#e91e8c;white-space:nowrap;">${escapeHtml(qtyDisplay)}</div>
+      </div>`;
     return `
     <div class="task-card ${cardClass}${isCatchUpCritical?' critical-blink':''}" style="${cardStyle}">
       <div class="tinfo">
         <div class="so-tag">${escapeHtml(t.item.soNumber)} · ${escapeHtml(t.item.client)}</div>
         <div class="code">${escapeHtml(t.item.itemCode)}</div>
-        <div class="desc">${escapeHtml(t.item.description)}</div>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+          <div class="desc" style="flex:1 1 auto;min-width:0;">${escapeHtml(t.item.description)}</div>
+          ${requiredQtyBadgeHtml}
+        </div>
         <div class="stagelbl">${t.item.qty} ${t.item.unit}${t.overdue?' · <b style="color:var(--red);">OVERDUE</b>':''}${origTarget?' · target: '+formatDateLong(origTarget):''}</div>
         ${catchUpNote}
         ${criticalNote}
