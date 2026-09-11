@@ -2989,7 +2989,22 @@ function renderBoard(){
             if(diffMs>=0){
               const days = Math.floor(diffMs/86400000);
               const hours = Math.floor((diffMs%86400000)/3600000);
-              durationStr = ` — ${days} araw ${hours} oras`;
+              // A step finished within the same hour it started would
+              // otherwise always read "0 araw 0 oras" — meaningless, and
+              // makes a genuinely quick turnaround look like a data bug.
+              // Fall through to minutes, then seconds, so short steps still
+              // show a real duration.
+              if(days>0 || hours>0){
+                durationStr = ` — ${days} araw ${hours} oras`;
+              }else{
+                const minutes = Math.floor((diffMs%3600000)/60000);
+                if(minutes>0){
+                  durationStr = ` — ${minutes} minuto`;
+                }else{
+                  const seconds = Math.floor((diffMs%60000)/1000);
+                  durationStr = seconds>0 ? ` — ${seconds} segundo` : ` — bago lang`;
+                }
+              }
             }
           }
           doneCompletedHtml = `<div class="step-date" style="color:var(--green);">✅ Natapos: ${formatDateLong(stepCompletedAt.slice(0,10))}${durationStr}</div>`;
