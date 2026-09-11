@@ -1322,7 +1322,15 @@ function advanceCatchUpSchedules(items){
       const attempt = it.catchUpAttempt[cur] || 1;
       if(attempt < 3){
         const nextAttempt = attempt + 1;
-        const nextDate = planDate || existingDate;
+        // Advance to a date that's genuinely LATER than the one just missed —
+        // prefer the live plan's date when it has actually moved forward, but
+        // never fall back to silently reusing the same existingDate (that was
+        // the bug: when the live plan lookup came back falsy, or happened to
+        // land on the same day, the 2nd/3rd schedule would just repeat the
+        // 1st's date instead of pushing forward). If the live plan hasn't
+        // moved past what was already missed, guarantee at least one working
+        // day of real progress instead.
+        const nextDate = (planDate && planDate > existingDate) ? planDate : addWorkingDays(existingDate, 1);
         it.catchUpAttempt[cur] = nextAttempt;
         it.catchUpDate[cur] = nextDate;
         if(!it.catchUpHistory[cur]) it.catchUpHistory[cur] = [];
