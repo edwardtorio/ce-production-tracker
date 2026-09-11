@@ -114,6 +114,43 @@
   .stat-card-lg .lbl{font-size:12px;color:var(--steel-700);text-transform:uppercase;letter-spacing:.6px;margin-top:5px;font-weight:700;}
   .stat-card-lg .sub{font-size:17px;font-weight:800;color:var(--sc-accent, var(--steel-800));margin-top:10px;padding-top:9px;border-top:1px dashed var(--sc-line, var(--line));}
 
+  /* Production Board's per-item bar chart (replaces the old Done/On Track/
+     Ongoing/Delayed stat cards) — #breakdownRow gets this class added by
+     renderLineItemsBreakdown() so it escapes the .cards-row grid layout and
+     lays out as one wide block instead. */
+  #breakdownRow.itembar-mode{display:block;}
+  .itembar-head{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px;margin-bottom:4px;}
+  .itembar-title{font-size:15.5px;font-weight:700;color:#fff;letter-spacing:.2px;}
+  .itembar-subhint{font-size:11px;color:#f0d9e0;margin-top:2px;}
+  .itembar-legend{display:flex;gap:16px;font-size:11px;color:#f3dde4;}
+  .itembar-legend span{display:inline-flex;align-items:center;gap:6px;}
+  .itembar-swatch{width:11px;height:11px;border-radius:3px;display:inline-block;}
+  .itembar-swatch-target{background:rgba(255,255,255,.28);border:1px solid rgba(255,255,255,.4);}
+  .itembar-swatch-done{background:linear-gradient(180deg,#4fd196,var(--green));}
+  .itembar-searchrow{margin-top:12px;}
+  .itembar-searchrow input{width:100%;max-width:340px;padding:8px 12px;border-radius:20px;border:none;font-size:12.5px;background:rgba(255,255,255,.15);color:#fff;}
+  .itembar-searchrow input::placeholder{color:#e8c3cd;}
+  .itembar-scrollshell{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:14px;}
+  .itembar-chartarea{position:relative;min-width:max-content;padding:0 6px 0 2px;}
+  .itembar-gridlines{position:absolute;left:2px;right:6px;top:0;pointer-events:none;}
+  .itembar-gl{position:absolute;left:0;right:0;border-top:1px dashed rgba(255,255,255,.12);}
+  .itembar-gl-lbl{position:absolute;left:-2px;transform:translateY(-50%) translateX(-100%);font-size:9.5px;color:rgba(255,255,255,.4);padding-right:6px;white-space:nowrap;}
+  .itembar-bars{display:flex;align-items:flex-end;gap:16px;position:relative;z-index:1;}
+  .itembar-col{display:flex;flex-direction:column;align-items:center;flex-shrink:0;height:100%;justify-content:flex-end;width:64px;}
+  .itembar-qtychip{font-size:9.5px;font-weight:700;margin-bottom:5px;background:rgba(255,255,255,.12);padding:1px 6px;border-radius:20px;white-space:nowrap;color:#fff;}
+  .itembar-pair{display:flex;align-items:flex-end;gap:4px;height:100%;}
+  .itembar-barwrap{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
+  .itembar-target{width:13px;background:rgba(255,255,255,.22);border-radius:4px 4px 1px 1px;box-shadow:inset 0 1px 2px rgba(0,0,0,.15);}
+  .itembar-done{width:13px;border-radius:4px 4px 1px 1px;background:linear-gradient(180deg,#57d69f 0%, var(--green) 85%);box-shadow:0 1px 4px rgba(47,158,92,.45);position:relative;}
+  .itembar-done::after{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:rgba(255,255,255,.35);border-radius:4px 4px 0 0;}
+  .itembar-baseline{height:2px;background:rgba(255,255,255,.35);border-radius:2px;}
+  .itembar-names{display:flex;gap:16px;margin-top:8px;}
+  .itembar-name-col{width:64px;flex-shrink:0;text-align:center;}
+  .itembar-name{font-size:9.5px;font-weight:600;color:#fff;line-height:1.25;max-height:38px;overflow:hidden;}
+  .itembar-pct{margin-top:4px;font-size:9px;font-weight:700;color:#8ef0bf;}
+  .itembar-pct.zero{color:#f3dde4;}
+  .itembar-scrollhint{font-size:11px;color:#f0d9e0;text-align:right;margin-top:10px;}
+
   .panel{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:18px;}
   .panel h3{margin:0 0 14px;font-family:var(--font-display);font-size:16px;color:var(--steel-900);}
 
@@ -676,7 +713,6 @@
   <!-- BOARD -->
   <div class="view" id="view-board">
     <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);color:#fff;padding:24px 20px;margin-bottom:12px;">
-      <h3 style="color:#fff;margin-bottom:12px;">Line Items &amp; Pieces — Done / On Track / Ongoing / Delayed</h3>
       <div class="breakdown-row cards-row" id="breakdownRow"></div>
     </div>
     <div class="panel" style="padding:12px 16px;margin-bottom:12px;">
@@ -2735,58 +2771,112 @@ setInterval(()=>{
 /* ---------- Board ---------- */
 function nextStatus(cur){ const idx = STATUS_CYCLE.indexOf(cur); return STATUS_CYCLE[(idx+1)%STATUS_CYCLE.length]; }
 
-// Company-wide Done / On Track / Ongoing / Delayed summary, shown at the top
-// of the Production Board (maroon panel, matching the Team Scorecard).
-// "Ongoing" here means the item's CURRENT step literally has routeStatus
-// 'ongoing' — i.e. someone has actually tapped into it, the same status My
-// Tasks shows for that person — regardless of whether it has also slipped
-// past its own target date. "Delayed" is an item that's past its own target
-// date AND is not being actively worked right now (still sitting queued) —
-// a stalled bottleneck, as opposed to work-in-progress that's simply
-// running behind. "On track" = not yet started, not overdue, not ongoing.
-// All four buckets are mutually exclusive and exhaustive.
+// Groups every active (non-archived) line item by its DESCRIPTION text —
+// verified against the real data before building this: Item Code was NOT a
+// safe grouping key here, since one PO item code can legitimately cover
+// several different physical parts, each its own line item with its own
+// description (e.g. one item code holding "End Cap Big" + "End Cap" +
+// "Water Tank Handle Bracket" as 3 separate entries). Description groups
+// those correctly instead. Per group: totalQty = sum of qty across every
+// item sharing that description, regardless of which SO it came from — a
+// product/part ordered again under a new SO folds into the same bar rather
+// than starting a new one. doneQty is each item's own qty weighted by its
+// itemPctDone() (% of its route's steps marked done), summed per group —
+// an item that's 50% through its route contributes half its pcs as "done".
+function computeItemBarGroups(){
+  const groups = new Map();
+  activeItems().forEach(it=>{
+    const name = (it.description||'').trim();
+    if(!name) return;
+    const key = name.toLowerCase();
+    let g = groups.get(key);
+    if(!g){ g = { name, totalQty:0, doneQty:0, lineItems:0 }; groups.set(key, g); }
+    const qty = Number(it.qty)||0;
+    g.totalQty += qty;
+    g.doneQty += qty * (itemPctDone(it)/100);
+    g.lineItems += 1;
+  });
+  return [...groups.values()].sort((a,b)=>b.totalQty-a.totalQty);
+}
+// Per-item bar chart shown at the top of the Production Board — replaces the
+// old Done/On Track/Ongoing/Delayed stat cards per the owner's request. Each
+// bar-pair is one unique item description: a muted bar for the total pcs
+// ordered (target) beside a green bar for pcs actually finished so far
+// (actual), sorted most-pcs-first, with a search box since the real board
+// can easily have 100+ unique descriptions — scroll right (⇄) to reach the
+// very last one.
 function renderLineItemsBreakdown(){
   const el = document.getElementById('breakdownRow');
   if(!el) return;
-  const ITEMS_VIEW = activeItems();
-  const doneItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
-  const ongoingItems = ITEMS_VIEW.filter(i=>{
-    const cur = currentStepId(i);
-    return cur && i.routeStatus[cur]==='ongoing';
-  });
-  const ongoingIds = new Set(ongoingItems.map(i=>i.id));
-  const delayedItems = ITEMS_VIEW.filter(i=>isItemOverdueNow(i) && !ongoingIds.has(i.id));
-  const onTrackItems = ITEMS_VIEW.filter(i=>itemCategory(i)!=='done' && !ongoingIds.has(i.id) && !isItemOverdueNow(i));
-  // Within "Ongoing" (currently being worked on), split further into ones
-  // still within their own target date vs ones already past it — i.e. work
-  // that's happening but has itself slipped behind schedule. Shown as a
-  // sub-breakdown inside the same Ongoing card rather than a 5th card, since
-  // both numbers are just a further split of that one card's own count.
-  const ongoingOnTrackItems = ongoingItems.filter(i=>!isItemOverdueNow(i));
-  const ongoingDelayedItems = ongoingItems.filter(i=>isItemOverdueNow(i));
-  const sumQty = arr => arr.reduce((a,i)=>a+Number(i.qty||0),0);
-  const sumVal = arr => arr.reduce((a,i)=>a+itemAmount(i),0);
-  const totalItemsForPct = ITEMS_VIEW.length || 1;
-  const totalPiecesForPct = sumQty(ITEMS_VIEW) || 1;
-  const pctOf = (arr) => Math.round(arr.length/totalItemsForPct*100);
-  const pctOfPieces = (arr) => Math.round(sumQty(arr)/totalPiecesForPct*100);
-  const bCard = (icon, label, arr, accentBg, extraHtml) => `
-    <div class="stat-card-lg" style="background:${accentBg};border:1px solid rgba(255,255,255,.25);box-shadow:0 4px 14px rgba(0,0,0,.18);">
-      <div class="icon">${icon}</div>
-      <div class="num" style="color:#fff;">${arr.length} item${arr.length===1?'':'s'} <span style="font-size:19px;">(${pctOf(arr)}%)</span></div>
-      <div class="lbl" style="color:#f5e4e9;">${label}</div>
-      <div class="sub" style="color:#fff;border-top-color:rgba(255,255,255,.3);">${fmtPHP(sumVal(arr))}<br>${sumQty(arr).toLocaleString()} pcs (${pctOfPieces(arr)}%)</div>
-      ${extraHtml||''}
+  el.classList.add('itembar-mode');
+  const groups = computeItemBarGroups();
+  if(groups.length===0){
+    el.innerHTML = `<div class="empty-state" style="color:#fff;"><div class="big">📦</div>Wala pang laman ang Production Board.</div>`;
+    return;
+  }
+  const maxQty = Math.max(...groups.map(g=>g.totalQty)) || 1;
+  const scaleMax = Math.ceil(maxQty*1.15) || 1;
+  const CHART_H = 170;
+  const gridlinesHtml = [0,0.25,0.5,0.75,1].map(f=>{
+    const val = Math.round(scaleMax*f);
+    const top = CHART_H - Math.round(CHART_H*f);
+    return `<div class="itembar-gl" style="top:${top}px;"><span class="itembar-gl-lbl">${val}</span></div>`;
+  }).join('');
+  const barsHtml = groups.map(g=>{
+    const targetH = Math.max(5, Math.round(g.totalQty/scaleMax*CHART_H));
+    const doneH = Math.max(g.doneQty>0?3:0, Math.round(g.doneQty/scaleMax*CHART_H));
+    return `<div class="itembar-col" data-itembar-name="${escapeHtml(g.name.toLowerCase())}">
+      <div class="itembar-qtychip">${g.totalQty.toLocaleString()}</div>
+      <div class="itembar-pair">
+        <div class="itembar-barwrap"><div class="itembar-target" style="height:${targetH}px;"></div></div>
+        <div class="itembar-barwrap"><div class="itembar-done" style="height:${doneH}px;"></div></div>
+      </div>
     </div>`;
-  const ongoingSplitHtml = `
-    <div style="margin-top:8px;padding-top:8px;border-top:1px dashed rgba(255,255,255,.3);display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:#fff;">
-      <span title="Ongoing pa rin at nasa loob ng target date">🟢 On track: ${ongoingOnTrackItems.length}</span>
-      <span title="Ongoing pero lampas na sa target date">⚠️ Delayed: ${ongoingDelayedItems.length}</span>
+  }).join('');
+  const namesHtml = groups.map(g=>{
+    const pct = g.totalQty ? Math.round(g.doneQty/g.totalQty*100) : 0;
+    return `<div class="itembar-name-col" data-itembar-name="${escapeHtml(g.name.toLowerCase())}">
+      <div class="itembar-name" title="${escapeHtml(g.name)}">${escapeHtml(g.name)}</div>
+      <div class="itembar-pct${pct===0?' zero':''}">${pct}%</div>
     </div>`;
-  el.innerHTML = bCard('✓','Natapos (Done)', doneItems, 'rgba(45,138,86,.28)')
-    + bCard('🟢','On Track', onTrackItems, 'rgba(37,99,168,.28)')
-    + bCard('⚙️','Ongoing', ongoingItems, 'rgba(150,110,40,.32)', ongoingSplitHtml)
-    + bCard('⚠️','Delayed', delayedItems, 'rgba(196,60,60,.32)');
+  }).join('');
+  el.innerHTML = `
+    <div class="itembar-head">
+      <div>
+        <div class="itembar-title">Line Items &amp; Pieces — per Item</div>
+        <div class="itembar-subhint">${groups.length} unique na item · pinagsama ang magkaparehong description mula sa lahat ng SO</div>
+      </div>
+      <div class="itembar-legend">
+        <span><span class="itembar-swatch itembar-swatch-target"></span>Target (kabuuang pcs)</span>
+        <span><span class="itembar-swatch itembar-swatch-done"></span>Natapos (aktwal)</span>
+      </div>
+    </div>
+    <div class="itembar-searchrow">
+      <input type="text" id="itembarSearch" placeholder="🔍 Maghanap ng item…">
+    </div>
+    <div class="itembar-scrollshell">
+      <div class="itembar-chartarea">
+        <div class="itembar-gridlines" style="height:${CHART_H}px;">${gridlinesHtml}</div>
+        <div class="itembar-bars" id="itembarBars" style="height:${CHART_H}px;">${barsHtml}</div>
+        <div class="itembar-baseline"></div>
+        <div class="itembar-names" id="itembarNames">${namesHtml}</div>
+      </div>
+    </div>
+    <div class="itembar-scrollhint">⇄ i-scroll pakanan hanggang sa huling item</div>
+  `;
+  const searchBox = document.getElementById('itembarSearch');
+  if(searchBox){
+    searchBox.addEventListener('input', ()=>{
+      const q = searchBox.value.trim().toLowerCase();
+      const cols = [...el.querySelectorAll('.itembar-col')];
+      const nameCols = [...el.querySelectorAll('.itembar-name-col')];
+      cols.forEach((c,i)=>{
+        const match = !q || (c.dataset.itembarName||'').includes(q);
+        c.style.display = match ? '' : 'none';
+        if(nameCols[i]) nameCols[i].style.display = match ? '' : 'none';
+      });
+    });
+  }
 }
 function renderBoard(){
   renderLineItemsBreakdown();
