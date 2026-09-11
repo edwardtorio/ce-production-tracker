@@ -590,9 +590,9 @@
   <div class="init-loading" id="initLoadingBanner" style="display:none;">⏳ Naglo-load…</div>
 
   <div class="tabs">
-    <div class="tab active" data-view="overview">Overview</div>
+    <div class="tab" data-view="overview">Overview</div>
     <div class="tab" data-view="board">Production Board</div>
-    <div class="tab" data-view="team">My Tasks</div>
+    <div class="tab active" data-view="team">My Tasks</div>
     <div class="tab" data-view="addso">+ Add New SO</div>
     <div class="tab" data-view="owners">Process Owners</div>
     <div class="tab" data-view="costrates">Cost Rates</div>
@@ -601,7 +601,7 @@
   </div>
 
   <!-- OVERVIEW -->
-  <div class="view active" id="view-overview">
+  <div class="view" id="view-overview">
     <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);padding:20px 20px 8px;">
       <div class="cards-row" id="statCards"></div>
       <div class="cards-row" id="statCardsStatus" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));max-width:520px;"></div>
@@ -694,7 +694,7 @@
   </div>
 
   <!-- TEAM -->
-  <div class="view" id="view-team">
+  <div class="view active" id="view-team">
     <div class="panel" id="teamBannerPanel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);color:#fff;text-align:center;padding:32px 24px;">
       <div style="font-family:var(--font-display);font-weight:700;font-size:15px;letter-spacing:1.5px;text-transform:uppercase;color:#f0d9e0;">Cutting Edge Materials Processing Corporation</div>
       <div style="font-family:var(--font-display);font-weight:700;font-size:34px;margin-top:4px;letter-spacing:.5px;">Team Scorecard</div>
@@ -916,10 +916,10 @@ const PROCESS_LIST = [
   {id:'welding',            label:'Welding and Assembly', category:'production'},
   {id:'finishing',          label:'Finishing', category:'production'},
   {id:'materials_return',   label:'Materials/Consumables/Accessories Return', category:'production'},
+  {id:'plating',            label:'Plating', category:'production'},
   {id:'metal_treatment',    label:'Metal Treatment', category:'production'},
   {id:'powder_coating',     label:'Powder Coating', category:'production'},
   {id:'hot_dipping',        label:'Hot Dipping', category:'production'},
-  {id:'plating',            label:'Plating', category:'production'},
   {id:'final_inspection',   label:'Final Inspection', category:'production'},
   {id:'packaging',          label:'Packaging', category:'production'},
   {id:'finish_goods',       label:'Finish Good', category:'production'},
@@ -6405,16 +6405,16 @@ async function init(){
   if(banner) banner.style.display = 'none';
   if(capabilityUnavailable){ applyReadOnlyUI(); }
   else{ updateSyncBadge('saved'); subscribeRealtime(); }
-  // Saves here are per-row upserts with no page reload, so there's nothing
-  // to restore after a save — everyone just stays put. This only restores
-  // the tab/person across an actual browser refresh (F5), the same way any
-  // ordinary site would, via the hash/localStorage set by rememberTabState().
-  const lastTab = getRememberedTab();
-  const lastPerson = lastTab==='team' ? getRememberedPerson() : '';
-  if(lastTab && lastTab!=='overview'){
-    const tab = document.querySelector('.tab[data-view="'+lastTab+'"]');
-    if(tab) tab.click();
-  }
+  // "My Tasks" (Team Scorecard) is always the landing view when the app
+  // opens — the owner wants that the first thing seen every time, on every
+  // device, regardless of whatever tab was last open. We still restore the
+  // remembered PERSON inside My Tasks (if any) purely as a convenience, the
+  // same way a browser refresh (F5) used to also restore the tab itself via
+  // the hash/localStorage set by rememberTabState() — that part is now
+  // intentionally skipped so the landing tab stays fixed on My Tasks.
+  const teamTab = document.querySelector('.tab[data-view="team"]');
+  if(teamTab) teamTab.click();
+  const lastPerson = getRememberedPerson();
   if(lastPerson) selectPersonOverall(lastPerson);
 }
 init();
