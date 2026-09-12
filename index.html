@@ -1333,9 +1333,12 @@ function drawingAttachFormHtml(item, processId, childPart){
   const meta = DRAWING_PROCESS_MAP[processId];
   if(!meta) return '';
   childPart = childPart || '';
-  const existing = drawingsForItemProcess(item, processId).filter(d=>(d.childPart||'')===childPart);
-  const existingHtml = existing.map(d=>`<div class="hint" style="margin-top:2px;">📐 ${drawingLinksForEntry(d, meta.label)} <button type="button" class="irc-edit" title="Alisin" onclick="removeDrawingEntry('${d.id}')">✕</button></div>`).join('');
   const uid = drawingFormUid(item.id, processId, childPart);
+  const existing = drawingsForItemProcess(item, processId).filter(d=>(d.childPart||'')===childPart);
+  // "🔄 Palitan" removes this entry AND jumps focus straight to the attach
+  // fields below — the one-click fix for "nagkamali ng na-attach na drawing"
+  // instead of a separate remove-then-hunt-for-the-form step.
+  const existingHtml = existing.map(d=>`<div class="hint" style="margin-top:2px;" id="drwEntry_${d.id}">📐 ${drawingLinksForEntry(d, meta.label)} <button type="button" class="irc-edit" title="Alisin ito at mag-attach ng tamang drawing" onclick="replaceDrawingEntry('${d.id}','${uid}')">🔄 Palitan</button></div>`).join('');
   // Only the top-level (no fixed childPart) form for a childpart-scoped
   // process shows a free-text child part field — a form already scoped to
   // one piyesa (childPart passed in) doesn't need to ask again.
@@ -1395,7 +1398,19 @@ async function attachDrawingFromTaskCard(itemId, processId, childPart){
 function removeDrawingEntry(id){
   deleteDrawingEntry(id);
 }
-
+// One-click "nagkamali, papalitan ko" action: removes the wrong entry (same
+// as removeDrawingEntry — also cleans up its uploaded file, if any) and
+// immediately focuses the link field of the attach form right below it, so
+// the corrected drawing can be typed/uploaded in the same motion. Removes
+// the entry's own DOM row directly rather than waiting on a full re-render,
+// since rerenderCurrentView() is a no-op while this modal is open.
+function replaceDrawingEntry(id, uid){
+  deleteDrawingEntry(id);
+  const row = document.getElementById(`drwEntry_${id}`);
+  if(row) row.remove();
+  const urlEl = document.getElementById(`drwUrl_${uid}`);
+  if(urlEl) urlEl.focus();
+}
 
 function blankRouteState(route){
   const routeStatus = {}; route.forEach(id=>routeStatus[id]='queue');
