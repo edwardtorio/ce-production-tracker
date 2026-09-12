@@ -1394,6 +1394,12 @@ async function attachDrawingFromTaskCard(itemId, processId, childPart){
   saveDrawingEntry(d);
   if(urlEl) urlEl.value=''; if(nameEl) nameEl.value=''; if(childEl) childEl.value=''; if(fileEl) fileEl.value='';
   rerenderCurrentView();
+  // rerenderCurrentView() above is a no-op while the My Tasks profile popup
+  // is open (by design, so it never yanks another in-progress edit out from
+  // under someone) — but THIS popup is exactly where the attach form lives,
+  // so without this the newly attached drawing silently doesn't appear here
+  // even though it saved fine, making it look like the upload failed.
+  renderMyTasks();
 }
 function removeDrawingEntry(id){
   deleteDrawingEntry(id);
@@ -2020,6 +2026,7 @@ async function deleteDrawingEntry(id){
   const entry = DRAWINGS_POOL.find(d=>d.id===id);
   DRAWINGS_POOL = DRAWINGS_POOL.filter(d=>d.id!==id);
   rerenderCurrentView();
+  renderMyTasks(); // keeps an open My Tasks profile popup in sync — see attachDrawingFromTaskCard
   if(typeof sbClient==='undefined' || !sbClient || isReadOnly || capabilityUnavailable) return;
   try{ await sbClient.from('drawings_pool').delete().eq('id', id); }catch(e){}
   // Also remove the uploaded file itself, if this entry was a file (not just
@@ -7306,6 +7313,7 @@ function handleRemoteDrawingChange(payload){
     if(idx>=0) DRAWINGS_POOL[idx] = newData; else DRAWINGS_POOL.push(newData);
   }
   rerenderCurrentView();
+  renderMyTasks(); // keeps an open My Tasks profile popup in sync — see attachDrawingFromTaskCard
 }
 // Re-runs the render for whatever tab is currently active, so a change made
 // by someone else shows up live. Skipped while an edit modal is open, so an
