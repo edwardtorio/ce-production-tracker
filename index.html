@@ -654,6 +654,7 @@
     <div class="tab" data-view="board">Production Board</div>
     <div class="tab active" data-view="team">My Tasks</div>
     <div class="tab" data-view="addso">+ Add New SO</div>
+    <div class="tab" data-view="materials">🚚 Materials</div>
     <div class="tab" data-view="owners">Process Owners</div>
     <div class="tab" data-view="costrates">Cost Rates</div>
     <div class="tab" data-view="margin">Contribution Margin</div>
@@ -685,6 +686,12 @@
       </div>
       <div class="mini-table-wrap" id="soTableWrap"><table class="mini-table" id="soTable"></table></div>
       <div class="hint" id="soHint"></div>
+    </div>
+
+    <div class="panel">
+      <h3>🚚 Materials Nadedelay</h3>
+      <div class="hint" style="margin-bottom:10px;">Mga materyales/accessories/consumables na kulang sa stock at lumagpas na sa target na araw (default 10) mula nang i-raise sa Material Procurement — dito makikita kung anong SO/item ang naiipit dahil dito.</div>
+      <div class="mini-table-wrap"><table class="mini-table" id="materialsDelayedTable"></table></div>
     </div>
 
     <div class="panel">
@@ -825,6 +832,15 @@
           <div style="margin-top:8px;"><button class="btn secondary" onclick="parsePaste()">Parse into rows above</button></div>
         </div>
       </details>
+    </div>
+  </div>
+
+  <!-- MATERIALS & PROCUREMENT -->
+  <div class="view" id="view-materials">
+    <div class="panel">
+      <h3>🚚 Materials, Accessories &amp; Consumables — BOM hanggang Procurement</h3>
+      <div class="hint" style="margin-bottom:10px;">Itala dito ang resulta ng BOM/stock-checking ng warehouse per SO (per materyales, puwede ring i-link sa specific na item). Kapag "Kulang" ang stock status, awtomatikong bibilangin ang araw mula sa PRF Date papuntang Material Procurement — mag-i-red flag ito kapag lumagpas na sa target (default 10 araw).</div>
+      <div id="materialsTabBody"></div>
     </div>
   </div>
 
@@ -1106,10 +1122,83 @@ let ITEMS = [];
 let PROCESS_OWNERS = JSON.parse(JSON.stringify(DEFAULT_OWNERS));
 let PROCESS_COST_RATES = JSON.parse(JSON.stringify(DEFAULT_COST_RATES)); // {processId: {manpowerPerHour, electricityPerHour}}
 let PERIOD_COST_ENTRIES = []; // [{id, periodKey, materialsCost, consumablesCost, note}] — unattributed materials/consumables tallies
+// Materials/accessories/consumables pipeline: BOM creation -> warehouse stock
+// check -> (only if short) PRF to Material Procurement, ~10 working days
+// typical lead time. This runs per SO (one BOM covers many materials at
+// once), so it's tracked in its own table (materials_requests) rather than
+// forced into the per-item route model — but each line CAN optionally be
+// linked to the specific item it's for (itemId), so its status can surface
+// right on that item's card too. A line with no itemId is "general" for the
+// whole SO (e.g. shared consumables) and applies to every item in that SO.
+// { id, soNumber, client, itemId (optional), name, qty, unit,
+//   stockStatus: 'not_checked'|'in_stock'|'short',
+//   stockCheckedBy, stockCheckedAt,
+//   prfDate (set when raised to procurement), targetDays (default 10),
+//   receivedDate, receivedBy, createdBy, createdAt, notes }
+let MATERIALS = [];
 
 function activeItems(){ return ITEMS.filter(i=>!i.archived); }
 function archivedItems(){ return ITEMS.filter(i=>i.archived); }
 function uid(){ return 'it_' + Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
+function materialUid(){ return 'mat_' + Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
+function blankMaterialLine(soNumber, client, itemId){
+  return {
+    id: materialUid(), soNumber: soNumber||'', client: client||'', itemId: itemId||'',
+    name: '', qty: 0, unit: 'pc',
+    stockStatus: 'not_checked', // not_checked | in_stock | short
+    stockCheckedBy: '', stockCheckedAt: '',
+    prfDate: '', targetDays: 10,
+    receivedDate: '', receivedBy: '',
+    createdBy: '', createdAt: new Date().toISOString().slice(0,10),
+    notes: '',
+  };
+}
+// Days elapsed since the shortage was raised to Material Procurement (prfDate)
+// — counts up to today while still waiting, freezes at the count on the day
+// it was actually received. Returns null for anything that was never short
+// (in-stock items have no waiting period) or hasn't been raised yet.
+function materialDaysWaiting(m){
+  if(m.stockStatus!=='short' || !m.prfDate) return null;
+  const end = m.receivedDate ? new Date(m.receivedDate+'T00:00:00') : new Date();
+  const start = new Date(m.prfDate+'T00:00:00');
+  return Math.max(0, Math.round((end-start)/86400000));
+}
+// A material line counts as "delayed" once it's waited longer than its own
+// target lead time (defaults to 10 working-ish days, matching the owner's
+// real-world Material Procurement turnaround) and still hasn't arrived.
+function materialIsDelayed(m){
+  if(m.stockStatus!=='short' || m.receivedDate || !m.prfDate) return false;
+  const days = materialDaysWaiting(m);
+  return days!==null && days > (Number(m.targetDays)||10);
+}
+function materialsForSo(soNumber, client){
+  return MATERIALS.filter(m=>m.soNumber===soNumber && m.client===client);
+}
+// Summarizes, for one item, every material line still being waited on that's
+// relevant to it — either linked directly to this item, or a "general" line
+// (no itemId) for the same SO, since a general shortage blocks every item in
+// that SO just the same. Returns null when nothing's outstanding, so callers
+// can skip the badge entirely instead of showing an empty one.
+function itemMaterialSummary(item){
+  const relevant = MATERIALS.filter(m=>m.soNumber===item.soNumber && m.client===item.client && (!m.itemId || m.itemId===item.id));
+  const waiting = relevant.filter(m=>m.stockStatus==='short' && !m.receivedDate);
+  if(waiting.length===0) return null;
+  const worstDays = Math.max(...waiting.map(m=>materialDaysWaiting(m)||0));
+  const anyDelayed = waiting.some(materialIsDelayed);
+  return { count: waiting.length, worstDays, anyDelayed };
+}
+// Small inline badge shown on an item's task card (My Tasks) flagging that
+// it's still waiting on materials/accessories/consumables from the BOM ->
+// stock-check -> procurement pipeline — see the Materials tab for the detail.
+function materialBadgeHtml(item){
+  const s = itemMaterialSummary(item);
+  if(!s) return '';
+  const style = s.anyDelayed
+    ? 'color:#fff;background:var(--red);font-weight:800;'
+    : 'color:#a35d00;background:var(--amber-bg);font-weight:700;';
+  const label = s.count===1 ? '1 materyales' : `${s.count} materyales`;
+  return `<div class="hint" style="${style}padding:5px 8px;border-radius:6px;margin-top:4px;display:inline-block;">🚚 Naghihintay pa ng ${label} (Day ${s.worstDays})${s.anyDelayed?' — LAGPAS NA SA TARGET':''}</div>`;
+}
 
 function blankRouteState(route){
   const routeStatus = {}; route.forEach(id=>routeStatus[id]='queue');
@@ -1630,6 +1719,45 @@ async function saveMeta(){
   updateSyncBadge('offline');
   showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
 }
+// Materials/accessories/consumables pipeline — its own table
+// (materials_requests), same single-row upsert pattern as persistItem() so
+// checking one box in the Materials tab doesn't have to re-upload every
+// other line.
+async function persistMaterialLine(m){
+  if(typeof sbClient==='undefined' || !sbClient){ capabilityUnavailable = true; return {ok:false, code:'capability_disabled'}; }
+  try{
+    const row = { id: m.id, so_number: m.soNumber||'', client: m.client||'', item_id: m.itemId||null, data: m };
+    const {error} = await sbClient.from('materials_requests').upsert([row], {onConflict:'id'});
+    if(error) throw error;
+    return {ok:true};
+  }catch(e){
+    return {ok:false, code:'upstream_error', message: e && e.message};
+  }
+}
+async function saveMaterialLine(m){
+  if(isReadOnly || capabilityUnavailable){ return; }
+  updateSyncBadge('saving');
+  let result = await persistMaterialLine(m);
+  if(!result.ok && result.code==='upstream_error'){
+    await sleep(400 + Math.random()*400);
+    result = await persistMaterialLine(m);
+  }
+  if(result.ok){ updateSyncBadge('saved'); return; }
+  if(result.code==='capability_disabled'){
+    capabilityUnavailable = true;
+    updateSyncBadge('unavailable');
+    showToast('Hindi available ang pag-save dito ngayon.');
+    return;
+  }
+  updateSyncBadge('offline');
+  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
+}
+async function deleteMaterialLine(id){
+  MATERIALS = MATERIALS.filter(m=>m.id!==id);
+  renderMaterialsTab();
+  if(typeof sbClient==='undefined' || !sbClient || isReadOnly || capabilityUnavailable) return;
+  try{ await sbClient.from('materials_requests').delete().eq('id', id); }catch(e){}
+}
 // Shared save wrapper used by every other mutation in the app (owners, cost
 // rates, SO edits, new items, deletes, ...) — uploads the full working
 // state. Handles the read-only / conflict / transient-failure cases the
@@ -1710,17 +1838,20 @@ async function loadInitialState(){
   let seed = {};
   try{ seed = JSON.parse(document.getElementById('seed-state').textContent) || {}; }catch(e){ seed = {}; }
 
-  let itemsRows = [], metaRows = [], firstRun = false;
+  let itemsRows = [], metaRows = [], materialsRows = [], firstRun = false;
   if(typeof sbClient!=='undefined' && sbClient){
     try{
-      const [itemsRes, metaRes] = await Promise.all([
+      const [itemsRes, metaRes, materialsRes] = await Promise.all([
         sbClient.from('items').select('data'),
         sbClient.from('meta').select('key,data'),
+        sbClient.from('materials_requests').select('data'),
       ]);
       if(itemsRes.error) throw itemsRes.error;
       if(metaRes.error) throw metaRes.error;
+      if(materialsRes.error) throw materialsRes.error;
       itemsRows = itemsRes.data || [];
       metaRows = metaRes.data || [];
+      materialsRows = materialsRes.data || [];
       firstRun = itemsRows.length===0 && metaRows.length===0;
     }catch(e){
       capabilityUnavailable = true;
@@ -1731,6 +1862,7 @@ async function loadInitialState(){
     capabilityUnavailable = true;
     updateSyncBadge('unavailable');
   }
+  MATERIALS = materialsRows.map(r=>r.data).filter(Boolean);
 
   const metaByKey = {};
   metaRows.forEach(r=>{ metaByKey[r.key] = r.data; });
@@ -1854,6 +1986,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
     if(tab.dataset.view==='owners') renderOwnersEditor();
     if(tab.dataset.view==='costrates') renderCostRatesEditor();
     if(tab.dataset.view==='margin') renderMarginTab();
+    if(tab.dataset.view==='materials') renderMaterialsTab();
     if(tab.dataset.view==='tvmode') startTvMode();
   });
 });
@@ -1992,6 +2125,31 @@ function renderOverview(){
     });
     document.getElementById('archivedTable').innerHTML = arRows;
   }
+
+  // Materials Nadedelay — every material line still short (no receivedDate)
+  // and already past its own targetDays waiting on Material Procurement,
+  // worst wait first, so the owner can see at a glance which SO/item is
+  // stuck longest waiting on materials/accessories/consumables.
+  const delayedMaterials = MATERIALS.filter(materialIsDelayed)
+    .map(m=>({ m, days: materialDaysWaiting(m), linkedItem: m.itemId ? ITEMS.find(i=>i.id===m.itemId) : null }))
+    .sort((a,b)=>b.days-a.days);
+  let matRows = '<tr><th>SO Number</th><th>Client</th><th>Materyales</th><th>Item</th><th>PRF Date</th><th>Target (araw)</th><th>Days Waiting</th></tr>';
+  if(delayedMaterials.length===0){
+    matRows += `<tr><td colspan="7" style="color:var(--gray);text-align:center;padding:16px;">Walang delayed na materyales ngayon. 🎉</td></tr>`;
+  }else{
+    delayedMaterials.forEach(({m, days, linkedItem})=>{
+      matRows += `<tr>
+        <td class="so-num">${escapeHtml(m.soNumber)}</td>
+        <td class="client-name">${escapeHtml(m.client)}</td>
+        <td><b>${escapeHtml(m.name)}</b><br><span style="color:var(--gray);font-size:11px;">${escapeHtml(String(m.qty))} ${escapeHtml(m.unit||'')}</span></td>
+        <td>${linkedItem ? escapeHtml(linkedItem.itemCode) : '<span style="color:var(--gray);">(general sa buong SO)</span>'}</td>
+        <td>${m.prfDate?formatDateLong(m.prfDate):'—'}</td>
+        <td>${m.targetDays||10}</td>
+        <td style="color:var(--red);font-weight:700;">${days}d</td>
+      </tr>`;
+    });
+  }
+  document.getElementById('materialsDelayedTable').innerHTML = matRows;
 
   const doneItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
   const onTrackListItems = ITEMS_VIEW.filter(i=>itemCategory(i)!=='done' && !isItemOverdueNow(i));
@@ -4004,6 +4162,7 @@ function renderPersonActionableTasksHtml(name){
       ? `<div class="hint" style="color:#6a5acd;margin-top:4px;">🔧 Kinakailangan ito ni ${processLabel(t.item.detourFrom[t.processId])} bago magpatuloy${(t.item.detourReason && t.item.detourReason[t.processId]) ? ': "'+t.item.detourReason[t.processId]+'"' : ''} — babalik doon pagkatapos dito.</div>`
       : '';
     const splitBadge = t.isSplit ? `<div class="hint" style="color:#6a5acd;font-weight:700;margin-top:4px;">🔗 May kasamang piraso sa ibang proseso (split)${t.item.splitNote ? ' — '+t.item.splitNote : ''}</div>` : '';
+    const materialsBadge = materialBadgeHtml(t.item);
     const drawingsHtml = drawingLinkHtml(t.item);
     const partsListHtml = partsListTableHtml(t.item);
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
@@ -4057,6 +4216,7 @@ function renderPersonActionableTasksHtml(name){
         ${returnNote}
         ${detourPendingNote}
         ${splitBadge}
+        ${materialsBadge}
         ${drawingsHtml}
         ${partsListHtml}
         ${rawPartsHtml}
@@ -4809,6 +4969,161 @@ function computeMarginByPeriod(granularity){
     byPeriod[key].count += 1;
   });
   return { byPeriod, delivered, effCosts };
+}
+
+/* ---------- Materials & Procurement tab ---------- */
+// Unique list of every SO currently in the tracker (active items only),
+// used both for the SO filter dropdown and for picking which SO a new
+// material line belongs to.
+function materialsSoOptionsList(){
+  const seen = new Map();
+  activeItems().forEach(it=>{
+    const key = it.soNumber+'||'+it.client;
+    if(!seen.has(key)) seen.set(key, {soNumber:it.soNumber, client:it.client});
+  });
+  return [...seen.values()].sort((a,b)=> (a.soNumber+a.client).localeCompare(b.soNumber+b.client));
+}
+let materialsSoFilter = ''; // '' = all SOs, else 'soNumber||client'
+let materialsFormSo = ''; // currently selected SO in the "Add Material" form
+function renderMaterialsTab(){
+  const wrap = document.getElementById('materialsTabBody');
+  if(!wrap) return;
+  const soList = materialsSoOptionsList();
+  if(!materialsFormSo && soList.length) materialsFormSo = soList[0].soNumber+'||'+soList[0].client;
+
+  const soOptionsHtml = (current) => soList.map(s=>{
+    const key = s.soNumber+'||'+s.client;
+    return `<option value="${escapeHtml(key)}" ${key===current?'selected':''}>${escapeHtml(s.soNumber)} · ${escapeHtml(s.client)}</option>`;
+  }).join('');
+
+  const [formSoNum, formClient] = materialsFormSo.split('||');
+  const formItems = activeItems().filter(it=>it.soNumber===formSoNum && it.client===formClient);
+  const itemOptionsHtml = `<option value="">(General para sa buong SO)</option>` + formItems.map(it=>
+    `<option value="${escapeHtml(it.id)}">${escapeHtml(it.itemCode)} — ${escapeHtml((it.description||'').slice(0,50))}</option>`
+  ).join('');
+
+  let list = MATERIALS.slice();
+  if(materialsSoFilter) list = list.filter(m=>(m.soNumber+'||'+m.client)===materialsSoFilter);
+  list.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||''));
+
+  const statusLabel = {not_checked:'Hindi pa Nachecheck', in_stock:'May Stock', short:'Kulang'};
+  const rows = list.map(m=>{
+    const linkedItem = m.itemId ? ITEMS.find(i=>i.id===m.itemId) : null;
+    const days = materialDaysWaiting(m);
+    const delayed = materialIsDelayed(m);
+    const statusOptionsHtml = Object.keys(statusLabel).map(k=>`<option value="${k}" ${m.stockStatus===k?'selected':''}>${statusLabel[k]}</option>`).join('');
+    const shortFieldsHtml = m.stockStatus==='short' ? `
+      <div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap;">
+        <label style="font-size:10.5px;color:var(--gray);">PRF Date: <input type="date" value="${escapeHtml(m.prfDate||'')}" style="font-size:11px;padding:2px 4px;" onchange="updateMaterialPrfDate('${m.id}', this.value)"></label>
+        <label style="font-size:10.5px;color:var(--gray);">Target (araw): <input type="number" min="1" value="${m.targetDays||10}" style="width:48px;font-size:11px;padding:2px 4px;" onchange="updateMaterialTargetDays('${m.id}', this.value)"></label>
+        ${m.receivedDate ? `<span style="color:var(--green);font-size:11px;font-weight:700;">✅ Natanggap: ${formatDateLong(m.receivedDate)}</span>` : `<button class="btn secondary btn-sm" onclick="markMaterialReceived('${m.id}')">Markahan Natanggap</button>`}
+        ${!m.receivedDate && days!==null ? `<span style="font-size:11px;font-weight:700;color:${delayed?'var(--red)':'var(--gray)'};">${delayed?'🔴 LAGPAS NA':''} Day ${days}</span>` : ''}
+      </div>` : '';
+    return `<tr>
+      <td class="so-num">${escapeHtml(m.soNumber)}</td>
+      <td class="client-name">${escapeHtml(m.client)}</td>
+      <td><b>${escapeHtml(m.name)}</b><br><span style="color:var(--gray);font-size:11px;">${escapeHtml(String(m.qty))} ${escapeHtml(m.unit||'')}</span></td>
+      <td>${linkedItem ? escapeHtml(linkedItem.itemCode) : '<span style="color:var(--gray);">(general)</span>'}</td>
+      <td>
+        <select onchange="updateMaterialStockStatus('${m.id}', this.value)">${statusOptionsHtml}</select>
+        ${shortFieldsHtml}
+      </td>
+      <td style="white-space:nowrap;"><button class="btn ghost btn-sm" onclick="removeMaterialLine('${m.id}')">✕ Tanggalin</button></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="6" style="color:var(--gray);text-align:center;padding:16px;">Wala pang naitalang materyales para dito.</td></tr>`;
+
+  wrap.innerHTML = `
+    <div class="field" style="max-width:360px;">
+      <label>I-filter ayon sa SO</label>
+      <select onchange="materialsSoFilter=this.value; renderMaterialsTab();">
+        <option value="">Lahat ng SO</option>
+        ${soOptionsHtml(materialsSoFilter)}
+      </select>
+    </div>
+    <div class="panel" style="background:var(--gray-bg);margin:14px 0;">
+      <h3 style="margin-top:0;">+ Magdagdag ng Materyales sa BOM</h3>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+        <div class="field" style="min-width:220px;">
+          <label>SO</label>
+          <select id="matFormSo" onchange="materialsFormSo=this.value; renderMaterialsTab();">${soOptionsHtml(materialsFormSo)}</select>
+        </div>
+        <div class="field" style="min-width:220px;">
+          <label>Para saang item (optional)</label>
+          <select id="matFormItem">${itemOptionsHtml}</select>
+        </div>
+        <div class="field" style="min-width:160px;">
+          <label>Pangalan ng Materyales/Accessory/Consumable</label>
+          <input type="text" id="matFormName" placeholder="hal. M8 Bolts">
+        </div>
+        <div class="field" style="width:90px;">
+          <label>Qty</label>
+          <input type="number" id="matFormQty" min="0" value="1">
+        </div>
+        <div class="field" style="width:90px;">
+          <label>Unit</label>
+          <input type="text" id="matFormUnit" value="pc">
+        </div>
+        <button class="btn" onclick="addMaterialLineFromForm()">+ Idagdag</button>
+      </div>
+    </div>
+    <div class="mini-table-wrap"><table class="mini-table">
+      <tr><th>SO Number</th><th>Client</th><th>Materyales</th><th>Item</th><th>Stock Status</th><th></th></tr>
+      ${rows}
+    </table></div>
+  `;
+}
+function addMaterialLineFromForm(){
+  const soKey = document.getElementById('matFormSo').value;
+  const [soNum, client] = soKey.split('||');
+  const itemId = document.getElementById('matFormItem').value;
+  const name = document.getElementById('matFormName').value.trim();
+  const qty = Number(document.getElementById('matFormQty').value) || 0;
+  const unit = document.getElementById('matFormUnit').value.trim() || 'pc';
+  if(!soNum || !name){ showToast('Kailangan ng SO at pangalan ng materyales.'); return; }
+  const m = blankMaterialLine(soNum, client, itemId);
+  m.name = name; m.qty = qty; m.unit = unit;
+  MATERIALS.push(m);
+  saveMaterialLine(m);
+  renderMaterialsTab();
+}
+function updateMaterialStockStatus(id, status){
+  const m = MATERIALS.find(x=>x.id===id); if(!m) return;
+  m.stockStatus = status;
+  m.stockCheckedAt = new Date().toISOString().slice(0,10);
+  if(status==='short' && !m.prfDate) m.prfDate = new Date().toISOString().slice(0,10);
+  if(status==='in_stock'){ m.prfDate=''; m.receivedDate=''; }
+  saveMaterialLine(m);
+  renderMaterialsTab();
+  renderOverview();
+  const activeView = document.querySelector('.view.active');
+  if(activeView && activeView.id==='view-team') renderTeam();
+}
+function updateMaterialPrfDate(id, value){
+  const m = MATERIALS.find(x=>x.id===id); if(!m) return;
+  m.prfDate = value;
+  saveMaterialLine(m);
+  renderMaterialsTab();
+  renderOverview();
+}
+function updateMaterialTargetDays(id, value){
+  const m = MATERIALS.find(x=>x.id===id); if(!m) return;
+  m.targetDays = Number(value)||10;
+  saveMaterialLine(m);
+  renderMaterialsTab();
+  renderOverview();
+}
+function markMaterialReceived(id){
+  const m = MATERIALS.find(x=>x.id===id); if(!m) return;
+  m.receivedDate = new Date().toISOString().slice(0,10);
+  saveMaterialLine(m);
+  renderMaterialsTab();
+  renderOverview();
+  const activeView = document.querySelector('.view.active');
+  if(activeView && activeView.id==='view-team') renderTeam();
+}
+function removeMaterialLine(id){
+  deleteMaterialLine(id);
+  renderOverview();
 }
 
 /* ---------- Process Cost Rates tab ---------- */
@@ -6660,6 +6975,17 @@ function handleRemoteMetaChange(payload){
   else if(row.key==='periodCosts') PERIOD_COST_ENTRIES = row.data;
   rerenderCurrentView();
 }
+function handleRemoteMaterialChange(payload){
+  if(payload.eventType==='DELETE'){
+    if(payload.old && payload.old.id) MATERIALS = MATERIALS.filter(m=>m.id!==payload.old.id);
+  }else{
+    const newData = payload.new && payload.new.data;
+    if(!newData || !newData.id) return;
+    const idx = MATERIALS.findIndex(m=>m.id===newData.id);
+    if(idx>=0) MATERIALS[idx] = newData; else MATERIALS.push(newData);
+  }
+  rerenderCurrentView();
+}
 // Re-runs the render for whatever tab is currently active, so a change made
 // by someone else shows up live. Skipped while an edit modal is open, so an
 // incoming update never yanks an input out from under someone mid-edit —
@@ -6679,6 +7005,7 @@ function rerenderCurrentView(){
   else if(viewId==='view-owners') renderOwnersEditor();
   else if(viewId==='view-costrates') renderCostRatesEditor();
   else if(viewId==='view-margin') renderMarginTab();
+  else if(viewId==='view-materials') renderMaterialsTab();
 }
 function subscribeRealtime(){
   if(typeof sbClient==='undefined' || !sbClient) return;
@@ -6687,6 +7014,9 @@ function subscribeRealtime(){
     .subscribe();
   sbClient.channel('tracker-meta-changes')
     .on('postgres_changes', {event:'*', schema:'public', table:'meta'}, handleRemoteMetaChange)
+    .subscribe();
+  sbClient.channel('tracker-materials-changes')
+    .on('postgres_changes', {event:'*', schema:'public', table:'materials_requests'}, handleRemoteMaterialChange)
     .subscribe();
 }
 async function init(){
