@@ -118,7 +118,7 @@
      Ongoing/Delayed stat cards) — #breakdownRow gets this class added by
      renderLineItemsBreakdown() so it escapes the .cards-row grid layout and
      lays out as one wide block instead. */
-  #breakdownRow.itembar-mode{display:block;}
+  .itembar-mode{display:block;}
   .itembar-head{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px;margin-bottom:4px;}
   .itembar-title{font-size:15.5px;font-weight:700;color:#fff;letter-spacing:.2px;}
   .itembar-subhint{font-size:11px;color:#f0d9e0;margin-top:2px;}
@@ -151,6 +151,21 @@
   .itembar-pct{margin-top:4px;font-size:13px;font-weight:800;color:#8ef0bf;}
   .itembar-pct.zero{color:#f3dde4;}
   .itembar-scrollhint{font-size:11px;color:#f0d9e0;text-align:right;margin-top:10px;}
+
+  /* "Progress by Process" vertical bar chart (Production Board) — reuses
+     the itembar-* scaffolding above (head/gridlines/scrollshell/baseline)
+     but each process gets a single completion bar instead of a target/done
+     pair, and a stack of clickable status badges underneath instead of a
+     plain % label. */
+  .procbar-col{display:flex;flex-direction:column;align-items:center;flex-shrink:0;height:100%;justify-content:flex-end;width:64px;}
+  .procbar-barwrap{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
+  .procbar-bar{width:22px;border-radius:4px 4px 1px 1px;background:linear-gradient(180deg,#57d69f 0%, var(--green) 85%);box-shadow:0 1px 4px rgba(47,158,92,.45);position:relative;}
+  .procbar-bar::after{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:rgba(255,255,255,.35);border-radius:4px 4px 0 0;}
+  .procbar-names{gap:16px;}
+  .procbar-name-col{width:190px;flex-shrink:0;text-align:left;padding:0 4px;}
+  .procbar-name{font-size:12.5px;font-weight:800;color:#fff;line-height:1.3;margin-bottom:6px;}
+  .procbar-badges{display:flex;flex-direction:column;align-items:flex-start;gap:5px;}
+  .procbar-badges .meta-chip{font-size:11px;padding:4px 9px;white-space:nowrap;}
 
   .panel{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:18px;}
   .panel h3{margin:0 0 14px;font-family:var(--font-display);font-size:16px;color:var(--steel-900);}
@@ -645,9 +660,8 @@
       <div class="cards-row" id="statCardsStatus" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));max-width:520px;"></div>
     </div>
 
-    <div class="panel">
-      <h3>Progress by Process</h3>
-      <div id="stageProgress"></div>
+    <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);color:#fff;padding:24px 20px;margin-bottom:12px;">
+      <div class="breakdown-row cards-row" id="breakdownRow"></div>
     </div>
 
     <div class="panel">
@@ -714,7 +728,7 @@
   <!-- BOARD -->
   <div class="view" id="view-board">
     <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);color:#fff;padding:24px 20px;margin-bottom:12px;">
-      <div class="breakdown-row cards-row" id="breakdownRow"></div>
+      <div class="breakdown-row cards-row" id="stageProgressBoard"></div>
     </div>
     <div class="panel" style="padding:12px 16px;margin-bottom:12px;">
       <span class="hint">Bawat item ay may sariling fabrication route. Ang <b style="color:var(--amber)">amber na hakbang</b> ang kasalukuyang proseso — ito ay display lang dito sa Production Board. Ang pag-update ng status (Queue → Ongoing → Done) ay ginagawa na lang sa <b>My Tasks</b> ng taong naka-assign, para iisang lugar lang ang pinagmumulan ng status.</span>
@@ -2014,58 +2028,11 @@ function renderOverview(){
   renderFinishedSection();
   renderProgressSection();
   renderStuckSection();
-
-  // Progress by process (only counts items whose route actually includes that process).
-  // "Naka-assign" is every item allocated to pass through this station at all
-  // — whether it has already finished this step or not. Of the ones NOT yet
-  // done at this step, only the ones where this station is the item's CURRENT
-  // step (routeStatus not done, and no earlier step in its route is still
-  // pending) are judged "on track" vs "delayed" against this step's own
-  // target date. An item that hasn't reached this station yet — because it's
-  // still stuck at an earlier process in its route — is not this station's
-  // delay to own; it's counted separately as "not yet on hand" so a single
-  // delayed item doesn't get double-counted as "delayed" at every downstream
-  // station it hasn't arrived at. So by construction:
-  // natapos + on_track + delayed + not_yet_on_hand always equals naka-assign.
-  let progHtml = '';
-  PROCESS_LIST.forEach(p=>{
-    const relevant = ITEMS_VIEW.filter(it=>it.route.includes(p.id));
-    if(relevant.length===0) return;
-    const assignedN = relevant.length;
-    const doneItems = relevant.filter(it=>it.routeStatus[p.id]==='done');
-    const doneN = doneItems.length;
-    const pct = Math.round(doneN/assignedN*100);
-    const notDoneItems = relevant.filter(it=>it.routeStatus[p.id]!=='done');
-    const currentHereItems = notDoneItems.filter(it=>currentStepId(it)===p.id);
-    const notYetItems = notDoneItems.filter(it=>currentStepId(it)!==p.id);
-    const delayN = currentHereItems.filter(it=>{
-      const target = it.routeTargetDates && it.routeTargetDates[p.id];
-      return target && new Date() > new Date(target+'T23:59:59');
-    }).length;
-    const onTrackN = currentHereItems.length - delayN;
-    const notYetN = notYetItems.length;
-    // Share of this stage's assigned total that each badge represents —
-    // shown next to the raw count on the badge itself.
-    const pctOf = n => assignedN ? Math.round(n/assignedN*100) : 0;
-    // Each badge is clickable — opens a list of exactly which items make up
-    // that count, with piece counts and (for natapos) the actual completion
-    // date, or (for the rest) the target date. See openStageDetailModal().
-    progHtml += `<div class="stage-row-v2">
-      <div class="stage-row-top">
-        <div class="name">${p.label}</div>
-        <div class="track"><div class="fill" style="width:${pct}%"></div></div>
-        <div class="pct">${pct}%</div>
-      </div>
-      <div class="stage-meta">
-        <span class="meta-chip meta-assigned clickable" onclick="openStageDetailModal('${p.id}','assigned')">👤 <b>${assignedN}</b> naka-assign</span>
-        <span class="meta-chip meta-done clickable" onclick="openStageDetailModal('${p.id}','done')">✓ <b>${doneN}</b> natapos (${pctOf(doneN)}%)</span>
-        <span class="meta-chip meta-ontrack clickable" onclick="openStageDetailModal('${p.id}','ontrack')">🟢 <b>${onTrackN}</b> on track (${pctOf(onTrackN)}%)</span>
-        <span class="meta-chip meta-delay clickable" onclick="openStageDetailModal('${p.id}','delayed')">🔴 <b>${delayN}</b> delayed (${pctOf(delayN)}%)</span>
-        <span class="meta-chip meta-notyet clickable" onclick="openStageDetailModal('${p.id}','notyet')">⏳ <b>${notYetN}</b> not yet on hand (${pctOf(notYetN)}%)</span>
-      </div>
-    </div>`;
-  });
-  document.getElementById('stageProgress').innerHTML = progHtml || `<div class="hint">Wala pang laman.</div>`;
+  // "Progress by Process" now lives on the Production Board (vertical bar
+  // chart, see renderStageProgressBars) and the per-item pcs breakdown now
+  // lives here on Overview instead (see renderLineItemsBreakdown) — the
+  // owner asked to swap which tab each of these two sections appears on.
+  renderLineItemsBreakdown();
 
   document.getElementById('hdrSub').textContent =
     `${soCount} sales order${soCount===1?'':'s'} · ${totalItems} line items · ${totalUnits} pcs total · ${pctDone}% in finished goods${bottleneckCount?` · ${bottleneckCount} delayed`:''}`;
@@ -2896,8 +2863,92 @@ function renderLineItemsBreakdown(){
     });
   }
 }
+// "Progress by Process" — now shown as a vertical bar chart on the
+// Production Board (moved here from Overview, and restyled from the old
+// horizontal list, per the owner's request to match the per-item chart's
+// look: one bar per process, scroll right to reach the rest). Bar height is
+// always simply "% of assigned items done at this process" (0-100 scale,
+// unlike the per-item chart which scales to the biggest quantity) — the
+// naka-assign / natapos / on track / delayed / not yet on hand breakdown
+// underneath is unchanged from before, same clickable badges opening the
+// same detail modal (see openStageDetailModal).
+function renderStageProgressBars(){
+  const el = document.getElementById('stageProgressBoard');
+  if(!el) return;
+  el.classList.add('itembar-mode');
+  const ITEMS_VIEW = activeItems();
+  const stages = [];
+  PROCESS_LIST.forEach(p=>{
+    const relevant = ITEMS_VIEW.filter(it=>it.route.includes(p.id));
+    if(relevant.length===0) return;
+    const assignedN = relevant.length;
+    const doneItems = relevant.filter(it=>it.routeStatus[p.id]==='done');
+    const doneN = doneItems.length;
+    const pct = Math.round(doneN/assignedN*100);
+    const notDoneItems = relevant.filter(it=>it.routeStatus[p.id]!=='done');
+    const currentHereItems = notDoneItems.filter(it=>currentStepId(it)===p.id);
+    const notYetItems = notDoneItems.filter(it=>currentStepId(it)!==p.id);
+    const delayN = currentHereItems.filter(it=>{
+      const target = it.routeTargetDates && it.routeTargetDates[p.id];
+      return target && new Date() > new Date(target+'T23:59:59');
+    }).length;
+    const onTrackN = currentHereItems.length - delayN;
+    const notYetN = notYetItems.length;
+    stages.push({p, assignedN, doneN, pct, onTrackN, delayN, notYetN});
+  });
+  if(stages.length===0){
+    el.innerHTML = `<div class="empty-state" style="color:#fff;"><div class="big">📊</div>Wala pang laman ang Production Board.</div>`;
+    return;
+  }
+  const CHART_H = 170;
+  const gridlinesHtml = [0,0.25,0.5,0.75,1].map(f=>{
+    const val = Math.round(100*f);
+    const top = CHART_H - Math.round(CHART_H*f);
+    return `<div class="itembar-gl" style="top:${top}px;"><span class="itembar-gl-lbl">${val}%</span></div>`;
+  }).join('');
+  const barsHtml = stages.map(s=>{
+    const barH = Math.max(s.pct>0?4:0, Math.round(s.pct/100*CHART_H));
+    return `<div class="procbar-col">
+      <div class="itembar-qtychip">${s.pct}%</div>
+      <div class="procbar-barwrap"><div class="procbar-bar" style="height:${barH}px;"></div></div>
+    </div>`;
+  }).join('');
+  // Share of this stage's assigned total that each badge represents — shown
+  // next to the raw count on the badge itself.
+  const pctOf = (n,total) => total ? Math.round(n/total*100) : 0;
+  const namesHtml = stages.map(s=>{
+    const p = s.p;
+    return `<div class="procbar-name-col">
+      <div class="procbar-name">${escapeHtml(p.label)}</div>
+      <div class="procbar-badges">
+        <span class="meta-chip meta-assigned clickable" onclick="openStageDetailModal('${p.id}','assigned')">👤 <b>${s.assignedN}</b> naka-assign</span>
+        <span class="meta-chip meta-done clickable" onclick="openStageDetailModal('${p.id}','done')">✓ <b>${s.doneN}</b> natapos (${pctOf(s.doneN,s.assignedN)}%)</span>
+        <span class="meta-chip meta-ontrack clickable" onclick="openStageDetailModal('${p.id}','ontrack')">🟢 <b>${s.onTrackN}</b> on track (${pctOf(s.onTrackN,s.assignedN)}%)</span>
+        <span class="meta-chip meta-delay clickable" onclick="openStageDetailModal('${p.id}','delayed')">🔴 <b>${s.delayN}</b> delayed (${pctOf(s.delayN,s.assignedN)}%)</span>
+        <span class="meta-chip meta-notyet clickable" onclick="openStageDetailModal('${p.id}','notyet')">⏳ <b>${s.notYetN}</b> not yet on hand (${pctOf(s.notYetN,s.assignedN)}%)</span>
+      </div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="itembar-head">
+      <div>
+        <div class="itembar-title">Progress by Process</div>
+        <div class="itembar-subhint">${stages.length} process · % ng naka-assign na items na tapos na dito</div>
+      </div>
+    </div>
+    <div class="itembar-scrollshell">
+      <div class="itembar-chartarea">
+        <div class="itembar-gridlines" style="height:${CHART_H}px;">${gridlinesHtml}</div>
+        <div class="itembar-bars" style="height:${CHART_H}px;">${barsHtml}</div>
+        <div class="itembar-baseline"></div>
+        <div class="itembar-names procbar-names">${namesHtml}</div>
+      </div>
+    </div>
+    <div class="itembar-scrollhint">⇄ i-scroll pakanan hanggang sa huling process</div>
+  `;
+}
 function renderBoard(){
-  renderLineItemsBreakdown();
+  renderStageProgressBars();
   const groups = {};
   activeItems().forEach(it=>{
     const key = it.soNumber + '||' + it.client;
