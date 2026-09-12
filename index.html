@@ -152,15 +152,16 @@
   .itembar-pct.zero{color:#f3dde4;}
   .itembar-scrollhint{font-size:11px;color:#f0d9e0;text-align:right;margin-top:10px;}
 
-  /* "Progress by Process" vertical bar chart (Production Board) — reuses
-     the itembar-* scaffolding above (head/gridlines/scrollshell/baseline)
-     but each process gets a single completion bar instead of a target/done
-     pair, and a stack of clickable status badges underneath instead of a
-     plain % label. */
-  .procbar-col{display:flex;flex-direction:column;align-items:center;flex-shrink:0;height:100%;justify-content:flex-end;width:64px;}
-  .procbar-barwrap{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
-  .procbar-bar{width:22px;border-radius:4px 4px 1px 1px;background:linear-gradient(180deg,#57d69f 0%, var(--green) 85%);box-shadow:0 1px 4px rgba(47,158,92,.45);position:relative;}
-  .procbar-bar::after{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:rgba(255,255,255,.35);border-radius:4px 4px 0 0;}
+  /* "Progress by Process" donut-ring chart (Production Board) — reuses the
+     itembar-* scaffolding above (head/scrollshell) but each process gets a
+     single progress ring ("Option A" from the mockup the owner picked: one
+     flat color, % centered) instead of a target/done bar pair, and a stack
+     of clickable status badges underneath instead of a plain % label. */
+  .procbar-donuts{align-items:center;}
+  .procbar-col{display:flex;flex-direction:column;align-items:center;flex-shrink:0;width:92px;}
+  .procbar-donut{width:78px;height:78px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .procbar-donut-hole{width:60px;height:60px;border-radius:50%;background:var(--accent-teal);display:flex;align-items:center;justify-content:center;}
+  .procbar-donut-pct{font-size:15px;font-weight:800;color:#fff;}
   .procbar-names{gap:16px;}
   .procbar-name-col{width:190px;flex-shrink:0;text-align:left;padding:0 4px;}
   .procbar-name{font-size:12.5px;font-weight:800;color:#fff;line-height:1.3;margin-bottom:6px;}
@@ -2900,17 +2901,11 @@ function renderStageProgressBars(){
     el.innerHTML = `<div class="empty-state" style="color:#fff;"><div class="big">📊</div>Wala pang laman ang Production Board.</div>`;
     return;
   }
-  const CHART_H = 170;
-  const gridlinesHtml = [0,0.25,0.5,0.75,1].map(f=>{
-    const val = Math.round(100*f);
-    const top = CHART_H - Math.round(CHART_H*f);
-    return `<div class="itembar-gl" style="top:${top}px;"><span class="itembar-gl-lbl">${val}%</span></div>`;
-  }).join('');
-  const barsHtml = stages.map(s=>{
-    const barH = Math.max(s.pct>0?4:0, Math.round(s.pct/100*CHART_H));
+  const donutsHtml = stages.map(s=>{
     return `<div class="procbar-col">
-      <div class="itembar-qtychip">${s.pct}%</div>
-      <div class="procbar-barwrap"><div class="procbar-bar" style="height:${barH}px;"></div></div>
+      <div class="procbar-donut" style="background:conic-gradient(#57d69f ${s.pct}%, rgba(255,255,255,.18) 0);">
+        <div class="procbar-donut-hole"><div class="procbar-donut-pct">${s.pct}%</div></div>
+      </div>
     </div>`;
   }).join('');
   // Share of this stage's assigned total that each badge represents — shown
@@ -2938,9 +2933,7 @@ function renderStageProgressBars(){
     </div>
     <div class="itembar-scrollshell">
       <div class="itembar-chartarea">
-        <div class="itembar-gridlines" style="height:${CHART_H}px;">${gridlinesHtml}</div>
-        <div class="itembar-bars" style="height:${CHART_H}px;">${barsHtml}</div>
-        <div class="itembar-baseline"></div>
+        <div class="itembar-bars procbar-donuts">${donutsHtml}</div>
         <div class="itembar-names procbar-names">${namesHtml}</div>
       </div>
     </div>
