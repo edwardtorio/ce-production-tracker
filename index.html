@@ -5167,6 +5167,24 @@ function renderBrowseSo(){
     allMap[key].items.push(it);
   });
   const list = Object.values(allMap).sort((a,b)=>a.soNumber.localeCompare(b.soNumber));
+  // Show each SO's line items in the same order they appear in the
+  // originally uploaded SO document, not whatever order the database
+  // happens to return them in. Items that carry a soLineNo (set when they
+  // were added through the Add SO form — see submitSO/addSingleItem) sort
+  // by that; older items added before this tracking existed have no
+  // soLineNo and simply keep their existing relative order, sliding in
+  // after any items whose position IS known. Array.prototype.sort is
+  // stable, so two items that both lack a soLineNo never get reshuffled
+  // relative to each other.
+  list.forEach(so=>{
+    so.items.sort((a,b)=>{
+      const an = a.soLineNo, bn = b.soLineNo;
+      if(an!==undefined && bn!==undefined) return an-bn;
+      if(an!==undefined) return -1;
+      if(bn!==undefined) return 1;
+      return 0;
+    });
+  });
   const browseOptions = list.map(so=>({value: so.soNumber+'||'+so.client, label: so.soNumber+' — '+so.client+(so.archived?' (archived)':'')}));
   populateMultiSoDropdown('browseSoSelect', browseOptions, 'renderBrowseSo', 'Pumili ng SO…');
   const browseSelected = getMultiSoSet('browseSoSelect');
@@ -6352,6 +6370,11 @@ async function addSingleItem(rowId){
   const result = buildItemFromRow(wrap, ctx);
   if(result.error==='empty'){ showToast('Lagyan muna ng Item Code o Description.'); return; }
   if(result.error==='route'){ showToast('Pumili ng hindi bababa sa 2 fabrication process para sa item na ito.'); return; }
+  // Remembers this row's position in the Add SO form (which mirrors the
+  // order items appear in the uploaded SO document/PDF) so the Browse SO
+  // detail view can later show items in that same order instead of
+  // whatever order they happen to load from the database in.
+  result.item.soLineNo = [...document.querySelectorAll('#itemRows .item-row-wrap')].indexOf(wrap);
   ITEMS.push(result.item);
   delete rowRoutes[rowId];
   delete partsListState[rowId];
@@ -6401,10 +6424,13 @@ async function submitSO(){
   const newItems = [];
   const remainingWraps = [];
   let routeSkipped = 0;
-  wraps.forEach(wrap=>{
+  wraps.forEach((wrap, wrapIdx)=>{
     const rowId = wrap.id.replace('wrap_','');
     const result = buildItemFromRow(wrap, ctx);
     if(result.item){
+      // Same idea as addSingleItem above — keep the form row's position so
+      // the item list can be displayed in the SO's original document order.
+      result.item.soLineNo = wrapIdx;
       newItems.push(result.item);
       delete rowRoutes[rowId];
       delete partsListState[rowId];
