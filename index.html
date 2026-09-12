@@ -695,6 +695,12 @@
     </div>
 
     <div class="panel">
+      <h3>📐 Drawings Kulang</h3>
+      <div class="hint" style="margin-bottom:10px;">Mga item na nasa proseso na kailangan ng drawing mula sa Engineering (Fabrication Drawing, Laser Nesting Layout, Bystronic Tube Cutting Program, Manual Cutting Scheme, o Bending Flat Pattern) pero wala pang naka-attach.</div>
+      <div class="mini-table-wrap"><table class="mini-table" id="drawingsMissingTable"></table></div>
+    </div>
+
+    <div class="panel">
       <h3>Fully Finished Items</h3>
       <div class="summary-line" id="finishedSummary"></div>
       <div class="filter-row">
@@ -1136,6 +1142,32 @@ let PERIOD_COST_ENTRIES = []; // [{id, periodKey, materialsCost, consumablesCost
 //   prfDate (set when raised to procurement), targetDays (default 10),
 //   receivedDate, receivedBy, createdBy, createdAt, notes }
 let MATERIALS = [];
+// Engineering drawings pipeline. Engineering's pre-production steps each
+// PRODUCE a specific document that a later production step then NEEDS to
+// see before that operator can work — mapped 1:1 onto the pre-production
+// process ids that already exist in PROCESS_LIST, verified against the
+// owner's actual workflow:
+//   drawing (Fabrication Drawing)               -> item-level    -> feeds welding (main/sub assy)
+//   laser_cutting_program (Nesting Layout)       -> SO-wide       -> feeds laser_cutting (many child parts share one sheet)
+//   bystronic_tube_cutting_program               -> SO-wide       -> feeds bystronic_cutting
+//   manual_cutting_scheme                        -> SO-wide       -> feeds manual_cutting
+//   bending_flat_pattern                         -> per child part-> feeds bending (each flat pattern is its own piece)
+// Boring/Tapping/Countersinking (tapping, countersunk, burring, burring_2)
+// are already annotated directly on the Fabrication Drawing per the owner,
+// so they consume the same 'drawing' entries rather than needing their own.
+// Stored in its own table (drawings_pool), same nullable-itemId +
+// optional-childPart shape as MATERIALS above, so one row can be item-level,
+// child-part-level, or SO-wide general depending on which process made it.
+// { id, soNumber, client, itemId (optional), processId, url, name,
+//   childPart (optional, for bending_flat_pattern), uploadedBy, uploadedAt, notes }
+let DRAWINGS_POOL = [];
+const DRAWING_PROCESS_MAP = {
+  drawing:                        { label:'Fabrication Drawing',        scope:'item',      consumedBy:['welding','tapping','countersunk','burring','burring_2'] },
+  laser_cutting_program:          { label:'Laser Cutting Nesting Layout', scope:'so',       consumedBy:['laser_cutting'] },
+  bystronic_tube_cutting_program: { label:'Bystronic Tube Cutting Program', scope:'so',     consumedBy:['bystronic_cutting'] },
+  manual_cutting_scheme:          { label:'Manual Cutting Scheme',      scope:'so',         consumedBy:['manual_cutting'] },
+  bending_flat_pattern:           { label:'Bending Flat Pattern',       scope:'childpart',  consumedBy:['bending'] },
+};
 
 function activeItems(){ return ITEMS.filter(i=>!i.archived); }
 function archivedItems(){ return ITEMS.filter(i=>i.archived); }
@@ -1198,6 +1230,94 @@ function materialBadgeHtml(item){
     : 'color:#a35d00;background:var(--amber-bg);font-weight:700;';
   const label = s.count===1 ? '1 materyales' : `${s.count} materyales`;
   return `<div class="hint" style="${style}padding:5px 8px;border-radius:6px;margin-top:4px;display:inline-block;">🚚 Naghihintay pa ng ${label} (Day ${s.worstDays})${s.anyDelayed?' — LAGPAS NA SA TARGET':''}</div>`;
+}
+function drawingUid(){ return 'drw_' + Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
+function blankDrawingEntry(soNumber, client, itemId, processId){
+  return {
+    id: drawingUid(), soNumber: soNumber||'', client: client||'', itemId: itemId||'', processId: processId||'',
+    url: '', name: '', childPart: '',
+    uploadedBy: '', uploadedAt: new Date().toISOString().slice(0,10),
+    notes: '',
+  };
+}
+// Every drawing entry relevant to ONE process step of ONE item — scope
+// depends on DRAWING_PROCESS_MAP: 'item' matches by itemId, 'so' matches
+// anything for the same SO regardless of item, 'childpart' also matches by
+// itemId (the flat patterns for the OTHER child parts of the same item are
+// filtered out separately, see drawingsForChildPart below).
+function drawingsForItemProcess(item, processId){
+  const scope = (DRAWING_PROCESS_MAP[processId]||{}).scope;
+  return DRAWINGS_POOL.filter(d=>{
+    if(d.processId!==processId) return false;
+    if(scope==='so') return d.soNumber===item.soNumber && d.client===item.client;
+    return d.itemId===item.id;
+  });
+}
+// A production step's own required drawings — resolved from whichever
+// pre-production process(es) feed it, per DRAWING_PROCESS_MAP's consumedBy.
+function requiredDrawingsForStep(item, stepProcessId){
+  const sourceProcessId = Object.keys(DRAWING_PROCESS_MAP).find(k=>DRAWING_PROCESS_MAP[k].consumedBy.includes(stepProcessId));
+  if(!sourceProcessId) return null; // this step doesn't consume any drawing
+  return { sourceProcessId, meta: DRAWING_PROCESS_MAP[sourceProcessId], drawings: drawingsForItemProcess(item, sourceProcessId) };
+}
+// Inline widget shown on a task card for a CONSUMING step (welding, laser
+// cutting, bending, ...): lists whatever's attached, or flags it missing so
+// the operator (and management, via the Overview list) can see right away
+// that Engineering hasn't attached the drawing this step needs yet.
+function drawingRequirementHtml(item, stepProcessId){
+  const req = requiredDrawingsForStep(item, stepProcessId);
+  if(!req) return '';
+  if(req.drawings.length===0){
+    return `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:5px 8px;border-radius:6px;margin-top:4px;">📐 Kulang sa Drawing — wala pang naka-attach na ${escapeHtml(req.meta.label)}</div>`;
+  }
+  const links = req.drawings.map(d=>{
+    const label = d.childPart ? `${escapeHtml(d.name||req.meta.label)} (${escapeHtml(d.childPart)})` : escapeHtml(d.name||req.meta.label);
+    return d.url ? `<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">📐 ${label}</a>` : `<span>📐 ${label}</span>`;
+  }).join('<br>');
+  return `<div class="hint" style="color:var(--green);margin-top:4px;">${links}</div>`;
+}
+// Inline mini-form shown on a task card for a PRODUCING step (drawing,
+// laser_cutting_program, bystronic_tube_cutting_program,
+// manual_cutting_scheme, bending_flat_pattern) — lets Engineering attach the
+// drawing right where they already are, before the item moves on to
+// whichever production step needs it (see drawingRequirementHtml).
+function drawingAttachFormHtml(item, processId){
+  const meta = DRAWING_PROCESS_MAP[processId];
+  if(!meta) return '';
+  const existing = drawingsForItemProcess(item, processId);
+  const existingHtml = existing.map(d=>`<div class="hint" style="margin-top:2px;">📐 ${d.url?`<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.name||meta.label)}</a>`:escapeHtml(d.name||meta.label)}${d.childPart?' ('+escapeHtml(d.childPart)+')':''} <button type="button" class="irc-edit" title="Alisin" onclick="removeDrawingEntry('${d.id}')">✕</button></div>`).join('');
+  const childPartFieldHtml = meta.scope==='childpart'
+    ? `<input type="text" id="drwChildPart_${item.id}_${processId}" placeholder="Child part (hal. Bracket A)" style="font-size:11px;padding:3px 6px;width:120px;">`
+    : '';
+  return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
+    <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}${meta.scope==='so'?' (para sa buong SO)':''}</div>
+    ${existingHtml}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+      <input type="text" id="drwUrl_${item.id}_${processId}" placeholder="Link ng drawing" style="font-size:11px;padding:3px 6px;flex:1;min-width:140px;">
+      <input type="text" id="drwName_${item.id}_${processId}" placeholder="Pangalan (optional)" style="font-size:11px;padding:3px 6px;width:120px;">
+      ${childPartFieldHtml}
+      <button type="button" class="btn secondary btn-sm" onclick="attachDrawingFromTaskCard('${item.id}','${processId}')">+ I-attach</button>
+    </div>
+  </div>`;
+}
+function attachDrawingFromTaskCard(itemId, processId){
+  const item = ITEMS.find(i=>i.id===itemId); if(!item) return;
+  const meta = DRAWING_PROCESS_MAP[processId]; if(!meta) return;
+  const urlEl = document.getElementById(`drwUrl_${itemId}_${processId}`);
+  const nameEl = document.getElementById(`drwName_${itemId}_${processId}`);
+  const childEl = document.getElementById(`drwChildPart_${itemId}_${processId}`);
+  const url = urlEl ? urlEl.value.trim() : '';
+  const name = nameEl ? nameEl.value.trim() : '';
+  const childPart = childEl ? childEl.value.trim() : '';
+  if(!url && !name){ showToast('Kailangan ng link o pangalan ng drawing.'); return; }
+  const d = blankDrawingEntry(item.soNumber, item.client, meta.scope==='so' ? '' : item.id, processId);
+  d.url = url; d.name = name || meta.label; d.childPart = childPart;
+  DRAWINGS_POOL.push(d);
+  saveDrawingEntry(d);
+  rerenderCurrentView();
+}
+function removeDrawingEntry(id){
+  deleteDrawingEntry(id);
 }
 
 function blankRouteState(route){
@@ -1758,6 +1878,43 @@ async function deleteMaterialLine(id){
   if(typeof sbClient==='undefined' || !sbClient || isReadOnly || capabilityUnavailable) return;
   try{ await sbClient.from('materials_requests').delete().eq('id', id); }catch(e){}
 }
+// Engineering drawings pipeline — its own table (drawings_pool), same
+// single-row upsert pattern as persistMaterialLine().
+async function persistDrawingEntry(d){
+  if(typeof sbClient==='undefined' || !sbClient){ capabilityUnavailable = true; return {ok:false, code:'capability_disabled'}; }
+  try{
+    const row = { id: d.id, so_number: d.soNumber||'', client: d.client||'', item_id: d.itemId||null, process_id: d.processId||'', data: d };
+    const {error} = await sbClient.from('drawings_pool').upsert([row], {onConflict:'id'});
+    if(error) throw error;
+    return {ok:true};
+  }catch(e){
+    return {ok:false, code:'upstream_error', message: e && e.message};
+  }
+}
+async function saveDrawingEntry(d){
+  if(isReadOnly || capabilityUnavailable){ return; }
+  updateSyncBadge('saving');
+  let result = await persistDrawingEntry(d);
+  if(!result.ok && result.code==='upstream_error'){
+    await sleep(400 + Math.random()*400);
+    result = await persistDrawingEntry(d);
+  }
+  if(result.ok){ updateSyncBadge('saved'); return; }
+  if(result.code==='capability_disabled'){
+    capabilityUnavailable = true;
+    updateSyncBadge('unavailable');
+    showToast('Hindi available ang pag-save dito ngayon.');
+    return;
+  }
+  updateSyncBadge('offline');
+  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
+}
+async function deleteDrawingEntry(id){
+  DRAWINGS_POOL = DRAWINGS_POOL.filter(d=>d.id!==id);
+  rerenderCurrentView();
+  if(typeof sbClient==='undefined' || !sbClient || isReadOnly || capabilityUnavailable) return;
+  try{ await sbClient.from('drawings_pool').delete().eq('id', id); }catch(e){}
+}
 // Shared save wrapper used by every other mutation in the app (owners, cost
 // rates, SO edits, new items, deletes, ...) — uploads the full working
 // state. Handles the read-only / conflict / transient-failure cases the
@@ -1838,20 +1995,23 @@ async function loadInitialState(){
   let seed = {};
   try{ seed = JSON.parse(document.getElementById('seed-state').textContent) || {}; }catch(e){ seed = {}; }
 
-  let itemsRows = [], metaRows = [], materialsRows = [], firstRun = false;
+  let itemsRows = [], metaRows = [], materialsRows = [], drawingsRows = [], firstRun = false;
   if(typeof sbClient!=='undefined' && sbClient){
     try{
-      const [itemsRes, metaRes, materialsRes] = await Promise.all([
+      const [itemsRes, metaRes, materialsRes, drawingsRes] = await Promise.all([
         sbClient.from('items').select('data'),
         sbClient.from('meta').select('key,data'),
         sbClient.from('materials_requests').select('data'),
+        sbClient.from('drawings_pool').select('data'),
       ]);
       if(itemsRes.error) throw itemsRes.error;
       if(metaRes.error) throw metaRes.error;
       if(materialsRes.error) throw materialsRes.error;
+      if(drawingsRes.error) throw drawingsRes.error;
       itemsRows = itemsRes.data || [];
       metaRows = metaRes.data || [];
       materialsRows = materialsRes.data || [];
+      drawingsRows = drawingsRes.data || [];
       firstRun = itemsRows.length===0 && metaRows.length===0;
     }catch(e){
       capabilityUnavailable = true;
@@ -1863,6 +2023,7 @@ async function loadInitialState(){
     updateSyncBadge('unavailable');
   }
   MATERIALS = materialsRows.map(r=>r.data).filter(Boolean);
+  DRAWINGS_POOL = drawingsRows.map(r=>r.data).filter(Boolean);
 
   const metaByKey = {};
   metaRows.forEach(r=>{ metaByKey[r.key] = r.data; });
@@ -2150,6 +2311,33 @@ function renderOverview(){
     });
   }
   document.getElementById('materialsDelayedTable').innerHTML = matRows;
+
+  // Drawings Kulang — every item currently AT a production step that
+  // consumes an Engineering drawing (welding, laser_cutting,
+  // bystronic_cutting, manual_cutting, bending) but whose required drawing
+  // hasn't been attached yet — see DRAWING_PROCESS_MAP / drawingRequirementHtml.
+  const missingDrawingRows = [];
+  ITEMS_VIEW.forEach(it=>{
+    const cur = currentStepId(it);
+    if(cur===null) return;
+    const req = requiredDrawingsForStep(it, cur);
+    if(req && req.drawings.length===0) missingDrawingRows.push({it, cur, meta: req.meta});
+  });
+  let drwRows = '<tr><th>SO Number</th><th>Client</th><th>Item</th><th>Naka-hintay Sa</th><th>Kulang na Drawing</th></tr>';
+  if(missingDrawingRows.length===0){
+    drwRows += `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:16px;">Kumpleto ang lahat ng drawing na kailangan ngayon. 🎉</td></tr>`;
+  }else{
+    missingDrawingRows.forEach(({it, cur, meta})=>{
+      drwRows += `<tr>
+        <td class="so-num">${escapeHtml(it.soNumber)}</td>
+        <td class="client-name">${escapeHtml(it.client)}</td>
+        <td><b>${escapeHtml(it.itemCode)}</b><br><span style="color:var(--gray);font-size:11px;">${escapeHtml(it.description)}</span></td>
+        <td style="color:var(--red);font-weight:700;">${processLabel(cur)}</td>
+        <td>${escapeHtml(meta.label)}</td>
+      </tr>`;
+    });
+  }
+  document.getElementById('drawingsMissingTable').innerHTML = drwRows;
 
   const doneItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
   const onTrackListItems = ITEMS_VIEW.filter(i=>itemCategory(i)!=='done' && !isItemOverdueNow(i));
@@ -4163,6 +4351,8 @@ function renderPersonActionableTasksHtml(name){
       : '';
     const splitBadge = t.isSplit ? `<div class="hint" style="color:#6a5acd;font-weight:700;margin-top:4px;">🔗 May kasamang piraso sa ibang proseso (split)${t.item.splitNote ? ' — '+t.item.splitNote : ''}</div>` : '';
     const materialsBadge = materialBadgeHtml(t.item);
+    const drawingReqHtml = drawingRequirementHtml(t.item, t.processId);
+    const drawingAttachHtml = drawingAttachFormHtml(t.item, t.processId);
     const drawingsHtml = drawingLinkHtml(t.item);
     const partsListHtml = partsListTableHtml(t.item);
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
@@ -4217,6 +4407,8 @@ function renderPersonActionableTasksHtml(name){
         ${detourPendingNote}
         ${splitBadge}
         ${materialsBadge}
+        ${drawingReqHtml}
+        ${drawingAttachHtml}
         ${drawingsHtml}
         ${partsListHtml}
         ${rawPartsHtml}
@@ -6986,6 +7178,17 @@ function handleRemoteMaterialChange(payload){
   }
   rerenderCurrentView();
 }
+function handleRemoteDrawingChange(payload){
+  if(payload.eventType==='DELETE'){
+    if(payload.old && payload.old.id) DRAWINGS_POOL = DRAWINGS_POOL.filter(d=>d.id!==payload.old.id);
+  }else{
+    const newData = payload.new && payload.new.data;
+    if(!newData || !newData.id) return;
+    const idx = DRAWINGS_POOL.findIndex(d=>d.id===newData.id);
+    if(idx>=0) DRAWINGS_POOL[idx] = newData; else DRAWINGS_POOL.push(newData);
+  }
+  rerenderCurrentView();
+}
 // Re-runs the render for whatever tab is currently active, so a change made
 // by someone else shows up live. Skipped while an edit modal is open, so an
 // incoming update never yanks an input out from under someone mid-edit —
@@ -7017,6 +7220,9 @@ function subscribeRealtime(){
     .subscribe();
   sbClient.channel('tracker-materials-changes')
     .on('postgres_changes', {event:'*', schema:'public', table:'materials_requests'}, handleRemoteMaterialChange)
+    .subscribe();
+  sbClient.channel('tracker-drawings-changes')
+    .on('postgres_changes', {event:'*', schema:'public', table:'drawings_pool'}, handleRemoteDrawingChange)
     .subscribe();
 }
 async function init(){
