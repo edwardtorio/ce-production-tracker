@@ -2765,11 +2765,35 @@ function fmtPHPCompact(n){
   if(abs >= 1000) return '₱'+(n/1000).toFixed(abs>=10000?0:1)+'K';
   return '₱'+Math.round(n).toLocaleString('en-PH');
 }
+// The `client` field on an item is really "which uploaded SO this came
+// from" (e.g. "Wilcon PO 18", "Yumex Philippines October 2026 PO 01",
+// "MDA August 2026 PO 03") — one real customer legitimately has many of
+// these, one per PO/month. For the per-client amount chart the owner wants
+// those folded back into ONE bar per actual company (all Yumex POs
+// together, all MDA POs together, all Wilcon PO16-20 together, etc.) —
+// verified against the real distinct client list in the items table before
+// writing these prefixes, so this only merges PO-number/date variants of
+// the same company and leaves genuinely different clients (individual
+// persons, one-off companies) untouched.
+function canonicalClientName(rawName){
+  const name = (rawName||'').trim();
+  if(!name) return name;
+  const norm = name.toLowerCase().replace(/[.,]/g,'').trim();
+  if(norm.startsWith('yumex')) return 'Yumex Philippines';
+  if(norm.startsWith('wilcon')) return 'Wilcon';
+  if(norm.startsWith('mda') || norm.startsWith('md aerospace')) return 'MDA (MD Aerospace Fabrication Services)';
+  if(norm.startsWith('smither and mason') || norm.startsWith('smither & mason')) return 'Smither and Mason';
+  if(norm.startsWith('incophil')) return 'Incophil Marketing Corporation';
+  if(norm.startsWith('palmer')) return 'Palmer-Asia Inc.';
+  if(norm.startsWith('pimes')) return 'PIMES Corp.';
+  return name;
+}
 function computeClientAmountGroups(){
   const groups = new Map();
   activeItems().forEach(it=>{
-    const name = (it.client||'').trim();
-    if(!name) return;
+    const rawName = (it.client||'').trim();
+    if(!rawName) return;
+    const name = canonicalClientName(rawName);
     const key = name.toLowerCase();
     let g = groups.get(key);
     if(!g){ g = { name, totalAmount:0, doneAmount:0, lineItems:0 }; groups.set(key, g); }
