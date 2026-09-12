@@ -386,6 +386,12 @@
   .modal-overlay{display:none;position:fixed;inset:0;background:rgba(18,32,43,.55);z-index:100;align-items:center;justify-content:center;padding:16px;}
   .modal-overlay.show{display:flex;}
   .modal-box{background:#fff;border-radius:14px;padding:22px 24px;max-width:460px;width:100%;box-shadow:0 20px 50px rgba(0,0,0,.3);max-height:88vh;overflow-y:auto;}
+  /* Wider variant for the person profile popup — its Target-vs-Actual task
+     table has 5 columns (Item, Quantity, Target Date, Actual na Natapos,
+     Duration) that don't fit the default 460px modal without horizontal
+     scrolling; this gives it room to show every column at once on a normal
+     desktop screen while still shrinking to fit narrow/mobile viewports. */
+  .modal-box.modal-wide{max-width:900px;}
   .modal-box h4{margin:0 0 6px;font-family:var(--font-display);font-size:16px;color:var(--steel-900);}
   .modal-box p{margin:0 0 14px;font-size:13px;color:var(--gray);line-height:1.5;}
   .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;}
@@ -3571,7 +3577,9 @@ async function confirmDetour(itemId){
 /* ---------- Manage Sales Orders: edit / archive / restore / delete ---------- */
 function closeModal(){
   document.getElementById('modalOverlay').classList.remove('show');
-  document.getElementById('modalBox').innerHTML = '';
+  const box = document.getElementById('modalBox');
+  box.innerHTML = '';
+  box.classList.remove('modal-wide');
   profileModalOpenFor = null;
 }
 document.getElementById('modalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='modalOverlay') closeModal(); });
@@ -4639,6 +4647,7 @@ function renderScorecardProfile(name){
   const actionableTasksHtml = renderPersonActionableTasksHtml(name);
 
   const box = document.getElementById('modalBox');
+  box.classList.add('modal-wide');
   box.innerHTML = `
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px;">
       ${avatarHtml(name, 64)}
