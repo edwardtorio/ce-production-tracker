@@ -662,6 +662,10 @@
     </div>
 
     <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);color:#fff;padding:24px 20px;margin-bottom:12px;">
+      <div class="breakdown-row cards-row" id="clientAmountRow"></div>
+    </div>
+
+    <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);color:#fff;padding:24px 20px;margin-bottom:12px;">
       <div class="breakdown-row cards-row" id="breakdownRow"></div>
     </div>
 
@@ -2033,6 +2037,8 @@ function renderOverview(){
   // chart, see renderStageProgressBars) and the per-item pcs breakdown now
   // lives here on Overview instead (see renderLineItemsBreakdown) — the
   // owner asked to swap which tab each of these two sections appears on.
+  // Client order-amount chart sits above it, biggest order first.
+  renderClientAmountChart();
   renderLineItemsBreakdown();
 
   document.getElementById('hdrSub').textContent =
@@ -2747,6 +2753,111 @@ setInterval(()=>{
 
 /* ---------- Board ---------- */
 function nextStatus(cur){ const idx = STATUS_CYCLE.indexOf(cur); return STATUS_CYCLE[(idx+1)%STATUS_CYCLE.length]; }
+
+// Compact peso formatter for chart axis labels only (e.g. ₱1.2M, ₱850K) —
+// the actual chip/legend values still use the full fmtPHP() everywhere else
+// in the app; this is purely so gridline labels on the client-amount chart
+// don't get crowded with centavos.
+function fmtPHPCompact(n){
+  n = Number(n)||0;
+  const abs = Math.abs(n);
+  if(abs >= 1000000) return '₱'+(n/1000000).toFixed(abs>=10000000?0:1)+'M';
+  if(abs >= 1000) return '₱'+(n/1000).toFixed(abs>=10000?0:1)+'K';
+  return '₱'+Math.round(n).toLocaleString('en-PH');
+}
+function computeClientAmountGroups(){
+  const groups = new Map();
+  activeItems().forEach(it=>{
+    const name = (it.client||'').trim();
+    if(!name) return;
+    const key = name.toLowerCase();
+    let g = groups.get(key);
+    if(!g){ g = { name, totalAmount:0, doneAmount:0, lineItems:0 }; groups.set(key, g); }
+    const amt = itemAmount(it);
+    g.totalAmount += amt;
+    g.doneAmount += amt * (itemPctDone(it)/100);
+    g.lineItems += 1;
+  });
+  return [...groups.values()].sort((a,b)=>b.totalAmount-a.totalAmount);
+}
+// Per-client order-amount bar chart shown above "Line Items & Pieces" on
+// Overview — same visual language as that chart (muted target bar = total
+// order amount, green done bar = amount already finished so far), sorted
+// biggest-order-first so the owner can see at a glance kung sinong client
+// ang may pinakamalaking order at gaano na katapos dito sa halaga.
+function renderClientAmountChart(){
+  const el = document.getElementById('clientAmountRow');
+  if(!el) return;
+  el.classList.add('itembar-mode');
+  const groups = computeClientAmountGroups();
+  if(groups.length===0){
+    el.innerHTML = `<div class="empty-state" style="color:#fff;"><div class="big">💰</div>Wala pang laman ang Production Board.</div>`;
+    return;
+  }
+  const maxAmt = Math.max(...groups.map(g=>g.totalAmount)) || 1;
+  const scaleMax = maxAmt*1.15 || 1;
+  const CHART_H = 170;
+  const gridlinesHtml = [0,0.25,0.5,0.75,1].map(f=>{
+    const val = scaleMax*f;
+    const top = CHART_H - Math.round(CHART_H*f);
+    return `<div class="itembar-gl" style="top:${top}px;"><span class="itembar-gl-lbl">${fmtPHPCompact(val)}</span></div>`;
+  }).join('');
+  const barsHtml = groups.map(g=>{
+    const targetH = Math.max(5, Math.round(g.totalAmount/scaleMax*CHART_H));
+    const doneH = Math.max(g.doneAmount>0?3:0, Math.round(g.doneAmount/scaleMax*CHART_H));
+    return `<div class="itembar-col" data-itembar-name="${escapeHtml(g.name.toLowerCase())}">
+      <div class="itembar-qtychip">${fmtPHPCompact(g.totalAmount)}</div>
+      <div class="itembar-pair">
+        <div class="itembar-barwrap"><div class="itembar-target" style="height:${targetH}px;"></div></div>
+        <div class="itembar-barwrap"><div class="itembar-done" style="height:${doneH}px;"></div></div>
+      </div>
+    </div>`;
+  }).join('');
+  const namesHtml = groups.map(g=>{
+    const pct = g.totalAmount ? Math.round(g.doneAmount/g.totalAmount*100) : 0;
+    return `<div class="itembar-name-col" data-itembar-name="${escapeHtml(g.name.toLowerCase())}">
+      <div class="itembar-name" title="${escapeHtml(g.name)}">${escapeHtml(g.name)}</div>
+      <div class="itembar-pct${pct===0?' zero':''}">${pct}% natapos · ${fmtPHP(g.doneAmount)} / ${fmtPHP(g.totalAmount)}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `
+    <div class="itembar-head">
+      <div>
+        <div class="itembar-title">Order Amount — per Client</div>
+        <div class="itembar-subhint">${groups.length} client · pinagsama ang lahat ng SO bawat client, mula pinakamalaki hanggang pinakamaliit</div>
+      </div>
+      <div class="itembar-legend">
+        <span><span class="itembar-swatch itembar-swatch-target"></span>Total order amount</span>
+        <span><span class="itembar-swatch itembar-swatch-done"></span>Natapos na halaga</span>
+      </div>
+    </div>
+    <div class="itembar-searchrow">
+      <input type="text" id="clientAmountSearch" placeholder="🔍 Maghanap ng client…">
+    </div>
+    <div class="itembar-scrollshell">
+      <div class="itembar-chartarea">
+        <div class="itembar-gridlines" style="height:${CHART_H}px;">${gridlinesHtml}</div>
+        <div class="itembar-bars" id="clientAmountBars" style="height:${CHART_H}px;">${barsHtml}</div>
+        <div class="itembar-baseline"></div>
+        <div class="itembar-names" id="clientAmountNames">${namesHtml}</div>
+      </div>
+    </div>
+    <div class="itembar-scrollhint">⇄ i-scroll pakanan hanggang sa huling client</div>
+  `;
+  const searchBox = document.getElementById('clientAmountSearch');
+  if(searchBox){
+    searchBox.addEventListener('input', ()=>{
+      const q = searchBox.value.trim().toLowerCase();
+      const cols = [...el.querySelectorAll('.itembar-col')];
+      const nameCols = [...el.querySelectorAll('.itembar-name-col')];
+      cols.forEach((c,i)=>{
+        const match = !q || (c.dataset.itembarName||'').includes(q);
+        c.style.display = match ? '' : 'none';
+        if(nameCols[i]) nameCols[i].style.display = match ? '' : 'none';
+      });
+    });
+  }
+}
 
 // Groups every active (non-archived) line item by its DESCRIPTION text —
 // verified against the real data before building this: Item Code was NOT a
