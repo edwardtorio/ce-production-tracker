@@ -1236,9 +1236,45 @@ function blankDrawingEntry(soNumber, client, itemId, processId){
   return {
     id: drawingUid(), soNumber: soNumber||'', client: client||'', itemId: itemId||'', processId: processId||'',
     url: '', name: '', childPart: '',
+    // storagePath is set only when the file itself was uploaded (Supabase
+    // Storage 'drawings' bucket) rather than just a pasted link — it's what
+    // lets us offer a real "download" action (and clean up the file on
+    // removeDrawingEntry) instead of just a "view" link.
+    storagePath: '',
     uploadedBy: '', uploadedAt: new Date().toISOString().slice(0,10),
     notes: '',
   };
+}
+// Uploads a File (picked from the operator's computer/laptop/phone) straight
+// into the shared 'drawings' Supabase Storage bucket, so ANY process owner
+// afterwards can view or download the exact same file on their own machine —
+// not just whoever pasted a link. Path is namespaced by SO/item/process/child
+// part so files never collide across items.
+async function uploadDrawingFile(file, soNumber, itemId, processId, childPart){
+  if(typeof sbClient==='undefined' || !sbClient) return {ok:false, message:'Walang koneksyon sa storage.'};
+  const safeName = (file.name||'drawing').replace(/[^a-zA-Z0-9_.\-]/g,'_');
+  const safeChild = childPart ? childPart.replace(/[^a-zA-Z0-9_.\-]/g,'_') + '_' : '';
+  const path = `${soNumber||'general'}/${itemId||'so-wide'}/${processId}/${safeChild}${Date.now()}_${safeName}`;
+  try{
+    const {error} = await sbClient.storage.from('drawings').upload(path, file, {upsert:false});
+    if(error) throw error;
+    const {data} = sbClient.storage.from('drawings').getPublicUrl(path);
+    return {ok:true, url:data.publicUrl, storagePath:path, fileName:file.name};
+  }catch(e){
+    return {ok:false, message: e && e.message};
+  }
+}
+// Renders one attached drawing's "view" link, plus a real "download" link
+// (forces Content-Disposition via Supabase Storage's ?download param) when it
+// was uploaded as a file — a pasted link only gets "view" since we can't
+// force a download on an arbitrary external URL.
+function drawingLinksForEntry(d, fallbackLabel){
+  const label = escapeHtml(d.name || fallbackLabel || 'Drawing');
+  if(!d.url) return `<span>${label}</span>`;
+  const viewLink = `<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">👁 ${label}</a>`;
+  if(!d.storagePath) return viewLink;
+  const dlHref = d.url + (d.url.includes('?') ? '&' : '?') + 'download';
+  return `${viewLink} <a href="${escapeHtml(dlHref)}" style="margin-left:4px;">⬇ I-download</a>`;
 }
 // Every drawing entry relevant to ONE process step of ONE item — scope
 // depends on DRAWING_PROCESS_MAP: 'item' matches by itemId, 'so' matches
@@ -1271,54 +1307,95 @@ function drawingRequirementHtml(item, stepProcessId){
     return `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:5px 8px;border-radius:6px;margin-top:4px;">📐 Kulang sa Drawing — wala pang naka-attach na ${escapeHtml(req.meta.label)}</div>`;
   }
   const links = req.drawings.map(d=>{
-    const label = d.childPart ? `${escapeHtml(d.name||req.meta.label)} (${escapeHtml(d.childPart)})` : escapeHtml(d.name||req.meta.label);
-    return d.url ? `<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">📐 ${label}</a>` : `<span>📐 ${label}</span>`;
+    const suffix = d.childPart ? ` (${escapeHtml(d.childPart)})` : '';
+    return `📐 ${drawingLinksForEntry(d, req.meta.label)}${suffix}`;
   }).join('<br>');
   return `<div class="hint" style="color:var(--green);margin-top:4px;">${links}</div>`;
+}
+// Stable DOM-id suffix for one attach-form instance — item + process, plus
+// child part when this form is scoped to one specific piyesa (either the
+// free-text child part field on bending_flat_pattern, or a Parts List row
+// for the Fabrication Drawing — see partsListTableHtml).
+function drawingFormUid(itemId, processId, childPart){
+  return `${itemId}_${processId}` + (childPart ? '_' + childPart.replace(/[^a-zA-Z0-9_-]/g,'_') : '');
 }
 // Inline mini-form shown on a task card for a PRODUCING step (drawing,
 // laser_cutting_program, bystronic_tube_cutting_program,
 // manual_cutting_scheme, bending_flat_pattern) — lets Engineering attach the
 // drawing right where they already are, before the item moves on to
-// whichever production step needs it (see drawingRequirementHtml).
-function drawingAttachFormHtml(item, processId){
+// whichever production step needs it (see drawingRequirementHtml). Accepts
+// either a pasted link OR an uploaded file (from their computer, laptop, or
+// phone) — see attachDrawingFromTaskCard/uploadDrawingFile. When childPart is
+// given, this instance is scoped to just that piyesa (used both by
+// bending_flat_pattern's free-text child part and by the per-piyesa forms
+// inside the Parts List table).
+function drawingAttachFormHtml(item, processId, childPart){
   const meta = DRAWING_PROCESS_MAP[processId];
   if(!meta) return '';
-  const existing = drawingsForItemProcess(item, processId);
-  const existingHtml = existing.map(d=>`<div class="hint" style="margin-top:2px;">📐 ${d.url?`<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">${escapeHtml(d.name||meta.label)}</a>`:escapeHtml(d.name||meta.label)}${d.childPart?' ('+escapeHtml(d.childPart)+')':''} <button type="button" class="irc-edit" title="Alisin" onclick="removeDrawingEntry('${d.id}')">✕</button></div>`).join('');
-  const childPartFieldHtml = meta.scope==='childpart'
-    ? `<input type="text" id="drwChildPart_${item.id}_${processId}" placeholder="Child part (hal. Bracket A)" style="font-size:11px;padding:3px 6px;width:120px;">`
+  childPart = childPart || '';
+  const existing = drawingsForItemProcess(item, processId).filter(d=>(d.childPart||'')===childPart);
+  const existingHtml = existing.map(d=>`<div class="hint" style="margin-top:2px;">📐 ${drawingLinksForEntry(d, meta.label)} <button type="button" class="irc-edit" title="Alisin" onclick="removeDrawingEntry('${d.id}')">✕</button></div>`).join('');
+  const uid = drawingFormUid(item.id, processId, childPart);
+  // Only the top-level (no fixed childPart) form for a childpart-scoped
+  // process shows a free-text child part field — a form already scoped to
+  // one piyesa (childPart passed in) doesn't need to ask again.
+  const childPartFieldHtml = (meta.scope==='childpart' && !childPart)
+    ? `<input type="text" id="drwChildPart_${uid}" placeholder="Child part (hal. Bracket A)" style="font-size:11px;padding:3px 6px;width:120px;">`
     : '';
   return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
     <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}${meta.scope==='so'?' (para sa buong SO)':''}</div>
     ${existingHtml}
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-      <input type="text" id="drwUrl_${item.id}_${processId}" placeholder="Link ng drawing" style="font-size:11px;padding:3px 6px;flex:1;min-width:140px;">
-      <input type="text" id="drwName_${item.id}_${processId}" placeholder="Pangalan (optional)" style="font-size:11px;padding:3px 6px;width:120px;">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;align-items:center;">
+      <input type="text" id="drwUrl_${uid}" placeholder="Link ng drawing (optional)" style="font-size:11px;padding:3px 6px;flex:1;min-width:120px;">
+      <input type="text" id="drwName_${uid}" placeholder="Pangalan (optional)" style="font-size:11px;padding:3px 6px;width:110px;">
       ${childPartFieldHtml}
-      <button type="button" class="btn secondary btn-sm" onclick="attachDrawingFromTaskCard('${item.id}','${processId}')">+ I-attach</button>
+      <input type="file" id="drwFile_${uid}" style="font-size:11px;max-width:150px;" title="O mag-upload ng file mula sa computer/cellphone">
+      <button type="button" class="btn secondary btn-sm" onclick="attachDrawingFromTaskCard('${item.id}','${processId}','${childPart.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">+ I-attach</button>
     </div>
   </div>`;
 }
-function attachDrawingFromTaskCard(itemId, processId){
+// Handles both a pasted link AND a picked file — if a file was chosen it's
+// uploaded to the shared 'drawings' Storage bucket first (async), so any
+// process owner afterwards can view/download that exact file on their own
+// machine; a pasted link is stored as-is (view only, no forced download).
+async function attachDrawingFromTaskCard(itemId, processId, childPart){
   const item = ITEMS.find(i=>i.id===itemId); if(!item) return;
   const meta = DRAWING_PROCESS_MAP[processId]; if(!meta) return;
-  const urlEl = document.getElementById(`drwUrl_${itemId}_${processId}`);
-  const nameEl = document.getElementById(`drwName_${itemId}_${processId}`);
-  const childEl = document.getElementById(`drwChildPart_${itemId}_${processId}`);
+  childPart = childPart || '';
+  const uid = drawingFormUid(itemId, processId, childPart);
+  const urlEl = document.getElementById(`drwUrl_${uid}`);
+  const nameEl = document.getElementById(`drwName_${uid}`);
+  const childEl = document.getElementById(`drwChildPart_${uid}`);
+  const fileEl = document.getElementById(`drwFile_${uid}`);
   const url = urlEl ? urlEl.value.trim() : '';
   const name = nameEl ? nameEl.value.trim() : '';
-  const childPart = childEl ? childEl.value.trim() : '';
-  if(!url && !name){ showToast('Kailangan ng link o pangalan ng drawing.'); return; }
-  const d = blankDrawingEntry(item.soNumber, item.client, meta.scope==='so' ? '' : item.id, processId);
-  d.url = url; d.name = name || meta.label; d.childPart = childPart;
+  const childPartVal = childPart || (childEl ? childEl.value.trim() : '');
+  const file = (fileEl && fileEl.files && fileEl.files[0]) ? fileEl.files[0] : null;
+  if(!url && !name && !file){ showToast('Kailangan ng link, pangalan, o file ng drawing.'); return; }
+  const itemIdForEntry = meta.scope==='so' ? '' : item.id;
+  const d = blankDrawingEntry(item.soNumber, item.client, itemIdForEntry, processId);
+  d.childPart = childPartVal;
+  if(file){
+    if(typeof sbClient==='undefined' || !sbClient || isReadOnly || capabilityUnavailable){
+      showToast('Hindi available ang pag-upload ng file dito ngayon.');
+      return;
+    }
+    showToast('Ina-upload ang file…');
+    const up = await uploadDrawingFile(file, item.soNumber, itemIdForEntry, processId, childPartVal);
+    if(!up.ok){ showToast('Hindi na-upload ang file: ' + (up.message||'unknown error')); return; }
+    d.url = up.url; d.storagePath = up.storagePath; d.name = name || up.fileName || meta.label;
+  }else{
+    d.url = url; d.name = name || meta.label;
+  }
   DRAWINGS_POOL.push(d);
   saveDrawingEntry(d);
+  if(urlEl) urlEl.value=''; if(nameEl) nameEl.value=''; if(childEl) childEl.value=''; if(fileEl) fileEl.value='';
   rerenderCurrentView();
 }
 function removeDrawingEntry(id){
   deleteDrawingEntry(id);
 }
+
 
 function blankRouteState(route){
   const routeStatus = {}; route.forEach(id=>routeStatus[id]='queue');
@@ -1680,18 +1757,33 @@ function drawingLinkHtml(item){
     return `<div class="hint" style="margin-top:4px;"><b>${label}</b> ${escapeHtml(d.name||url)}</div>`;
   }).join('');
 }
-function partsListTableHtml(item){
+// Fabrication Drawing cell for ONE piyesa row — view/download links for
+// whatever's already attached (every process gets this, so welding, tapping,
+// countersunk, burring, etc. can all open the exact drawing for their
+// piyesa), plus the attach mini-form itself but ONLY when this card is
+// Engineering's own 'drawing' task (canAttach) — they're the ones who
+// actually produce/upload it.
+function partsListDrawingCellHtml(item, name, canAttach){
+  const existing = drawingsForItemProcess(item, 'drawing').filter(d=>(d.childPart||'')===name);
+  let cell = existing.length
+    ? existing.map(d=>`<div>${drawingLinksForEntry(d, 'Fabrication Drawing')}</div>`).join('')
+    : `<span class="hint" style="color:${canAttach?'var(--red)':'var(--gray)'};">${canAttach?'kulang':'—'}</span>`;
+  if(canAttach) cell += drawingAttachFormHtml(item, 'drawing', name);
+  return cell;
+}
+function partsListTableHtml(item, processId){
   if(!item.partsList || item.partsList.length===0) return '';
+  const canAttach = processId==='drawing';
   const rows = item.partsList.map(s=>{
-    let inner = `<tr style="background:var(--steel-50);"><td><b>${escapeHtml(s.name)}</b> <span class="hint">(Sub Assy)</span></td><td>${s.qtyPerUnit}</td><td><b>${Number(s.totalQty).toLocaleString()}</b></td></tr>`;
+    let inner = `<tr style="background:var(--steel-50);"><td><b>${escapeHtml(s.name)}</b> <span class="hint">(Sub Assy)</span></td><td>${s.qtyPerUnit}</td><td><b>${Number(s.totalQty).toLocaleString()}</b></td><td>${partsListDrawingCellHtml(item, s.name, canAttach)}</td></tr>`;
     (s.childParts||[]).forEach(c=>{
-      inner += `<tr><td style="padding-left:24px;color:var(--steel-700);">↳ ${escapeHtml(c.name)} <span class="hint">(Child Part)</span></td><td>${c.qtyPerUnit}</td><td>${Number(c.totalQty).toLocaleString()}</td></tr>`;
+      inner += `<tr><td style="padding-left:24px;color:var(--steel-700);">↳ ${escapeHtml(c.name)} <span class="hint">(Child Part)</span></td><td>${c.qtyPerUnit}</td><td>${Number(c.totalQty).toLocaleString()}</td><td>${partsListDrawingCellHtml(item, c.name, canAttach)}</td></tr>`;
     });
     return inner;
   }).join('');
   return `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table">
-      <tr><th>Piyesa</th><th>Qty/parent</th><th>Total Kailangan</th></tr>
+      <tr><th>Piyesa</th><th>Qty/parent</th><th>Total Kailangan</th><th>Fabrication Drawing</th></tr>
       ${rows}
     </table></div></details>`;
 }
@@ -1910,10 +2002,16 @@ async function saveDrawingEntry(d){
   showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
 }
 async function deleteDrawingEntry(id){
+  const entry = DRAWINGS_POOL.find(d=>d.id===id);
   DRAWINGS_POOL = DRAWINGS_POOL.filter(d=>d.id!==id);
   rerenderCurrentView();
   if(typeof sbClient==='undefined' || !sbClient || isReadOnly || capabilityUnavailable) return;
   try{ await sbClient.from('drawings_pool').delete().eq('id', id); }catch(e){}
+  // Also remove the uploaded file itself, if this entry was a file (not just
+  // a pasted link) — best-effort, doesn't block the row delete above.
+  if(entry && entry.storagePath){
+    try{ await sbClient.storage.from('drawings').remove([entry.storagePath]); }catch(e){}
+  }
 }
 // Shared save wrapper used by every other mutation in the app (owners, cost
 // rates, SO edits, new items, deletes, ...) — uploads the full working
@@ -3558,7 +3656,7 @@ function renderBoard(){
       const splitNote = it.splitNote ? `<div class="hint" style="color:var(--accent-teal-dk);margin-top:6px;">➗ ${it.splitNote}</div>` : '';
       const partsHtml = it.partsBreakdown ? `<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(it.partsBreakdown)}</div></details>` : '';
       const drawingHtml = drawingLinkHtml(it);
-      const partsListHtml = partsListTableHtml(it);
+      const partsListHtml = partsListTableHtml(it, cur);
       const isSplitItem = isPartOfSplit(it);
       const stripeCls = itemIdx%2===0 ? 'stripe-a' : 'stripe-b';
       html += `<div class="item-route-card ${isSplitItem?'':stripeCls}${isCatchUpCritical?' critical-blink':''}" style="${isSplitItem?'border-left:4px solid #6a5acd;background:#faf9fd;':''}">
@@ -4352,9 +4450,14 @@ function renderPersonActionableTasksHtml(name){
     const splitBadge = t.isSplit ? `<div class="hint" style="color:#6a5acd;font-weight:700;margin-top:4px;">🔗 May kasamang piraso sa ibang proseso (split)${t.item.splitNote ? ' — '+t.item.splitNote : ''}</div>` : '';
     const materialsBadge = materialBadgeHtml(t.item);
     const drawingReqHtml = drawingRequirementHtml(t.item, t.processId);
-    const drawingAttachHtml = drawingAttachFormHtml(t.item, t.processId);
+    // When this item has a Parts List breakdown, the Fabrication Drawing
+    // attach form is done per-piyesa INSIDE that table (see
+    // partsListTableHtml) instead of once here for the whole item — avoids
+    // showing two separate attach points for the same drawing process.
+    const hasPartsListAttach = t.processId==='drawing' && t.item.partsList && t.item.partsList.length;
+    const drawingAttachHtml = hasPartsListAttach ? '' : drawingAttachFormHtml(t.item, t.processId);
     const drawingsHtml = drawingLinkHtml(t.item);
-    const partsListHtml = partsListTableHtml(t.item);
+    const partsListHtml = partsListTableHtml(t.item, t.processId);
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
     const origTarget = t.item.routeTargetDates[t.processId];
     // Numbered catch-up schedule (1st/2nd/3rd, then critical) for THIS task's
