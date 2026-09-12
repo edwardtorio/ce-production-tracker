@@ -682,12 +682,6 @@
     </div>
 
     <div class="panel">
-      <h3>⚠ Bottlenecks / Nadedelay</h3>
-      <div class="hint" style="margin-bottom:10px;">Mga item na lagpas na sa target date ng kasalukuyang proseso nila — dito makikita kung saan talaga naiipit.</div>
-      <div class="mini-table-wrap"><table class="mini-table" id="bottleneckTable"></table></div>
-    </div>
-
-    <div class="panel">
       <h3>Fully Finished Items</h3>
       <div class="summary-line" id="finishedSummary"></div>
       <div class="filter-row">
@@ -1992,31 +1986,6 @@ function renderOverview(){
     });
     document.getElementById('archivedTable').innerHTML = arRows;
   }
-
-  // Bottlenecks
-  const bottlenecks = ITEMS_VIEW.filter(isItemOverdueNow).map(it=>{
-    const cur = currentStepId(it);
-    const target = it.routeTargetDates[cur];
-    const daysLate = Math.max(1, Math.ceil((new Date() - new Date(target+'T23:59:59')) / 86400000));
-    return {it, cur, target, daysLate, owners: ownersFor(cur).join(', ') || '(walang assigned)'};
-  }).sort((a,b)=>b.daysLate-a.daysLate);
-  let btRows = '<tr><th>SO Number</th><th>Client</th><th>Item</th><th>Stuck At</th><th>Assigned To</th><th>Target Date</th><th>Days Late</th></tr>';
-  if(bottlenecks.length===0){
-    btRows += `<tr><td colspan="7" style="color:var(--gray);text-align:center;padding:16px;">Walang delayed item ngayon. 🎉</td></tr>`;
-  }else{
-    bottlenecks.forEach(b=>{
-      btRows += `<tr>
-        <td class="so-num">${escapeHtml(b.it.soNumber)}</td>
-        <td class="client-name">${escapeHtml(b.it.client)}</td>
-        <td><b>${escapeHtml(b.it.itemCode)}</b><br><span style="color:var(--gray);font-size:11px;">${escapeHtml(b.it.description)}</span></td>
-        <td style="color:var(--red);font-weight:700;">${processLabel(b.cur)}</td>
-        <td>${b.owners}</td>
-        <td>${formatDateLong(b.target)}</td>
-        <td style="color:var(--red);font-weight:700;">${b.daysLate}d</td>
-      </tr>`;
-    });
-  }
-  document.getElementById('bottleneckTable').innerHTML = btRows;
 
   const doneItems = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
   const onTrackListItems = ITEMS_VIEW.filter(i=>itemCategory(i)!=='done' && !isItemOverdueNow(i));
