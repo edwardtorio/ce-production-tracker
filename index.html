@@ -136,7 +136,7 @@
   .itembar-gl{position:absolute;left:0;right:0;border-top:1px dashed rgba(255,255,255,.12);}
   .itembar-gl-lbl{position:absolute;left:-2px;transform:translateY(-50%) translateX(-100%);font-size:9.5px;color:rgba(255,255,255,.4);padding-right:6px;white-space:nowrap;}
   .itembar-bars{display:flex;align-items:flex-end;gap:16px;position:relative;z-index:1;}
-  .itembar-col{display:flex;flex-direction:column;align-items:center;flex-shrink:0;height:100%;justify-content:flex-end;width:64px;}
+  .itembar-col{display:flex;flex-direction:column;align-items:center;flex-shrink:0;height:100%;justify-content:flex-end;width:150px;}
   .itembar-qtychip{font-size:9.5px;font-weight:700;margin-bottom:5px;background:rgba(255,255,255,.12);padding:1px 6px;border-radius:20px;white-space:nowrap;color:#fff;}
   .itembar-pair{display:flex;align-items:flex-end;gap:4px;height:100%;}
   .itembar-barwrap{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
@@ -145,8 +145,9 @@
   .itembar-done::after{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:rgba(255,255,255,.35);border-radius:4px 4px 0 0;}
   .itembar-baseline{height:2px;background:rgba(255,255,255,.35);border-radius:2px;}
   .itembar-names{display:flex;gap:16px;margin-top:8px;}
-  .itembar-name-col{width:64px;flex-shrink:0;text-align:center;}
-  .itembar-name{font-size:9.5px;font-weight:600;color:#fff;line-height:1.25;max-height:38px;overflow:hidden;}
+  .itembar-name-col{width:150px;flex-shrink:0;text-align:center;padding:0 4px;}
+  .itembar-name{font-size:10.5px;font-weight:600;color:#fff;line-height:1.35;}
+  .itembar-name b{font-weight:800;}
   .itembar-pct{margin-top:4px;font-size:13px;font-weight:800;color:#8ef0bf;}
   .itembar-pct.zero{color:#f3dde4;}
   .itembar-scrollhint{font-size:11px;color:#f0d9e0;text-align:right;margin-top:10px;}
@@ -2798,7 +2799,11 @@ function computeItemBarGroups(){
     if(!name) return;
     const key = name.toLowerCase();
     let g = groups.get(key);
-    if(!g){ g = { name, totalQty:0, doneQty:0, lineItems:0 }; groups.set(key, g); }
+    // itemCode is captured from the first item seen for this description and
+    // shown as part of the bar's label (see renderLineItemsBreakdown) — same
+    // item code every time in practice for a given description (verified
+    // against the real data), so the first one encountered is representative.
+    if(!g){ g = { name, itemCode: it.itemCode||'', totalQty:0, doneQty:0, lineItems:0 }; groups.set(key, g); }
     const qty = Number(it.qty)||0;
     g.totalQty += qty;
     g.doneQty += qty * (itemPctDone(it)/100);
@@ -2843,8 +2848,13 @@ function renderLineItemsBreakdown(){
   }).join('');
   const namesHtml = groups.map(g=>{
     const pct = g.totalQty ? Math.round(g.doneQty/g.totalQty*100) : 0;
+    // Full item code + full description, exactly as it reads in the
+    // uploaded SO / Browse SO detail view — the owner wants this shown in
+    // full (not truncated) as the bar chart's basis, so nothing here gets
+    // clamped or ellipsized; the column is wide enough to wrap it whole.
+    const fullLabel = (g.itemCode ? g.itemCode+' ' : '') + g.name;
     return `<div class="itembar-name-col" data-itembar-name="${escapeHtml(g.name.toLowerCase())}">
-      <div class="itembar-name" title="${escapeHtml(g.name)}">${escapeHtml(g.name)}</div>
+      <div class="itembar-name" title="${escapeHtml(fullLabel)}">${g.itemCode?`<b>${escapeHtml(g.itemCode)}</b> `:''}${escapeHtml(g.name)}</div>
       <div class="itembar-pct${pct===0?' zero':''}">${pct}%</div>
     </div>`;
   }).join('');
