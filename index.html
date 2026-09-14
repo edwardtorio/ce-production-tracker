@@ -4522,12 +4522,14 @@ function renderPersonActionableTasksHtml(name){
     const splitBadge = t.isSplit ? `<div class="hint" style="color:#6a5acd;font-weight:700;margin-top:4px;">🔗 May kasamang piraso sa ibang proseso (split)${t.item.splitNote ? ' — '+t.item.splitNote : ''}</div>` : '';
     const materialsBadge = materialBadgeHtml(t.item);
     const drawingReqHtml = drawingRequirementHtml(t.item, t.processId);
-    // When this item has a Parts List breakdown, the Fabrication Drawing
-    // attach form is done per-piyesa INSIDE that table (see
-    // partsListTableHtml) instead of once here for the whole item — avoids
-    // showing two separate attach points for the same drawing process.
-    const hasPartsListAttach = t.processId==='drawing' && t.item.partsList && t.item.partsList.length;
-    const drawingAttachHtml = hasPartsListAttach ? '' : drawingAttachFormHtml(t.item, t.processId);
+    // Always show this item-wide attach form — even when a Parts List
+    // breakdown also offers per-piyesa attach forms below (see
+    // partsListTableHtml) — so there's always ONE obvious, always-visible
+    // place to upload a drawing without needing to expand the (collapsed by
+    // default) Parts List first. The per-piyesa forms stay available for
+    // Engineering to additionally tag a drawing to one specific sub
+    // assy/child part once they've expanded that section.
+    const drawingAttachHtml = drawingAttachFormHtml(t.item, t.processId);
     const drawingsHtml = drawingLinkHtml(t.item);
     const partsListHtml = partsListTableHtml(t.item, t.processId);
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
