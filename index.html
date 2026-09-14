@@ -1789,6 +1789,16 @@ function drawingLinkHtml(item){
 // Engineering's own 'drawing' task (canAttach) — they're the ones who
 // actually produce/upload it.
 function partsListDrawingCellHtml(item, name, canAttach){
+  // A Sub Assy/Child Part that hasn't been named yet has no safe, unique
+  // key to scope a drawing to — an empty name matches the SAME (blank)
+  // childPart key as the item-wide "I-attach ang Fabrication Drawing"
+  // section above the Parts List, so a still-unnamed row would otherwise
+  // silently show/inherit that item-level drawing instead of getting its
+  // own. Require a name first so a Sub Assy's own drawing never leaks down
+  // into an unrelated Child Part (or vice versa).
+  if(!name){
+    return `<span class="hint" style="color:var(--gray);">Pangalanan muna ang piyesa para maka-attach dito ng sarili nitong drawing.</span>`;
+  }
   const existing = drawingsForItemProcess(item, 'drawing').filter(d=>(d.childPart||'')===name);
   let cell = existing.length
     ? existing.map(d=>`<div>${drawingLinksForEntry(d, 'Fabrication Drawing')}</div>`).join('')
