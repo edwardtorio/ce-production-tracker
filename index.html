@@ -1802,6 +1802,15 @@ function recalcPartsListTotals(item){
     });
   });
 }
+// Remembers which item/process Parts List <details> panels are currently
+// expanded, keyed by `${item.id}|${processId}`. Every add/edit/remove in
+// this editor re-renders the whole task card (savePartsListChange ->
+// rerenderCurrentView/renderMyTasks), which rebuilds a brand-new <details>
+// element each time — without this it would silently collapse back closed
+// on every single click, making it look like nothing happened and losing
+// your place while adding several Sub Assy/Child Part rows in a row or
+// trying to find one further down the list to remove.
+let PARTS_LIST_OPEN_KEYS = new Set();
 async function savePartsListChange(item){
   recalcPartsListTotals(item);
   // This edit — made directly on the Fabrication Drawing task card — is now
@@ -1895,7 +1904,12 @@ function partsListTableHtml(item, processId){
     return inner;
   }).join('');
   const addSubBtn = canAttach ? `<div style="margin-top:6px;"><button type="button" class="btn secondary btn-sm" onclick="addPartsListSubAssy('${item.id}')">+ Sub Assy</button></div>` : '';
-  return `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
+  // Stays open across re-renders triggered by adding/editing/removing a row
+  // — see PARTS_LIST_OPEN_KEYS above. ontoggle keeps that Set in sync with
+  // whatever the person actually clicked (open OR manually collapsed).
+  const openKey = `${item.id}|${processId}`;
+  const isOpen = PARTS_LIST_OPEN_KEYS.has(openKey);
+  return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table">
       <tr><th>Piyesa</th><th>Qty/parent</th><th>Total Kailangan</th><th>Fabrication Drawing</th></tr>
       ${rows}
