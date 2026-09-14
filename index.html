@@ -1167,6 +1167,7 @@ const DRAWING_PROCESS_MAP = {
   bystronic_tube_cutting_program: { label:'Bystronic Tube Cutting Program', scope:'so',     consumedBy:['bystronic_cutting'] },
   manual_cutting_scheme:          { label:'Manual Cutting Scheme',      scope:'so',         consumedBy:['manual_cutting'] },
   bending_flat_pattern:           { label:'Bending Flat Pattern',       scope:'childpart',  consumedBy:['bending'] },
+  turret_punch_program:           { label:'Turret Punch Program',       scope:'so',         consumedBy:['turret_punching'] },
 };
 
 function activeItems(){ return ITEMS.filter(i=>!i.archived); }
@@ -3672,6 +3673,7 @@ function renderBoard(){
       const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${it.id}')">↩ Ibalik sa nakaraan</button>` : '';
       const partialBtn = (cur && Number(it.qty)>1) ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${it.id}','${cur}')">➗ Partial</button>` : '';
       const detourBtn = cur ? `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${it.id}')">🔧 Kailangan ng ibang proseso</button>` : '';
+      const quickReturnBtns = cur ? quickReturnButtonsHtml(it.id, cur) : '';
       const returnNote = it.lastReturn ? `<div class="hint" style="color:var(--red);margin-top:6px;">↩ Ibinalik mula sa ${processLabel(it.lastReturn.fromProcess)}${it.lastReturn.reason ? ': "'+it.lastReturn.reason+'"' : ''}</div>` : '';
       const detourPendingNote = (cur && it.detourFrom && it.detourFrom[cur]) ? `<div class="hint" style="color:#6a5acd;margin-top:6px;">🔧 Kinakailangan ito ni ${processLabel(it.detourFrom[cur])} bago magpatuloy${(it.detourReason && it.detourReason[cur]) ? ': "'+it.detourReason[cur]+'"' : ''} — babalik doon pagkatapos dito.</div>` : '';
       const criticalNote = isCatchUpCritical ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:6px 9px;border-radius:6px;margin-top:6px;">🔴 CRITICAL — Lumagpas na sa 3rd Catch-up Schedule sa ${processLabel(cur)}! Kailangan na ng agarang aksyon dito.</div>` : '';
@@ -3693,6 +3695,7 @@ function renderBoard(){
             ${returnBtn}
             ${partialBtn}
             ${detourBtn}
+            ${quickReturnBtns}
             <button class="irc-edit" title="Edit item" onclick="openEditItemModal('${it.id}')">✎ Edit</button>
           </div>
         </div>
@@ -3963,6 +3966,48 @@ async function confirmReturn(itemId){
    behavior falls out of the existing routing logic for free, no special
    return-path bookkeeping needed beyond the item.detourFrom lookup used to
    generate the confirmation note (see cycleStep). ---------- */
+// Quick "send this back" shortcuts for the 4 cutting/punching processes —
+// Laser Machine Cutting, Manual Cutting, Bystronic Pipe Laser Cutting, and
+// Turret Punching. Their actual predecessor in item.route isn't reliably
+// Engineering's drawing/program step or Material Procurement (other
+// pre-production steps can sit in between, or the route may skip straight to
+// the cutting step) — so the generic "Ibalik sa Nakaraang Proseso" button
+// can't be trusted to land in the right place. These reuse the exact same
+// detour mechanism as "Kailangan ng Ibang Proseso" (confirmDetour — auto
+// hands the item back once the borrowed step is marked Done) but with the
+// target already decided by which button was pressed, no picker needed.
+const CUTTING_QUICK_RETURN_ENGINEERING = {
+  laser_cutting: 'laser_cutting_program',
+  manual_cutting: 'manual_cutting_scheme',
+  bystronic_cutting: 'bystronic_tube_cutting_program',
+  turret_punching: 'turret_punch_program',
+};
+function quickReturnButtonsHtml(itemId, processId){
+  const engineeringTarget = CUTTING_QUICK_RETURN_ENGINEERING[processId];
+  if(!engineeringTarget) return '';
+  return `<button class="irc-edit" title="Ibalik sa Engineering — kulang o mali ang drawing/cutting program" onclick="openQuickDetourModal('${itemId}','${engineeringTarget}','Engineering')">📐↩</button>
+    <button class="irc-edit" title="Ibalik sa Material Procurement — kulang o maling materyales" onclick="openQuickDetourModal('${itemId}','material_purchasing','Material Procurement')">📦↩</button>`;
+}
+function openQuickDetourModal(itemId, targetProcessId, targetLabel){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const cur = currentStepId(item);
+  if(!cur){ showToast('Tapos na ang item na ito.'); return; }
+  if(targetProcessId===cur){ showToast('Nandito na sa prosesong ito.'); return; }
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `
+    <h4>Ibalik sa ${escapeHtml(targetLabel)}</h4>
+    <p><b>${escapeHtml(item.itemCode)}</b> ay ipapadala pabalik sa <b>${processLabel(targetProcessId)}</b> — makikita agad ito doon bilang Queue, at kapag na-mark na Done, awtomatiko itong babalik dito sa <b>${processLabel(cur)}</b> para ituloy.</p>
+    <div class="field"><label>Dahilan (optional — halimbawa: mali ang nesting layout, kulang ang materyales)</label>
+      <textarea id="detourReason" placeholder="I-describe kung ano ang kulang o mali..."></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn" style="background:#6a5acd;" onclick="confirmDetour('${itemId}','${targetProcessId}')">Ipadala</button>
+    </div>
+  `;
+  document.getElementById('modalOverlay').classList.add('show');
+}
 function openDetourModal(itemId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
@@ -3993,12 +4038,16 @@ function openDetourModal(itemId){
   `;
   document.getElementById('modalOverlay').classList.add('show');
 }
-async function confirmDetour(itemId){
+async function confirmDetour(itemId, chosenOverride){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
   const cur = currentStepId(item);
   if(!cur) return;
-  const chosen = document.getElementById('detourProcess').value;
+  // chosenOverride is set when this came from one of the quick "Ibalik sa
+  // Engineering/Material Procurement" buttons (openQuickDetourModal) — the
+  // target is already decided there, so there's no #detourProcess <select>
+  // in that modal to read from.
+  const chosen = chosenOverride || document.getElementById('detourProcess').value;
   if(!chosen || chosen===cur){ showToast('Pumili ng valid na proseso.'); return; }
   const reason = (document.getElementById('detourReason').value || '').trim();
   // If the chosen process is already somewhere else in this item's own route
@@ -4460,6 +4509,7 @@ function renderPersonActionableTasksHtml(name){
     const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${t.item.id}')">↩</button>` : '';
     const partialBtn = Number(t.item.qty)>1 ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${t.item.id}','${t.processId}')">➗</button>` : '';
     const detourBtn = `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${t.item.id}')">🔧</button>`;
+    const quickReturnBtns = quickReturnButtonsHtml(t.item.id, t.processId);
     const stripeCls = taskIdx%2===0 ? 'stripe-a' : 'stripe-b';
     const cardClass = (t.overdue || t.isSplit) ? '' : stripeCls;
     const cardStyle = t.overdue ? 'border-color:#f0c3c3;background:var(--red-bg);' : (t.isSplit ? 'border-color:#c9b8e8;background:#f4f0fb;border-left:4px solid #6a5acd;' : '');
@@ -4544,6 +4594,7 @@ function renderPersonActionableTasksHtml(name){
           ${returnBtn}
           ${partialBtn}
           ${detourBtn}
+          ${quickReturnBtns}
           <div class="pill ${t.status}" onclick="cycleStep('${t.item.id}','${t.processId}');">${t.status}</div>
         </div>
         ${startStampHtml}
