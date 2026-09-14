@@ -1793,21 +1793,108 @@ function partsListDrawingCellHtml(item, name, canAttach){
   if(canAttach) cell += drawingAttachFormHtml(item, 'drawing', name);
   return cell;
 }
-function partsListTableHtml(item, processId){
-  if(!item.partsList || item.partsList.length===0) return '';
-  const canAttach = processId==='drawing';
-  const rows = item.partsList.map(s=>{
-    let inner = `<tr style="background:var(--steel-50);"><td><b>${escapeHtml(s.name)}</b> <span class="hint">(Sub Assy)</span></td><td>${s.qtyPerUnit}</td><td><b>${Number(s.totalQty).toLocaleString()}</b></td><td>${partsListDrawingCellHtml(item, s.name, canAttach)}</td></tr>`;
+function recalcPartsListTotals(item){
+  const mainQty = Number(item.qty)||0;
+  (item.partsList||[]).forEach(s=>{
+    s.totalQty = (Number(s.qtyPerUnit)||0) * mainQty;
     (s.childParts||[]).forEach(c=>{
-      inner += `<tr><td style="padding-left:24px;color:var(--steel-700);">↳ ${escapeHtml(c.name)} <span class="hint">(Child Part)</span></td><td>${c.qtyPerUnit}</td><td>${Number(c.totalQty).toLocaleString()}</td><td>${partsListDrawingCellHtml(item, c.name, canAttach)}</td></tr>`;
+      c.totalQty = (Number(c.qtyPerUnit)||0) * (Number(s.qtyPerUnit)||0) * mainQty;
     });
+  });
+}
+async function savePartsListChange(item){
+  recalcPartsListTotals(item);
+  rerenderCurrentView();
+  renderMyTasks(); // keeps an open My Tasks profile popup in sync — see attachDrawingFromTaskCard
+  await save();
+}
+function updatePartsListSubField(itemId, subIdx, field, value){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item || !item.partsList || !item.partsList[subIdx]) return;
+  item.partsList[subIdx][field] = field==='qtyPerUnit' ? (Number(value)||0) : value;
+  savePartsListChange(item);
+}
+function updatePartsListChildField(itemId, subIdx, childIdx, field, value){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item || !item.partsList || !item.partsList[subIdx]) return;
+  const child = (item.partsList[subIdx].childParts||[])[childIdx];
+  if(!child) return;
+  child[field] = field==='qtyPerUnit' ? (Number(value)||0) : value;
+  savePartsListChange(item);
+}
+function addPartsListSubAssy(itemId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  if(!item.partsList) item.partsList = [];
+  item.partsList.push({name:'', qtyPerUnit:1, totalQty:0, childParts:[]});
+  savePartsListChange(item);
+}
+function removePartsListSubAssy(itemId, subIdx){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item || !item.partsList) return;
+  item.partsList.splice(subIdx,1);
+  savePartsListChange(item);
+}
+function addPartsListChildPart(itemId, subIdx){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item || !item.partsList || !item.partsList[subIdx]) return;
+  if(!item.partsList[subIdx].childParts) item.partsList[subIdx].childParts = [];
+  item.partsList[subIdx].childParts.push({name:'', qtyPerUnit:1, totalQty:0});
+  savePartsListChange(item);
+}
+function removePartsListChildPart(itemId, subIdx, childIdx){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item || !item.partsList || !item.partsList[subIdx]) return;
+  (item.partsList[subIdx].childParts||[]).splice(childIdx,1);
+  savePartsListChange(item);
+}
+// Shows Main Assy → Sub Assy → Child Part with per-piyesa Fabrication
+// Drawing attach/view. For every OTHER process this stays read-only (view
+// the structure + open/download whatever's attached — nothing to edit here).
+// For Engineering's own 'drawing' task (canAttach) it becomes a full
+// editor — add/rename/requantify/remove any Sub Assy or Child Part, right
+// where they're already attaching drawings, no need to go back to Add New
+// SO or a separate Edit Item screen. Also the ONLY case that renders when
+// there's no Parts List yet at all, so Engineering has a way to start one
+// straight from this task.
+function partsListTableHtml(item, processId){
+  const canAttach = processId==='drawing';
+  const hasList = item.partsList && item.partsList.length;
+  if(!hasList && !canAttach) return '';
+  const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:2px 5px;width:130px;" onchange="${changeFn}">`;
+  const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:2px 5px;width:55px;" onchange="${changeFn}">`;
+  const rows = (item.partsList||[]).map((s, subIdx)=>{
+    const nameCell = canAttach
+      ? nameInput(s.name, `updatePartsListSubField('${item.id}',${subIdx},'name',this.value)`)
+      : `<b>${escapeHtml(s.name)}</b>`;
+    const qtyCell = canAttach
+      ? qtyInput(s.qtyPerUnit, `updatePartsListSubField('${item.id}',${subIdx},'qtyPerUnit',this.value)`)
+      : s.qtyPerUnit;
+    const removeBtn = canAttach ? ` <button type="button" class="irc-edit" title="Alisin ang Sub Assy na ito" onclick="removePartsListSubAssy('${item.id}',${subIdx})">🗑</button>` : '';
+    let inner = `<tr style="background:var(--steel-50);"><td>${nameCell} <span class="hint">(Sub Assy)</span>${removeBtn}</td><td>${qtyCell}</td><td><b>${Number(s.totalQty||0).toLocaleString()}</b></td><td>${partsListDrawingCellHtml(item, s.name, canAttach)}</td></tr>`;
+    (s.childParts||[]).forEach((c, childIdx)=>{
+      const cNameCell = canAttach
+        ? nameInput(c.name, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'name',this.value)`)
+        : escapeHtml(c.name);
+      const cQtyCell = canAttach
+        ? qtyInput(c.qtyPerUnit, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'qtyPerUnit',this.value)`)
+        : c.qtyPerUnit;
+      const cRemoveBtn = canAttach ? ` <button type="button" class="irc-edit" title="Alisin ang Child Part na ito" onclick="removePartsListChildPart('${item.id}',${subIdx},${childIdx})">🗑</button>` : '';
+      inner += `<tr><td style="padding-left:24px;color:var(--steel-700);">↳ ${cNameCell} <span class="hint">(Child Part)</span>${cRemoveBtn}</td><td>${cQtyCell}</td><td>${Number(c.totalQty||0).toLocaleString()}</td><td>${partsListDrawingCellHtml(item, c.name, canAttach)}</td></tr>`;
+    });
+    if(canAttach){
+      inner += `<tr><td style="padding-left:24px;" colspan="4"><button type="button" class="btn secondary btn-sm" onclick="addPartsListChildPart('${item.id}',${subIdx})">+ Child Part</button></td></tr>`;
+    }
     return inner;
   }).join('');
+  const addSubBtn = canAttach ? `<div style="margin-top:6px;"><button type="button" class="btn secondary btn-sm" onclick="addPartsListSubAssy('${item.id}')">+ Sub Assy</button></div>` : '';
   return `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table">
       <tr><th>Piyesa</th><th>Qty/parent</th><th>Total Kailangan</th><th>Fabrication Drawing</th></tr>
       ${rows}
-    </table></div></details>`;
+    </table></div>
+    ${addSubBtn}
+  </details>`;
 }
 
 /* ---------- Temporary avatars (initials, color-coded per name) ---------- */
