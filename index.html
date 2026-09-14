@@ -1873,33 +1873,57 @@ function removePartsListChildPart(itemId, subIdx, childIdx){
 // SO or a separate Edit Item screen. Also the ONLY case that renders when
 // there's no Parts List yet at all, so Engineering has a way to start one
 // straight from this task.
+// Rotating accent per Sub Assy group (color for the numbered badge/left
+// border, bg for the whole group's row tint) — purely visual, cycles if
+// there are more Sub Assys than colors. Lets someone tell at a glance
+// which Child Part rows belong to which Sub Assy without having to read
+// every row carefully, and makes it obvious you accidentally added a
+// Child Part under the wrong Sub Assy before you even save.
+const PARTS_LIST_GROUP_ACCENTS = [
+  {color:'var(--blue)',   bg:'var(--blue-bg)'},
+  {color:'var(--green)',  bg:'var(--green-bg)'},
+  {color:'var(--purple)', bg:'var(--purple-bg)'},
+  {color:'var(--amber)',  bg:'var(--amber-bg)'},
+  {color:'var(--accent-teal-dk)', bg:'var(--accent-teal-bg)'},
+];
 function partsListTableHtml(item, processId){
   const canAttach = processId==='drawing';
   const hasList = item.partsList && item.partsList.length;
   if(!hasList && !canAttach) return '';
+  const mainQty = Number(item.qty)||0;
   const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:2px 5px;width:130px;" onchange="${changeFn}">`;
   const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:2px 5px;width:55px;" onchange="${changeFn}">`;
+  // Small formula caption under each total — spells out that the number
+  // still traces back to the item's own qty (e.g. "4 × 20 pc"), so it's
+  // visibly obvious a freshly-added row is computed off the real Main
+  // Assy quantity, not something disconnected from it.
+  const formulaHint = (parts) => `<div class="hint" style="font-size:9.5px;font-weight:400;margin-top:2px;white-space:nowrap;">${parts.join(' × ')}</div>`;
   const rows = (item.partsList||[]).map((s, subIdx)=>{
+    const accent = PARTS_LIST_GROUP_ACCENTS[subIdx % PARTS_LIST_GROUP_ACCENTS.length];
+    const groupBorder = `border-left:4px solid ${accent.color};background:${accent.bg};`;
+    const dividerTop = subIdx>0 ? 'border-top:3px solid var(--line);' : '';
+    const badge = `<span style="display:inline-block;min-width:17px;height:17px;line-height:17px;text-align:center;border-radius:50%;background:${accent.color};color:#fff;font-size:9.5px;font-weight:700;margin-right:4px;flex:0 0 auto;">${subIdx+1}</span>`;
     const nameCell = canAttach
       ? nameInput(s.name, `updatePartsListSubField('${item.id}',${subIdx},'name',this.value)`)
       : `<b>${escapeHtml(s.name)}</b>`;
     const qtyCell = canAttach
       ? qtyInput(s.qtyPerUnit, `updatePartsListSubField('${item.id}',${subIdx},'qtyPerUnit',this.value)`)
       : s.qtyPerUnit;
-    const removeBtn = canAttach ? ` <button type="button" class="irc-edit" title="Alisin ang Sub Assy na ito" onclick="removePartsListSubAssy('${item.id}',${subIdx})">🗑</button>` : '';
-    let inner = `<tr style="background:var(--steel-50);"><td>${nameCell} <span class="hint">(Sub Assy)</span>${removeBtn}</td><td>${qtyCell}</td><td><b>${Number(s.totalQty||0).toLocaleString()}</b></td><td>${partsListDrawingCellHtml(item, s.name, canAttach)}</td></tr>`;
+    const removeBtn = canAttach ? ` <button type="button" class="irc-edit" style="color:var(--red);font-weight:700;" title="Alisin ang Sub Assy na ito (at lahat ng Child Part nito)" onclick="removePartsListSubAssy('${item.id}',${subIdx})">🗑 Alisin</button>` : '';
+    let inner = `<tr style="${groupBorder}${dividerTop}"><td style="display:flex;align-items:flex-start;flex-wrap:wrap;gap:2px;">${badge}${nameCell} <span class="hint">(Sub Assy)</span>${removeBtn}</td><td>${qtyCell}</td><td><b>${Number(s.totalQty||0).toLocaleString()}</b>${formulaHint([s.qtyPerUnit, mainQty+' '+item.unit])}</td><td>${partsListDrawingCellHtml(item, s.name, canAttach)}</td></tr>`;
     (s.childParts||[]).forEach((c, childIdx)=>{
+      const childBadge = `<span style="display:inline-block;min-width:15px;height:15px;line-height:13px;text-align:center;border-radius:50%;border:1.5px solid ${accent.color};color:${accent.color};font-size:8.5px;font-weight:700;margin-right:4px;flex:0 0 auto;">${subIdx+1}.${childIdx+1}</span>`;
       const cNameCell = canAttach
         ? nameInput(c.name, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'name',this.value)`)
         : escapeHtml(c.name);
       const cQtyCell = canAttach
         ? qtyInput(c.qtyPerUnit, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'qtyPerUnit',this.value)`)
         : c.qtyPerUnit;
-      const cRemoveBtn = canAttach ? ` <button type="button" class="irc-edit" title="Alisin ang Child Part na ito" onclick="removePartsListChildPart('${item.id}',${subIdx},${childIdx})">🗑</button>` : '';
-      inner += `<tr><td style="padding-left:24px;color:var(--steel-700);">↳ ${cNameCell} <span class="hint">(Child Part)</span>${cRemoveBtn}</td><td>${cQtyCell}</td><td>${Number(c.totalQty||0).toLocaleString()}</td><td>${partsListDrawingCellHtml(item, c.name, canAttach)}</td></tr>`;
+      const cRemoveBtn = canAttach ? ` <button type="button" class="irc-edit" style="color:var(--red);font-weight:700;" title="Alisin ang Child Part na ito" onclick="removePartsListChildPart('${item.id}',${subIdx},${childIdx})">🗑 Alisin</button>` : '';
+      inner += `<tr style="${groupBorder}"><td style="padding-left:20px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:2px;">↳ ${childBadge}${cNameCell} <span class="hint">(Child Part ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}")</span>${cRemoveBtn}</td><td>${cQtyCell}</td><td>${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, s.qtyPerUnit, mainQty+' '+item.unit])}</td><td>${partsListDrawingCellHtml(item, c.name, canAttach)}</td></tr>`;
     });
     if(canAttach){
-      inner += `<tr><td style="padding-left:24px;" colspan="4"><button type="button" class="btn secondary btn-sm" onclick="addPartsListChildPart('${item.id}',${subIdx})">+ Child Part</button></td></tr>`;
+      inner += `<tr style="${groupBorder}"><td style="padding-left:20px;" colspan="4"><button type="button" class="btn secondary btn-sm" onclick="addPartsListChildPart('${item.id}',${subIdx})">+ Child Part sa Sub Assy #${subIdx+1}${s.name?(' ('+escapeHtml(s.name)+')'):''}</button></td></tr>`;
     }
     return inner;
   }).join('');
