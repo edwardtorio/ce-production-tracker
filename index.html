@@ -4236,6 +4236,11 @@ async function saveEditSo(oldSoNumber, oldClient){
       it.soMaterialsCostTotal = newSoMaterials;
       it.soConsumablesCostTotal = newSoConsumables;
       it.routeTargetDates = computeRouteTargetDates(it.route, newDateUploaded, newTargetDelivery);
+      // Same "latest touched wins" bookkeeping as saveEditItem and
+      // savePartsListChange — an edit made from the Overview tab's SO list
+      // also counts as this item now being the freshest version for future
+      // Add New SO auto-fill matching, same as anywhere else it's edited.
+      it.updatedAt = new Date().toISOString();
     }
   });
   closeModal(); renderBoard(); renderOverview(); renderBrowseSo();
