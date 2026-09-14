@@ -1271,14 +1271,27 @@ async function uploadDrawingFile(file, soNumber, itemId, processId, childPart){
 // Renders one attached drawing's "view" link, plus a real "download" link
 // (forces Content-Disposition via Supabase Storage's ?download param) when it
 // was uploaded as a file — a pasted link only gets "view" since we can't
-// force a download on an arbitrary external URL.
+// force a download on an arbitrary external URL. Always leads with a small
+// type tag (Fabrication Drawing / Laser Cutting Nesting Layout / Bystronic
+// Tube Cutting Program / Manual Cutting Scheme / Bending Flat Pattern /
+// Turret Punch Program) resolved from the entry's own processId — so on any
+// task card (e.g. Laser Cutting, Bystronic Cutting, Manual Cutting, Turret
+// Punching, Welding, Tapping, Countersunk, Burring) whoever's looking at an
+// attached file can tell at a glance exactly what kind of drawing it is,
+// instead of just seeing a bare filename.
+function drawingTypeTagHtml(d){
+  const meta = d && d.processId ? DRAWING_PROCESS_MAP[d.processId] : null;
+  if(!meta) return '';
+  return `<span style="display:inline-block;font-size:10px;font-weight:800;letter-spacing:.2px;color:var(--accent-teal-dk);background:#e3f3f0;border-radius:4px;padding:1px 5px;margin-right:4px;">${escapeHtml(meta.label)}</span>`;
+}
 function drawingLinksForEntry(d, fallbackLabel){
   const label = escapeHtml(d.name || fallbackLabel || 'Drawing');
-  if(!d.url) return `<span>${label}</span>`;
+  const typeTag = drawingTypeTagHtml(d);
+  if(!d.url) return `<span>${typeTag}${label}</span>`;
   const viewLink = `<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">👁 ${label}</a>`;
-  if(!d.storagePath) return viewLink;
+  if(!d.storagePath) return `${typeTag}${viewLink}`;
   const dlHref = d.url + (d.url.includes('?') ? '&' : '?') + 'download';
-  return `${viewLink} <a href="${escapeHtml(dlHref)}" style="margin-left:4px;">⬇ I-download</a>`;
+  return `${typeTag}${viewLink} <a href="${escapeHtml(dlHref)}" style="margin-left:4px;">⬇ I-download</a>`;
 }
 // Every drawing entry relevant to ONE process step of ONE item — scope
 // depends on DRAWING_PROCESS_MAP: 'item' matches by itemId, 'so' matches
