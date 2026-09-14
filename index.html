@@ -1103,16 +1103,19 @@ const SEED_PARTS_BY_CODE = {
   'WP-100-19043614-CEC': MA_RACK_PARTS, // Marvin 31" Black
   'WP-100-19038744-CEC': MA_RACK_PARTS  // Marvin 31" Textured White
 };
-// Builds the Main Assy's Sub Assy / Child Part list with cascading totals:
+// Builds the Main Assy's Sub Assy / Child Part list with totals:
 // Sub Assy total = qtyPerUnit × Main Assy qty. Child Part total = its own
-// qtyPerUnit × the parent Sub Assy's qtyPerUnit × Main Assy qty.
+// qtyPerUnit × Main Assy qty directly — NOT further multiplied by the
+// parent Sub Assy's qtyPerUnit. Per the owner: a Child Part's needed count
+// is always referenced straight off the actual item quantity, same base as
+// every Sub Assy, not compounded through its parent.
 function buildPartsListForCode(code, qty){
   const base = SEED_PARTS_BY_CODE[code];
   if(!base) return [];
   const mainQty = Number(qty)||0;
   return base.map(s=>({
     name: s.name, qtyPerUnit: s.qtyPerUnit, totalQty: s.qtyPerUnit * mainQty,
-    childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit * s.qtyPerUnit * mainQty }))
+    childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit * mainQty }))
   }));
 }
 
@@ -1793,12 +1796,16 @@ function partsListDrawingCellHtml(item, name, canAttach){
   if(canAttach) cell += drawingAttachFormHtml(item, 'drawing', name);
   return cell;
 }
+// Child Part total references the item qty directly (NOT further
+// multiplied by the parent Sub Assy's qtyPerUnit — per the owner, a Child
+// Part's needed count always references the real item quantity straight,
+// same base as its parent, not compounded through it).
 function recalcPartsListTotals(item){
   const mainQty = Number(item.qty)||0;
   (item.partsList||[]).forEach(s=>{
     s.totalQty = (Number(s.qtyPerUnit)||0) * mainQty;
     (s.childParts||[]).forEach(c=>{
-      c.totalQty = (Number(c.qtyPerUnit)||0) * (Number(s.qtyPerUnit)||0) * mainQty;
+      c.totalQty = (Number(c.qtyPerUnit)||0) * mainQty;
     });
   });
 }
@@ -1920,7 +1927,7 @@ function partsListTableHtml(item, processId){
         ? qtyInput(c.qtyPerUnit, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'qtyPerUnit',this.value)`)
         : c.qtyPerUnit;
       const cRemoveBtn = canAttach ? ` <button type="button" class="irc-edit" style="color:var(--red);font-weight:700;" title="Alisin ang Child Part na ito" onclick="removePartsListChildPart('${item.id}',${subIdx},${childIdx})">🗑 Alisin</button>` : '';
-      inner += `<tr style="${groupBorder}"><td style="padding-left:20px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:2px;">↳ ${childBadge}${cNameCell} <span class="hint">(Child Part ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}")</span>${cRemoveBtn}</td><td>${cQtyCell}</td><td>${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, s.qtyPerUnit, mainQty+' '+item.unit])}</td><td>${partsListDrawingCellHtml(item, c.name, canAttach)}</td></tr>`;
+      inner += `<tr style="${groupBorder}"><td style="padding-left:20px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:2px;">↳ ${childBadge}${cNameCell} <span class="hint">(Child Part ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}")</span>${cRemoveBtn}</td><td>${cQtyCell}</td><td>${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, mainQty+' '+item.unit])}</td><td>${partsListDrawingCellHtml(item, c.name, canAttach)}</td></tr>`;
     });
     if(canAttach){
       inner += `<tr style="${groupBorder}"><td style="padding-left:20px;" colspan="4"><button type="button" class="btn secondary btn-sm" onclick="addPartsListChildPart('${item.id}',${subIdx})">+ Child Part sa Sub Assy #${subIdx+1}${s.name?(' ('+escapeHtml(s.name)+')'):''}</button></td></tr>`;
@@ -3990,12 +3997,14 @@ async function confirmPartial(itemId, processId){
   // The parts needed also split proportionally — the forwarded portion only
   // needs parts for ITS quantity, and the remaining portion recalculates for
   // what's still left, so neither side shows the full original parts count.
-  // This cascades through both Sub Assy and Child Part levels.
+  // Both Sub Assy and Child Part totals reference the (new, split) item qty
+  // directly — a Child Part's own qtyPerUnit is never further multiplied by
+  // its parent Sub Assy's qtyPerUnit (see recalcPartsListTotals).
   function rescaleParts(list, newMainQty){
     if(!list || !list.length) return list;
     return list.map(s=>({
       name:s.name, qtyPerUnit:s.qtyPerUnit, totalQty: s.qtyPerUnit * newMainQty,
-      childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit * s.qtyPerUnit * newMainQty }))
+      childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit * newMainQty }))
     }));
   }
   clone.partsList = rescaleParts(clone.partsList, doneQty);
@@ -4430,7 +4439,9 @@ async function saveEditItem(itemId){
   it.partsBreakdown = document.getElementById('editItemParts').value.trim();
   it.partsList = (partsListState['edit'] || []).filter(p=>p.name).map(p=>({
     name:p.name, qtyPerUnit:p.qtyPerUnit, totalQty: p.qtyPerUnit*(Number(it.qty)||0),
-    childParts: (p.childParts||[]).filter(c=>c.name).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit*p.qtyPerUnit*(Number(it.qty)||0) }))
+    // Child Part total references the item qty directly, NOT further
+    // multiplied by the parent Sub Assy's qtyPerUnit — see recalcPartsListTotals.
+    childParts: (p.childParts||[]).filter(c=>c.name).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit*(Number(it.qty)||0) }))
   }));
   delete partsListState['edit'];
   // Preserve status/timestamps/assignee for processes kept in the new route; reset any newly added ones.
@@ -7187,7 +7198,7 @@ function renderPartsListTable(rowId){
     const subTotal = s.qtyPerUnit * itemQty;
     rowsHtml += `<tr style="background:var(--steel-50);"><td><b>${s.name}</b> <span class="hint">(Sub Assy)</span></td><td>${s.qtyPerUnit}</td><td><b>${subTotal.toLocaleString()}</b></td></tr>`;
     (s.childParts||[]).filter(c=>c.name).forEach(c=>{
-      const childTotal = c.qtyPerUnit * s.qtyPerUnit * itemQty;
+      const childTotal = c.qtyPerUnit * itemQty; // references the item qty directly, not the parent Sub Assy's qtyPerUnit
       rowsHtml += `<tr><td style="padding-left:24px;">↳ ${c.name} <span class="hint">(Child Part)</span></td><td>${c.qtyPerUnit}</td><td>${childTotal.toLocaleString()}</td></tr>`;
     });
   });
@@ -7319,8 +7330,10 @@ function buildItemFromRow(wrap, ctx){
     .filter(r=>r.name)
     .map(r=>({
       name: r.name, qtyPerUnit: r.qtyPerUnit, totalQty: r.qtyPerUnit * (Number(qty)||0),
+      // Child Part total references the item qty directly, NOT further
+      // multiplied by the parent Sub Assy's qtyPerUnit — see recalcPartsListTotals.
       childParts: (r.childParts||[]).filter(c=>c.name).map(c=>({
-        name: c.name, qtyPerUnit: c.qtyPerUnit, totalQty: c.qtyPerUnit * r.qtyPerUnit * (Number(qty)||0)
+        name: c.name, qtyPerUnit: c.qtyPerUnit, totalQty: c.qtyPerUnit * (Number(qty)||0)
       }))
     }));
   if(!code && !desc) return {error:'empty'};
