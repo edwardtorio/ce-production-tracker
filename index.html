@@ -1470,6 +1470,46 @@ function currentStepId(item){
   const found = item.route.find(pid => item.routeStatus[pid] !== 'done');
   return found === undefined ? null : found;
 }
+// Two steps that, in real life, both start the moment a Sales Order is
+// uploaded and are worked independently by two separate teams at their own
+// pace, neither one waiting for the other: Material Procurement (buying the
+// materials) and Fabrication Drawing (Engineering making the drawing). See
+// activeStepIds() below for how this actually changes what each team sees.
+const PARALLEL_START_GROUP = ['material_purchasing', 'drawing'];
+// Which step(s) are actually actionable for their owner(s) right now. For
+// almost the whole app this is just [currentStepId(item)] — a single step,
+// since the route is worked strictly in order — but PARALLEL_START_GROUP is
+// the one exception: when the two not-yet-done steps at the very front of
+// the route are exactly that pair (in EITHER order — one team can genuinely
+// finish before the other, "minsan nauuna si material kaysa kay drawing,
+// minsan naman nauuna si drawing"), BOTH are handed to their respective
+// owners at once instead of forcing the second team to sit and wait for the
+// first team to click Done. That's what actually happens on the shop floor
+// (both start the instant the SO comes in) — gating it in software just
+// meant the second team's real progress went untracked until the first team
+// happened to finish, risking uncoordinated/duplicated work by the time the
+// item finally reaches its first actual production step (laser cutting,
+// bystronic pipe cutting, manual cutting, turret punching — all of which
+// still can't start until genuinely BOTH, and everything between them in
+// the route, are done — that part was already guaranteed by the existing
+// strictly-sequential route model and needs no change here).
+//
+// Detected off whichever two steps are genuinely first-and-second-not-done
+// in route order — not a hardcoded position — so a detour spliced in
+// between (see confirmDetour) or any other route rearrangement never falls
+// out of sync with this check; and the moment either member of the pair is
+// marked Done, only the other one stays active alone, same single-current-
+// step behavior as everywhere else in the app.
+function activeStepIds(item){
+  if(!item.route || !item.route.length) return [];
+  const notDone = item.route.filter(pid => item.routeStatus[pid] !== 'done');
+  if(!notDone.length) return [];
+  const first = notDone[0], second = notDone[1];
+  if(second && PARALLEL_START_GROUP.includes(first) && PARALLEL_START_GROUP.includes(second)){
+    return [first, second];
+  }
+  return [first];
+}
 function itemPctDone(item){
   if(!item.route || !item.route.length) return 0;
   const doneCt = item.route.filter(pid=>item.routeStatus[pid]==='done').length;
@@ -1483,26 +1523,38 @@ function itemCategory(item){
   return 'ongoing';
 }
 function itemAmount(item){ return Number(item.qty||0) * Number(item.rate||0); }
-function isItemOverdueNow(item){
-  const cur = currentStepId(item);
-  if(cur===null) return false;
-  const target = item.routeTargetDates && item.routeTargetDates[cur];
+// Whether ONE specific step of an item is overdue — used per-active-step now
+// that more than one can be active at once (see activeStepIds).
+function isStepOverdueNow(item, processId){
+  if(!processId) return false;
+  const target = item.routeTargetDates && item.routeTargetDates[processId];
   if(!target) return false;
   return new Date() > new Date(target+'T23:59:59');
+}
+// Whole-item overdue flag — true if ANY currently-active step (there can be
+// two during the Material Procurement / Fabrication Drawing parallel
+// window) has passed its own target date, not just the single earliest one.
+function isItemOverdueNow(item){
+  return activeStepIds(item).some(pid => isStepOverdueNow(item, pid));
 }
 function ownersFor(processId){ return PROCESS_OWNERS[processId] || []; }
 // For a multi-owner process, work sits unassigned until someone claims/assigns
 // it; for a single-owner process it's implicitly assigned to that one person.
-function currentAssignee(item){
-  const cur = currentStepId(item);
-  if(cur===null) return null;
+// processId is optional — when an item can have more than one active step at
+// once (see activeStepIds), a caller iterating those needs to ask "who's on
+// THIS specific one", not just whatever the single earliest one happens to
+// be; omitting it keeps the old single-step-item behavior for every other
+// caller.
+function currentAssignee(item, processId){
+  const cur = processId || currentStepId(item);
+  if(cur===null || cur===undefined) return null;
   const owners = ownersFor(cur);
   if(owners.length<=1) return owners[0] || null;
   return (item.stepAssignee && item.stepAssignee[cur]) || null;
 }
-function needsAssignment(item){
-  const cur = currentStepId(item);
-  if(cur===null) return false;
+function needsAssignment(item, processId){
+  const cur = processId || currentStepId(item);
+  if(cur===null || cur===undefined) return false;
   return ownersFor(cur).length>1 && !(item.stepAssignee && item.stepAssignee[cur]);
 }
 
@@ -1605,7 +1657,11 @@ function computeCatchUpSchedule(){
   const today = nextWorkingDay(todayDateStr());
   const catchUpDates = {};
   PROCESS_LIST.forEach(p=>{
-    const queue = items.filter(it=>currentStepId(it)===p.id);
+    // activeStepIds (not just currentStepId) so BOTH Material Procurement and
+    // Fabrication Drawing get their own catch-up slot while they're running
+    // in parallel — otherwise whichever of the two sits earlier in the
+    // canonical process list would silently hog the only queue entry.
+    const queue = items.filter(it=>activeStepIds(it).includes(p.id));
     if(queue.length===0) return;
     queue.sort((a,b)=>{
       const targetA = (a.routeTargetDates && a.routeTargetDates[p.id]) || '9999-12-31';
@@ -1664,59 +1720,64 @@ function advanceCatchUpSchedules(items){
   const today = todayDateStr();
   items.forEach(it=>{
     if(itemCategory(it)==='done') return;
-    const cur = currentStepId(it);
-    if(!cur) return;
     if(!it.catchUpAttempt) it.catchUpAttempt = {};
     if(!it.catchUpDate) it.catchUpDate = {};
     if(!it.catchUpCritical) it.catchUpCritical = {};
     if(!it.catchUpHistory) it.catchUpHistory = {};
-    const planDate = livePlan[it.id];
-    const origTarget = it.routeTargetDates && it.routeTargetDates[cur];
-    const isBehindPlan = !!(planDate && origTarget && planDate !== origTarget);
-    const existingDate = it.catchUpDate[cur];
-    if(!existingDate){
-      if(isBehindPlan){
-        it.catchUpAttempt[cur] = 1;
-        it.catchUpDate[cur] = planDate;
-        if(!it.catchUpHistory[cur]) it.catchUpHistory[cur] = [];
-        it.catchUpHistory[cur].push({attempt:1, date:planDate});
+    // One pass per currently-active step — almost always just one, but two
+    // during the Material Procurement / Fabrication Drawing parallel window
+    // (see activeStepIds) — so BOTH can independently accrue their own
+    // 1st/2nd/3rd Catch-up Schedule instead of only whichever one happens to
+    // be earliest in the canonical process list.
+    activeStepIds(it).forEach(cur=>{
+      const planDate = livePlan[it.id];
+      const origTarget = it.routeTargetDates && it.routeTargetDates[cur];
+      const isBehindPlan = !!(planDate && origTarget && planDate !== origTarget);
+      const existingDate = it.catchUpDate[cur];
+      if(!existingDate){
+        if(isBehindPlan){
+          it.catchUpAttempt[cur] = 1;
+          it.catchUpDate[cur] = planDate;
+          if(!it.catchUpHistory[cur]) it.catchUpHistory[cur] = [];
+          it.catchUpHistory[cur].push({attempt:1, date:planDate});
+          changed = true;
+        }
+        return;
+      }
+      if(it.catchUpCritical[cur]) return; // locked once critical — only cycleStep's Done handler clears this
+      if(existingDate < today){
+        // The committed catch-up date has come and gone and the item is still
+        // sitting right here — advance to the next numbered schedule, or, if
+        // the 3rd was the one that just got missed, flag it critical instead.
+        const attempt = it.catchUpAttempt[cur] || 1;
+        if(attempt < 3){
+          const nextAttempt = attempt + 1;
+          // Advance to a date that's genuinely LATER than the one just missed —
+          // prefer the live plan's date when it has actually moved forward, but
+          // never fall back to silently reusing the same existingDate (that was
+          // the bug: when the live plan lookup came back falsy, or happened to
+          // land on the same day, the 2nd/3rd schedule would just repeat the
+          // 1st's date instead of pushing forward). If the live plan hasn't
+          // moved past what was already missed, guarantee at least one working
+          // day of real progress instead.
+          const nextDate = (planDate && planDate > existingDate) ? planDate : addWorkingDays(existingDate, 1);
+          it.catchUpAttempt[cur] = nextAttempt;
+          it.catchUpDate[cur] = nextDate;
+          if(!it.catchUpHistory[cur]) it.catchUpHistory[cur] = [];
+          it.catchUpHistory[cur].push({attempt:nextAttempt, date:nextDate});
+        }else{
+          it.catchUpCritical[cur] = true;
+        }
+        changed = true;
+      }else if(!isBehindPlan){
+        // Caught back up to its own original target before the committed date
+        // even arrived — no longer behind, so nothing left to track.
+        delete it.catchUpAttempt[cur];
+        delete it.catchUpDate[cur];
+        if(it.catchUpHistory) delete it.catchUpHistory[cur];
         changed = true;
       }
-      return;
-    }
-    if(it.catchUpCritical[cur]) return; // locked once critical — only cycleStep's Done handler clears this
-    if(existingDate < today){
-      // The committed catch-up date has come and gone and the item is still
-      // sitting right here — advance to the next numbered schedule, or, if
-      // the 3rd was the one that just got missed, flag it critical instead.
-      const attempt = it.catchUpAttempt[cur] || 1;
-      if(attempt < 3){
-        const nextAttempt = attempt + 1;
-        // Advance to a date that's genuinely LATER than the one just missed —
-        // prefer the live plan's date when it has actually moved forward, but
-        // never fall back to silently reusing the same existingDate (that was
-        // the bug: when the live plan lookup came back falsy, or happened to
-        // land on the same day, the 2nd/3rd schedule would just repeat the
-        // 1st's date instead of pushing forward). If the live plan hasn't
-        // moved past what was already missed, guarantee at least one working
-        // day of real progress instead.
-        const nextDate = (planDate && planDate > existingDate) ? planDate : addWorkingDays(existingDate, 1);
-        it.catchUpAttempt[cur] = nextAttempt;
-        it.catchUpDate[cur] = nextDate;
-        if(!it.catchUpHistory[cur]) it.catchUpHistory[cur] = [];
-        it.catchUpHistory[cur].push({attempt:nextAttempt, date:nextDate});
-      }else{
-        it.catchUpCritical[cur] = true;
-      }
-      changed = true;
-    }else if(!isBehindPlan){
-      // Caught back up to its own original target before the committed date
-      // even arrived — no longer behind, so nothing left to track.
-      delete it.catchUpAttempt[cur];
-      delete it.catchUpDate[cur];
-      if(it.catchUpHistory) delete it.catchUpHistory[cur];
-      changed = true;
-    }
+    });
   });
   return changed;
 }
@@ -2396,11 +2457,15 @@ async function loadInitialState(){
     // requires routeStartedAt to be set). Since we can't know the true start
     // time, start the clock now rather than leave it permanently broken.
     if(it.route){
-      const curForTiming = currentStepId(it);
-      if(curForTiming && it.routeStatus[curForTiming]==='ongoing' && !it.routeStartedAt[curForTiming] && !it.routePaused[curForTiming]){
-        it.routeStartedAt[curForTiming] = Date.now();
-        changed = true;
-      }
+      // activeStepIds rather than just currentStepId so BOTH Material
+      // Procurement and Fabrication Drawing get self-healed independently
+      // during their parallel window, not only whichever is earliest.
+      activeStepIds(it).forEach(curForTiming=>{
+        if(it.routeStatus[curForTiming]==='ongoing' && !it.routeStartedAt[curForTiming] && !it.routePaused[curForTiming]){
+          it.routeStartedAt[curForTiming] = Date.now();
+          changed = true;
+        }
+      });
     }
     if(it.materialsCost===undefined){ it.materialsCost = null; changed = true; } // null = "not entered", distinct from 0
     if(it.consumablesCost===undefined){ it.consumablesCost = null; changed = true; }
@@ -2698,8 +2763,12 @@ function openStageDetailModal(processId, category){
     items = relevant.filter(it=>it.routeStatus[processId]==='done');
   }else{
     const notDone = relevant.filter(it=>it.routeStatus[processId]!=='done');
-    const currentHere = notDone.filter(it=>currentStepId(it)===processId);
-    if(category==='notyet') items = notDone.filter(it=>currentStepId(it)!==processId);
+    // activeStepIds (not just currentStepId) so a Material Procurement or
+    // Fabrication Drawing badge correctly counts items that are actionable
+    // for it right now even while the OTHER of that parallel pair is still
+    // the earlier-in-canonical-order one (see activeStepIds).
+    const currentHere = notDone.filter(it=>activeStepIds(it).includes(processId));
+    if(category==='notyet') items = notDone.filter(it=>!activeStepIds(it).includes(processId));
     else if(category==='delayed') items = currentHere.filter(isDelayedNow);
     else items = currentHere.filter(it=>!isDelayedNow(it)); // ontrack
   }
@@ -2754,7 +2823,7 @@ function renderTeamWorkload(){
       ITEMS_VIEW.forEach(it=>{
         if(!it.route.includes(p.id)) return;
         const status = it.routeStatus[p.id];
-        const isCurrent = currentStepId(it)===p.id;
+        const isCurrent = activeStepIds(it).includes(p.id);
         if(status==='done'){
           // Multi-owner process (e.g. Welding, Powder Coating, Packaging): only
           // count this as this person's "done" if they were the one actually
@@ -2773,8 +2842,8 @@ function renderTeamWorkload(){
           if(assignedTo===name) personMap[name].critical = true;
         }
         if(!isCurrent) return;
-        if(needsAssignment(it)){ personMap[name].na++; return; }
-        if(currentAssignee(it)!==name) return;
+        if(needsAssignment(it, p.id)){ personMap[name].na++; return; }
+        if(currentAssignee(it, p.id)!==name) return;
         if(status==='ongoing') personMap[name].o++;
         else if(status==='queue') personMap[name].q++;
       });
@@ -3067,7 +3136,11 @@ function routeMiniHtml(it){
   const cur = currentStepId(it);
   if(cur===null) return `<span class="badge-done">Finished</span>`;
   const overdue = isItemOverdueNow(it);
-  return `<span style="${overdue?'color:var(--red);font-weight:700;':''}">${processLabel(cur)}${overdue?' ⚠':''}</span>`;
+  // During the Material Procurement / Fabrication Drawing parallel window
+  // (see activeStepIds), show both — otherwise this label would silently
+  // hide that the other one is also actively being worked right now.
+  const label = activeStepIds(it).map(processLabel).join(' + ');
+  return `<span style="${overdue?'color:var(--red);font-weight:700;':''}">${label}${overdue?' ⚠':''}</span>`;
 }
 
 let soExpandState = {};
@@ -3326,7 +3399,7 @@ function formatHoursMinutes(totalSeconds){
 async function pauseStep(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
-  if(currentStepId(item)!==processId || item.routeStatus[processId]!=='ongoing'){ return; }
+  if(!activeStepIds(item).includes(processId) || item.routeStatus[processId]!=='ongoing'){ return; }
   ensureTimingFields(item);
   if(!item.routeStartedAt[processId]){ return; } // already paused / never started
   const wasCapped = finalizeActiveSegment(item, processId);
@@ -3342,7 +3415,7 @@ async function pauseStep(itemId, processId){
 async function resumeStep(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
-  if(currentStepId(item)!==processId || item.routeStatus[processId]!=='ongoing'){ return; }
+  if(!activeStepIds(item).includes(processId) || item.routeStatus[processId]!=='ongoing'){ return; }
   ensureTimingFields(item);
   if(!item.routePaused[processId]){ return; }
   startActiveSegment(item, processId);
@@ -3652,8 +3725,8 @@ function renderStageProgressBars(){
     const doneN = doneItems.length;
     const pct = Math.round(doneN/assignedN*100);
     const notDoneItems = relevant.filter(it=>it.routeStatus[p.id]!=='done');
-    const currentHereItems = notDoneItems.filter(it=>currentStepId(it)===p.id);
-    const notYetItems = notDoneItems.filter(it=>currentStepId(it)!==p.id);
+    const currentHereItems = notDoneItems.filter(it=>activeStepIds(it).includes(p.id));
+    const notYetItems = notDoneItems.filter(it=>!activeStepIds(it).includes(p.id));
     const delayN = currentHereItems.filter(it=>{
       const target = it.routeTargetDates && it.routeTargetDates[p.id];
       return target && new Date() > new Date(target+'T23:59:59');
@@ -3769,37 +3842,42 @@ function renderBoard(){
       const pct = itemPctDone(it);
       const cur = currentStepId(it);
       const curIdx = cur ? it.route.indexOf(cur) : -1;
-      // Numbered catch-up schedule for the CURRENT step only (see
-      // advanceCatchUpSchedules) — a stable, persisted commitment (1st/2nd/3rd)
-      // rather than computeCatchUpSchedule()'s always-shifting live plan.
-      // Once the 3rd one is also missed, the item is flagged critical.
+      // Every step that's actually active right now — normally just [cur],
+      // but two during the Material Procurement / Fabrication Drawing
+      // parallel window (see activeStepIds) — each gets its own "current"
+      // highlight, assignee, overdue flag and catch-up history below,
+      // instead of only whichever one happens to be earliest.
+      const activeIds = activeStepIds(it);
+      // Cascaded downstream-projection delay is still anchored to the single
+      // earliest active step (cur/curIdx) — it represents "how far behind is
+      // the very front of the queue", which stays meaningful even while a
+      // second step is also independently active alongside it.
       const catchUpStoredDate = cur && it.catchUpDate ? it.catchUpDate[cur] : null;
-      const isCatchUpCritical = !!(cur && it.catchUpCritical && it.catchUpCritical[cur]);
-      // Every 1st/2nd/3rd Catch-up Schedule ever issued for this step is kept
-      // (see advanceCatchUpSchedules) — shown here as its own line so the
-      // full escalation history stays visible even after it reaches critical,
-      // instead of only ever showing the latest/current one.
-      const catchUpHistory = (cur && it.catchUpHistory && it.catchUpHistory[cur]) || [];
-      const catchUpHistoryHtml = catchUpHistory.map((h,idx)=>{
-        const missed = idx < catchUpHistory.length-1 || isCatchUpCritical;
-        return `<div class="step-date" style="color:#a35d00;font-weight:700;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpOrdinal(h.attempt)} Catch-up Schedule: ${formatDateLong(h.date)}${missed?' (nalagpasan)':''}</div>`;
-      }).join('');
-      // How many calendar days has the current step's committed catch-up
-      // date already slipped past that same step's original target date?
-      // Every downstream (not-yet-started) step gets pushed by that same
-      // number of days, so the whole remaining route visibly reflects the
-      // upstream delay instead of only the currently-stuck step.
       const curOrigTarget = cur ? it.routeTargetDates[cur] : null;
       const catchUpDeltaDays = (catchUpStoredDate && curOrigTarget) ? Math.round((new Date(catchUpStoredDate+'T00:00:00') - new Date(curOrigTarget+'T00:00:00')) / 86400000) : 0;
+      // Whether ANY currently-active step has reached critical — drives the
+      // whole card's blink/critical note further down.
+      const isCatchUpCritical = activeIds.some(pid => !!(it.catchUpCritical && it.catchUpCritical[pid]));
       let trackHtml = '';
       it.route.forEach((pid,i)=>{
         if(i>0) trackHtml += `<div class="route-arrow">→</div>`;
         const status = it.routeStatus[pid];
-        const isCurrent = pid===cur;
+        const isCurrent = activeIds.includes(pid);
         const isDownstream = !isCurrent && status!=='done' && curIdx>=0 && i>curIdx;
-        const overdue = isCurrent && isItemOverdueNow(it);
-        const unassigned = isCurrent && needsAssignment(it);
+        const overdue = isCurrent && isStepOverdueNow(it, pid);
+        const unassigned = isCurrent && needsAssignment(it, pid);
         const cls = status==='done' ? 'done' : (isCurrent ? 'current'+(overdue?' overdue':'') : 'upcoming');
+        // Numbered catch-up schedule for THIS step specifically (see
+        // advanceCatchUpSchedules) — a stable, persisted commitment
+        // (1st/2nd/3rd) rather than computeCatchUpSchedule()'s
+        // always-shifting live plan. Every 1st/2nd/3rd ever issued for this
+        // step is kept and shown as its own line, not just the latest one.
+        const stepCatchUpHistory = (isCurrent && it.catchUpHistory && it.catchUpHistory[pid]) || [];
+        const stepCatchUpCritical = isCurrent && !!(it.catchUpCritical && it.catchUpCritical[pid]);
+        const catchUpHistoryHtml = stepCatchUpHistory.map((h,idx)=>{
+          const missed = idx < stepCatchUpHistory.length-1 || stepCatchUpCritical;
+          return `<div class="step-date" style="color:#a35d00;font-weight:700;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpOrdinal(h.attempt)} Catch-up Schedule: ${formatDateLong(h.date)}${missed?' (nalagpasan)':''}</div>`;
+        }).join('');
         // Once a step is done, its original target date matters less than
         // when it actually finished — swap the target-date line for the
         // actual completion date plus how long the step took (start ->
@@ -3836,7 +3914,7 @@ function renderBoard(){
           }
           doneCompletedHtml = `<div class="step-date" style="color:var(--green);">✅ Natapos: ${formatDateLong(stepCompletedAt.slice(0,10))}${durationStr}</div>`;
         }
-        const assignee = pid===cur ? currentAssignee(it) : null;
+        const assignee = isCurrent ? currentAssignee(it, pid) : null;
         // Cascaded projection for downstream steps: shift this step's own
         // original target date forward by the same delay the current step
         // has already accumulated. Purely a live display projection — not
@@ -3853,18 +3931,22 @@ function renderBoard(){
           ${dateLbl?`<div class="step-date">${dateLbl}</div>`:''}
           ${doneStartedHtml}
           ${doneCompletedHtml}
-          ${isCurrent ? catchUpHistoryHtml : ''}
+          ${catchUpHistoryHtml}
           ${cascadedLbl?`<div class="step-date" style="color:#a35d00;font-weight:700;" title="Projected na bagong petsa dahil sa pagkaantala sa naunang proseso — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${cascadedLbl}</div>`:''}
-          ${(isCurrent && isCatchUpCritical)?`<div class="step-date" style="color:#fff;background:var(--red);font-weight:800;border-radius:4px;padding:1px 5px;">🔴 CRITICAL</div>`:''}
+          ${stepCatchUpCritical?`<div class="step-date" style="color:#fff;background:var(--red);font-weight:800;border-radius:4px;padding:1px 5px;">🔴 CRITICAL</div>`:''}
         </div>`;
       });
-      const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${it.id}')">↩ Ibalik sa nakaraan</button>` : '';
+      const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${it.id}','${cur}')">↩ Ibalik sa nakaraan</button>` : '';
       const partialBtn = (cur && Number(it.qty)>1) ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${it.id}','${cur}')">➗ Partial</button>` : '';
-      const detourBtn = cur ? `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${it.id}')">🔧 Kailangan ng ibang proseso</button>` : '';
+      const detourBtn = cur ? `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${it.id}','${cur}')">🔧 Kailangan ng ibang proseso</button>` : '';
       const quickReturnBtns = cur ? quickReturnButtonsHtml(it.id, cur) : '';
       const returnNote = it.lastReturn ? `<div class="hint" style="color:var(--red);margin-top:6px;">↩ Ibinalik mula sa ${processLabel(it.lastReturn.fromProcess)}${it.lastReturn.reason ? ': "'+it.lastReturn.reason+'"' : ''}</div>` : '';
       const detourPendingNote = (cur && it.detourFrom && it.detourFrom[cur]) ? `<div class="hint" style="color:#6a5acd;margin-top:6px;">🔧 Kinakailangan ito ni ${processLabel(it.detourFrom[cur])} bago magpatuloy${(it.detourReason && it.detourReason[cur]) ? ': "'+it.detourReason[cur]+'"' : ''} — babalik doon pagkatapos dito.</div>` : '';
-      const criticalNote = isCatchUpCritical ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:6px 9px;border-radius:6px;margin-top:6px;">🔴 CRITICAL — Lumagpas na sa 3rd Catch-up Schedule sa ${processLabel(cur)}! Kailangan na ng agarang aksyon dito.</div>` : '';
+      // Names whichever active step(s) actually hit critical — during the
+      // Material Procurement / Fabrication Drawing parallel window it could
+      // be either one (or both), not necessarily the single earliest `cur`.
+      const criticalStepIds = activeIds.filter(pid => it.catchUpCritical && it.catchUpCritical[pid]);
+      const criticalNote = isCatchUpCritical ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:6px 9px;border-radius:6px;margin-top:6px;">🔴 CRITICAL — Lumagpas na sa 3rd Catch-up Schedule sa ${criticalStepIds.map(processLabel).join(' / ')}! Kailangan na ng agarang aksyon dito.</div>` : '';
       const splitNote = it.splitNote ? `<div class="hint" style="color:var(--accent-teal-dk);margin-top:6px;">➗ ${it.splitNote}</div>` : '';
       const partsHtml = it.partsBreakdown ? `<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(it.partsBreakdown)}</div></details>` : '';
       const drawingHtml = drawingLinkHtml(it);
@@ -3920,7 +4002,7 @@ function lineageQtyDoneAtStep(item, processId, excludeItemId){
 async function cycleStep(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
-  if(currentStepId(item) !== processId){ showToast('Kailangan munang tapusin ang naunang proseso.'); return; }
+  if(!activeStepIds(item).includes(processId)){ showToast('Kailangan munang tapusin ang naunang proseso.'); return; }
   if(ownersFor(processId).length>1 && !(item.stepAssignee && item.stepAssignee[processId])){
     openAssignModal(itemId, processId);
     return;
@@ -3978,8 +4060,17 @@ async function cycleStep(itemId, processId){
   renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await saveItem(item);
   const nextId = currentStepId(item);
+  // If the next step was actually ALREADY active in parallel alongside the
+  // one just finished (Material Procurement / Fabrication Drawing — see
+  // activeStepIds), "moved to X" is misleading — X was never waiting, it's
+  // been running the whole time. Word it as a continuation instead.
+  const nextWasAlreadyParallel = !!(nextId && PARALLEL_START_GROUP.includes(processId) && PARALLEL_START_GROUP.includes(nextId));
   let msg = newStatus==='done'
-    ? (nextId ? `${item.itemCode} · ${processLabel(processId)} done → moved to ${processLabel(nextId)}` : `${item.itemCode} · fully finished! 🎉`)
+    ? (nextId
+        ? (nextWasAlreadyParallel
+            ? `${item.itemCode} · ${processLabel(processId)} done — patuloy pa rin ang ${processLabel(nextId)}`
+            : `${item.itemCode} · ${processLabel(processId)} done → moved to ${processLabel(nextId)}`)
+        : `${item.itemCode} · fully finished! 🎉`)
     : `${item.itemCode} · ${processLabel(processId)} → ${newStatus}`;
   if(cappedWarning) msg += ` (⚠ ${MAX_SEGMENT_HOURS}+ oras nang walang pause — na-cap ang oras, paki-verify)`;
   showToast(msg);
@@ -4098,10 +4189,15 @@ async function assignStep(itemId, processId, name){
   showToast(`${item.itemCode} · ${processLabel(processId)} → inassign kay ${name}`);
 }
 
-function openReturnModal(itemId){
+function openReturnModal(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
-  const cur = currentStepId(item);
+  // processId names exactly which step this "return" button was shown on —
+  // needed now that an item can have TWO active steps at once (Material
+  // Procurement + Fabrication Drawing, see activeStepIds); without it this
+  // would always fall back to the single earliest one regardless of which
+  // task card the operator actually clicked from.
+  const cur = processId || currentStepId(item);
   const idx = item.route.indexOf(cur);
   if(idx<=0){ showToast('Wala nang naunang proseso na babalikan.'); return; }
   const prevId = item.route[idx-1];
@@ -4114,15 +4210,15 @@ function openReturnModal(itemId){
     </div>
     <div class="modal-actions">
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn" style="background:var(--red);" onclick="confirmReturn('${itemId}')">Ibalik</button>
+      <button class="btn" style="background:var(--red);" onclick="confirmReturn('${itemId}','${cur}')">Ibalik</button>
     </div>
   `;
   document.getElementById('modalOverlay').classList.add('show');
 }
-async function confirmReturn(itemId){
+async function confirmReturn(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
-  const cur = currentStepId(item);
+  const cur = processId || currentStepId(item);
   const idx = item.route.indexOf(cur);
   if(idx<=0) return;
   const prevId = item.route[idx-1];
@@ -4214,10 +4310,15 @@ function openQuickDetourModal(itemId, targetProcessId, targetLabel){
   `;
   document.getElementById('modalOverlay').classList.add('show');
 }
-function openDetourModal(itemId){
+function openDetourModal(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
-  const cur = currentStepId(item);
+  // processId names exactly which step this button was shown on — needed
+  // now that an item can have TWO active steps at once (Material Procurement
+  // + Fabrication Drawing, see activeStepIds); without it this would always
+  // fall back to the single earliest one regardless of which task card the
+  // operator actually clicked from.
+  const cur = processId || currentStepId(item);
   if(!cur){ showToast('Tapos na ang item na ito.'); return; }
   // ALL processes are selectable here — including ones already part of this
   // item's own route (already done, or waiting its normal turn later) — the
@@ -4239,15 +4340,15 @@ function openDetourModal(itemId){
     </div>
     <div class="modal-actions">
       <button class="btn secondary" onclick="closeModal()">Cancel</button>
-      <button class="btn" style="background:#6a5acd;" onclick="confirmDetour('${itemId}')">Ipadala</button>
+      <button class="btn" style="background:#6a5acd;" onclick="confirmDetour('${itemId}',null,'${cur}')">Ipadala</button>
     </div>
   `;
   document.getElementById('modalOverlay').classList.add('show');
 }
-async function confirmDetour(itemId, chosenOverride){
+async function confirmDetour(itemId, chosenOverride, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
-  const cur = currentStepId(item);
+  const cur = processId || currentStepId(item);
   if(!cur) return;
   // chosenOverride is set when this came from one of the quick "Ibalik sa
   // Engineering/Material Procurement" buttons (openQuickDetourModal) — the
@@ -4684,15 +4785,22 @@ function selectPerson(p, processId){ selectedProcess = processId; openScorecardP
 function renderPersonActionableTasksHtml(name){
   let tasks = [], needsAssign = [];
   activeItems().forEach(it=>{
-    const cur = currentStepId(it);
-    if(cur===null) return;
-    if(selectedProcess && cur !== selectedProcess) return; // when a specific process is chosen, don't mix in the person's other processes
-    if(!ownersFor(cur).includes(name)) return;
-    if(needsAssignment(it)){
-      needsAssign.push({item:it, processId:cur});
-    }else if(currentAssignee(it)===name){
-      tasks.push({item:it, processId:cur, status: it.routeStatus[cur], overdue: isItemOverdueNow(it), isSplit: isPartOfSplit(it)});
-    }
+    // activeStepIds rather than a single currentStepId: during the Material
+    // Procurement / Fabrication Drawing parallel window (see activeStepIds)
+    // an item can be actionable for TWO different owners/processes at once —
+    // each gets its own task card here instead of only whichever one
+    // happens to be earliest in the canonical process list, which used to
+    // silently hide the second team's item from them until the first team
+    // clicked Done.
+    activeStepIds(it).forEach(pid=>{
+      if(selectedProcess && pid !== selectedProcess) return; // when a specific process is chosen, don't mix in the person's other processes
+      if(!ownersFor(pid).includes(name)) return;
+      if(needsAssignment(it, pid)){
+        needsAssign.push({item:it, processId:pid});
+      }else if(currentAssignee(it, pid)===name){
+        tasks.push({item:it, processId:pid, status: it.routeStatus[pid], overdue: isStepOverdueNow(it, pid), isSplit: isPartOfSplit(it)});
+      }
+    });
   });
   tasks.sort((a,b)=>{
     if(a.overdue && !b.overdue) return -1;
@@ -4722,9 +4830,9 @@ function renderPersonActionableTasksHtml(name){
   }else{
   html += tasks.map((t, taskIdx)=>{
     const curIdx = t.item.route.indexOf(t.processId);
-    const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${t.item.id}')">↩</button>` : '';
+    const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${t.item.id}','${t.processId}')">↩</button>` : '';
     const partialBtn = Number(t.item.qty)>1 ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${t.item.id}','${t.processId}')">➗</button>` : '';
-    const detourBtn = `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${t.item.id}')">🔧</button>`;
+    const detourBtn = `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${t.item.id}','${t.processId}')">🔧</button>`;
     const quickReturnBtns = quickReturnButtonsHtml(t.item.id, t.processId);
     const stripeCls = taskIdx%2===0 ? 'stripe-a' : 'stripe-b';
     const cardClass = (t.overdue || t.isSplit) ? '' : stripeCls;
@@ -5253,9 +5361,9 @@ function getPersonTaskRows(name, granularity, selectedKey){
           if(periodKey(target, granularity)!==selectedKey) return;
         }
         rows.push({ item: it, processId: p.id, target, actual: completedAt ? completedAt.slice(0,10) : '', actualAt: completedAt, done: true });
-      }else if(currentStepId(it)===p.id){
-        if(needsAssignment(it)) return;
-        if(currentAssignee(it)!==name) return;
+      }else if(activeStepIds(it).includes(p.id)){
+        if(needsAssignment(it, p.id)) return;
+        if(currentAssignee(it, p.id)!==name) return;
         const target = it.routeTargetDates && it.routeTargetDates[p.id];
         if(selectedKey){
           if(!target) return;
@@ -5900,7 +6008,10 @@ function buildTvSlides(){
     return {
       id: it.id, so: it.soNumber, client: it.client, code: it.itemCode, desc: it.description,
       qty: it.qty, unit: it.unit, routeLen: it.route.length, doneCt, pct,
-      stageLabel: cur ? processLabel(cur) : 'Delivered', category,
+      // During the Material Procurement / Fabrication Drawing parallel
+      // window (see activeStepIds) show both, so the TV monitor reflects
+      // that they're genuinely being worked at the same time.
+      stageLabel: cur ? activeStepIds(it).map(processLabel).join(' + ') : 'Delivered', category,
       target: it.targetDelivery || '—', urgency: tvUrgencyFor(it),
       drawingImage: it.drawingImage || ''
     };
