@@ -1804,6 +1804,13 @@ function recalcPartsListTotals(item){
 }
 async function savePartsListChange(item){
   recalcPartsListTotals(item);
+  // This edit — made directly on the Fabrication Drawing task card — is now
+  // the "latest/corrected" version, exactly like an edit made through the
+  // "Edit Item" modal or a fresh Add New SO row (see saveEditItem and
+  // buildItemFromRow). findMatchingReferenceItem() in Add New SO sorts by
+  // this timestamp, so whichever place — here or Add New SO — was touched
+  // most recently is what future matching items auto-fill from.
+  item.updatedAt = new Date().toISOString();
   rerenderCurrentView();
   renderMyTasks(); // keeps an open My Tasks profile popup in sync — see attachDrawingFromTaskCard
   await save();
