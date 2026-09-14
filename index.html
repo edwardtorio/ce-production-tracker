@@ -1323,6 +1323,29 @@ function drawingRequirementHtml(item, stepProcessId){
 function drawingFormUid(itemId, processId, childPart){
   return `${itemId}_${processId}` + (childPart ? '_' + childPart.replace(/[^a-zA-Z0-9_-]/g,'_') : '');
 }
+// Remembers a picked-but-not-yet-attached File object per attach-form uid,
+// independent of the actual <input type=file> DOM node. This matters
+// because the Parts List editor (and other task-card edits) re-renders the
+// WHOLE card on every unrelated field change (name, qty, ...) — see
+// savePartsListChange/renderMyTasks — which tears down and rebuilds every
+// attach form's <input type=file> from scratch. A freshly rebuilt file
+// input is always empty (browsers never let JS restore a chosen file into
+// a new element), so without this, picking a file and then, say, also
+// tweaking that same piyesa's Qty/parent field before clicking "+ I-attach"
+// silently loses the picked file — the click then finds nothing to attach
+// and the operator sees no visible result ("hindi makapag-attach ng
+// drawing"). Keeping the actual File object here, outside the DOM, lets the
+// attach survive any number of re-renders in between.
+let PENDING_DRAWING_FILES = {};
+function rememberPendingDrawingFile(uid, inputEl){
+  const file = (inputEl && inputEl.files && inputEl.files[0]) ? inputEl.files[0] : null;
+  if(file) PENDING_DRAWING_FILES[uid] = file; else delete PENDING_DRAWING_FILES[uid];
+  // Re-render right away so the "📎 naka-stage" confirmation chip shows
+  // immediately — reassures the operator the pick registered even though
+  // the card just rebuilt itself (and thus visually "cleared" the field).
+  rerenderCurrentView();
+  renderMyTasks();
+}
 // Inline mini-form shown on a task card for a PRODUCING step (drawing,
 // laser_cutting_program, bystronic_tube_cutting_program,
 // manual_cutting_scheme, bending_flat_pattern) — lets Engineering attach the
@@ -1349,14 +1372,24 @@ function drawingAttachFormHtml(item, processId, childPart){
   const childPartFieldHtml = (meta.scope==='childpart' && !childPart)
     ? `<input type="text" id="drwChildPart_${uid}" placeholder="Child part (hal. Bracket A)" style="font-size:11px;padding:3px 6px;width:120px;">`
     : '';
+  // If a file was already picked here before the last re-render wiped the
+  // actual <input type=file> (see rememberPendingDrawingFile above), show a
+  // small confirmation chip so it's obvious the pick is still "held" and
+  // ready for "+ I-attach" — the input itself will look empty again, which
+  // used to make it look like the pick silently failed.
+  const pendingFile = PENDING_DRAWING_FILES[uid];
+  const pendingFileHtml = pendingFile
+    ? `<div class="hint" style="margin-top:2px;color:var(--green);font-weight:700;">📎 Naka-stage: ${escapeHtml(pendingFile.name)} — pindutin ang "+ I-attach"</div>`
+    : '';
   return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
     <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}${meta.scope==='so'?' (para sa buong SO)':''}</div>
     ${existingHtml}
+    ${pendingFileHtml}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;align-items:center;">
       <input type="text" id="drwUrl_${uid}" placeholder="Link ng drawing (optional)" style="font-size:11px;padding:3px 6px;flex:1;min-width:120px;">
       <input type="text" id="drwName_${uid}" placeholder="Pangalan (optional)" style="font-size:11px;padding:3px 6px;width:110px;">
       ${childPartFieldHtml}
-      <input type="file" id="drwFile_${uid}" style="font-size:11px;max-width:150px;" title="O mag-upload ng file mula sa computer/cellphone">
+      <input type="file" id="drwFile_${uid}" style="font-size:11px;max-width:150px;" title="O mag-upload ng file mula sa computer/cellphone" onchange="rememberPendingDrawingFile('${uid}', this)">
       <button type="button" class="btn secondary btn-sm" onclick="attachDrawingFromTaskCard('${item.id}','${processId}','${childPart.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">+ I-attach</button>
     </div>
   </div>`;
@@ -1377,7 +1410,12 @@ async function attachDrawingFromTaskCard(itemId, processId, childPart){
   const url = urlEl ? urlEl.value.trim() : '';
   const name = nameEl ? nameEl.value.trim() : '';
   const childPartVal = childPart || (childEl ? childEl.value.trim() : '');
-  const file = (fileEl && fileEl.files && fileEl.files[0]) ? fileEl.files[0] : null;
+  // Prefer whatever's actually sitting in the live file input right now,
+  // but fall back to a remembered pick from before an in-between re-render
+  // wiped the input itself (see rememberPendingDrawingFile) — this is what
+  // makes a file pick survive the operator also touching another field
+  // (name/qty) on this same piyesa before clicking "+ I-attach".
+  const file = (fileEl && fileEl.files && fileEl.files[0]) ? fileEl.files[0] : (PENDING_DRAWING_FILES[uid] || null);
   if(!url && !name && !file){ showToast('Kailangan ng link, pangalan, o file ng drawing.'); return; }
   const itemIdForEntry = meta.scope==='so' ? '' : item.id;
   const d = blankDrawingEntry(item.soNumber, item.client, itemIdForEntry, processId);
@@ -1397,6 +1435,7 @@ async function attachDrawingFromTaskCard(itemId, processId, childPart){
   DRAWINGS_POOL.push(d);
   saveDrawingEntry(d);
   if(urlEl) urlEl.value=''; if(nameEl) nameEl.value=''; if(childEl) childEl.value=''; if(fileEl) fileEl.value='';
+  delete PENDING_DRAWING_FILES[uid];
   rerenderCurrentView();
   // rerenderCurrentView() above is a no-op while the My Tasks profile popup
   // is open (by design, so it never yanks another in-progress edit out from
@@ -4263,6 +4302,9 @@ function closeModal(){
   box.innerHTML = '';
   box.classList.remove('modal-wide');
   profileModalOpenFor = null;
+  // Drop any picked-but-never-attached files staged from this popup (see
+  // rememberPendingDrawingFile) — nothing left open to attach them from.
+  PENDING_DRAWING_FILES = {};
 }
 document.getElementById('modalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='modalOverlay') closeModal(); });
 
