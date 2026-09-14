@@ -4123,11 +4123,27 @@ const CUTTING_QUICK_RETURN_ENGINEERING = {
   bystronic_cutting: 'bystronic_tube_cutting_program',
   turret_punching: 'turret_punch_program',
 };
+// Same idea, one level earlier in the pipeline: the 5 Engineering processes
+// that each produce their own cutting/bending "program" document (Laser
+// Cutting Program, Bystronic Tube Cutting Program, Manual Cutting Scheme,
+// Bending Flat Pattern, Turret Punch Program) all still work off the
+// Fabrication Drawing itself — if THAT drawing turns out wrong or
+// incomplete while making the program, they need a quick way back to
+// 'drawing' too, same one-click detour-and-auto-return mechanism.
+const ENGINEERING_QUICK_RETURN_TO_DRAWING = [
+  'laser_cutting_program', 'bystronic_tube_cutting_program', 'manual_cutting_scheme',
+  'bending_flat_pattern', 'turret_punch_program',
+];
 function quickReturnButtonsHtml(itemId, processId){
   const engineeringTarget = CUTTING_QUICK_RETURN_ENGINEERING[processId];
-  if(!engineeringTarget) return '';
-  return `<button class="irc-edit" title="Ibalik sa Engineering — kulang o mali ang drawing/cutting program" onclick="openQuickDetourModal('${itemId}','${engineeringTarget}','Engineering')">📐↩</button>
-    <button class="irc-edit" title="Ibalik sa Material Procurement — kulang o maling materyales" onclick="openQuickDetourModal('${itemId}','material_purchasing','Material Procurement')">📦↩</button>`;
+  if(engineeringTarget){
+    return `<button class="irc-edit" title="Ibalik sa Engineering — kulang o mali ang drawing/cutting program" onclick="openQuickDetourModal('${itemId}','${engineeringTarget}','Engineering')">📐↩</button>
+      <button class="irc-edit" title="Ibalik sa Material Procurement — kulang o maling materyales" onclick="openQuickDetourModal('${itemId}','material_purchasing','Material Procurement')">📦↩</button>`;
+  }
+  if(ENGINEERING_QUICK_RETURN_TO_DRAWING.includes(processId)){
+    return `<button class="irc-edit" title="Ibalik sa Fabrication Drawing — mali o kulang ang mismong drawing" onclick="openQuickDetourModal('${itemId}','drawing','Fabrication Drawing')">✏️↩</button>`;
+  }
+  return '';
 }
 function openQuickDetourModal(itemId, targetProcessId, targetLabel){
   const item = ITEMS.find(i=>i.id===itemId);
