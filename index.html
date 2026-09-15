@@ -7033,6 +7033,12 @@ async function openDrawingDrivePicker(id){
 let itemRowCount = 0;
 let partsListState = {}; // rowId -> [{name, qtyPerUnit}]
 let drawingsState = {}; // rowId -> [{url, name}] — an item can have more than one attached drawing
+// rowId -> [{childPart, url, name}] — Fabrication Drawing (DRAWINGS_POOL,
+// processId 'drawing') entries staged by checkAndSuggestReference to be
+// copied onto the new item once it's actually created (buildItemFromRow) —
+// see referenceDrawingPoolCopies below for why this is scoped to ONLY the
+// Fabrication Drawing process.
+let PENDING_DRAWING_POOL_COPIES = {};
 // rowId -> 'PHP' | 'USD' — which currency the Rate field for that row is
 // currently showing. Only ever 'USD' briefly, between the user typing a
 // dollar amount and it getting auto-converted to pesos on blur (see
@@ -7451,6 +7457,28 @@ function findMatchingReferenceItem(description, drawingLink, itemCode){
   candidates.sort((a,b) => new Date(b.updatedAt||b.dateAdded||0) - new Date(a.updatedAt||a.dateAdded||0));
   return candidates[0];
 }
+// Reuses the reference item's already-attached Fabrication Drawing entries
+// (DRAWINGS_POOL, processId 'drawing') for a genuinely-matching new item —
+// Main Assy (childPart:'') plus every Sub Assy/Child Part attached under it
+// — same spirit as the route/parts-list auto-fill above, since a repeat
+// order of the exact same part almost always reuses the exact same
+// fabrication drawing. Deliberately scoped to ONLY 'drawing': the
+// production-specific programs (Laser Cutting Nesting Layout, Bystronic
+// Tube Cutting Program, Manual Cutting Scheme, Bending Flat Pattern, Turret
+// Punch Program) are NEVER auto-copied — those are re-programmed per actual
+// run/quantity/material and must never be silently reused onto a new SO.
+// Keeps only the MOST RECENTLY uploaded entry per childPart key, matching
+// how "latest route/parts list" is already chosen above.
+function referenceDrawingPoolCopies(ref){
+  const entries = DRAWINGS_POOL.filter(d=>d.itemId===ref.id && d.processId==='drawing');
+  const latestByChildPart = {};
+  entries.forEach(d=>{
+    const key = d.childPart||'';
+    const existing = latestByChildPart[key];
+    if(!existing || new Date(d.uploadedAt||0) > new Date(existing.uploadedAt||0)) latestByChildPart[key] = d;
+  });
+  return Object.values(latestByChildPart);
+}
 function checkAndSuggestReference(rowId){
   const wrap = document.getElementById('wrap_'+rowId);
   if(!wrap) return;
@@ -7491,8 +7519,13 @@ function checkAndSuggestReference(rowId){
       renderDrawingList(rowId);
     }
   }
+  const drawingPoolCopies = referenceDrawingPoolCopies(ref);
+  if(drawingPoolCopies.length){
+    PENDING_DRAWING_POOL_COPIES[rowId] = drawingPoolCopies;
+  }
   scheduleSaveDraft(rowId);
-  showToast(`Na-detect ang parehong item (${ref.itemCode}) — inilagay ang huling na-update na route at parts list. Paki-verify.`);
+  const drawingNote = drawingPoolCopies.length ? ' Kasama na rin ang naka-attach na Fabrication Drawing (Main Assy/Sub Assy/Child Part).' : '';
+  showToast(`Na-detect ang parehong item (${ref.itemCode}) — inilagay ang huling na-update na route at parts list.${drawingNote} Paki-verify.`);
 }
 function getSoContext(){
   return {
@@ -7547,7 +7580,22 @@ function buildItemFromRow(wrap, ctx){
   // it's traceable later — the item's own `rate` stays a plain peso number,
   // exactly like every other item, so nothing downstream needs to change.
   if(rowFxInfo[rowId]) item.rateFx = rowFxInfo[rowId];
-  return {item};
+  // Turn any staged reference-item Fabrication Drawing copies (see
+  // checkAndSuggestReference/referenceDrawingPoolCopies) into real
+  // DRAWINGS_POOL entries now that this item's own id exists. storagePath is
+  // deliberately left blank — copying it would make this NEW entry's own
+  // "🔄 Palitan"/remove delete the SAME shared storage file the reference
+  // item's original entry still points to. Leaving it blank keeps this copy
+  // safe to replace/remove independently (view-only, no forced-download
+  // button — the file itself is still reachable via the copied public url).
+  const drawingPoolEntries = (PENDING_DRAWING_POOL_COPIES[rowId]||[]).map(src=>{
+    const d = blankDrawingEntry(item.soNumber, item.client, item.id, 'drawing');
+    d.childPart = src.childPart||'';
+    d.url = src.url||'';
+    d.name = src.name||'';
+    return d;
+  });
+  return {item, drawingPoolEntries};
 }
 // Adds just ONE item row to the board immediately — so an item whose route
 // is already set doesn't have to wait for every other row to be finished too.
@@ -7570,11 +7618,13 @@ async function addSingleItem(rowId){
   // whatever order they happen to load from the database in.
   result.item.soLineNo = [...document.querySelectorAll('#itemRows .item-row-wrap')].indexOf(wrap);
   ITEMS.push(result.item);
+  (result.drawingPoolEntries||[]).forEach(d=>{ DRAWINGS_POOL.push(d); saveDrawingEntry(d); });
   delete rowRoutes[rowId];
   delete partsListState[rowId];
   delete rowCurrency[rowId];
   delete rowFxInfo[rowId];
   delete DRAFT_ROWS[rowId];
+  delete PENDING_DRAWING_POOL_COPIES[rowId];
   saveDraftsLocal();
   wrap.remove();
   await save();
@@ -7616,6 +7666,7 @@ async function submitSO(){
   }
   const wraps = [...document.querySelectorAll('#itemRows .item-row-wrap')];
   const newItems = [];
+  const newDrawingPoolEntries = [];
   const remainingWraps = [];
   let routeSkipped = 0;
   wraps.forEach((wrap, wrapIdx)=>{
@@ -7626,11 +7677,13 @@ async function submitSO(){
       // the item list can be displayed in the SO's original document order.
       result.item.soLineNo = wrapIdx;
       newItems.push(result.item);
+      if(result.drawingPoolEntries && result.drawingPoolEntries.length) newDrawingPoolEntries.push(...result.drawingPoolEntries);
       delete rowRoutes[rowId];
       delete partsListState[rowId];
       delete rowCurrency[rowId];
       delete rowFxInfo[rowId];
       delete DRAFT_ROWS[rowId];
+      delete PENDING_DRAWING_POOL_COPIES[rowId];
     }else{
       if(result.error==='route') routeSkipped++;
       remainingWraps.push(wrap); // keep blank or route-missing rows in the form for later
@@ -7642,6 +7695,7 @@ async function submitSO(){
     return;
   }
   ITEMS = ITEMS.concat(newItems);
+  newDrawingPoolEntries.forEach(d=>{ DRAWINGS_POOL.push(d); saveDrawingEntry(d); });
   await save();
   wraps.forEach(wrap=>{ if(!remainingWraps.includes(wrap)) wrap.remove(); });
   let msg = `Added ${newItems.length} item(s) from ${ctx.soNumber} to the production board.`;
