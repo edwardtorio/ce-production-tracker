@@ -139,10 +139,14 @@
   .itembar-col{display:flex;flex-direction:column;align-items:center;flex-shrink:0;height:100%;justify-content:flex-end;width:150px;}
   .itembar-qtychip{font-size:9.5px;font-weight:700;margin-bottom:5px;background:rgba(255,255,255,.12);padding:1px 6px;border-radius:20px;white-space:nowrap;color:#fff;}
   .itembar-pair{display:flex;align-items:flex-end;gap:4px;height:100%;}
-  .itembar-barwrap{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;}
+  .itembar-barwrap{display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;position:relative;}
   .itembar-target{width:13px;background:rgba(255,255,255,.22);border-radius:4px 4px 1px 1px;box-shadow:inset 0 1px 2px rgba(0,0,0,.15);}
   .itembar-done{width:13px;border-radius:4px 4px 1px 1px;background:linear-gradient(180deg,#57d69f 0%, var(--green) 85%);box-shadow:0 1px 4px rgba(47,158,92,.45);position:relative;}
   .itembar-done::after{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:rgba(255,255,255,.35);border-radius:4px 4px 0 0;}
+  /* Actual pcs-done number, floating right above the top of the green
+     "Natapos" bar — position is set inline per-bar (bottom:<doneH+4>px) so it
+     always tracks that exact bar's current height as it grows. */
+  .itembar-donelabel{position:absolute;left:50%;transform:translateX(-50%);font-size:9px;font-weight:800;color:#fff;background:rgba(28,130,80,.9);padding:1px 5px;border-radius:20px;white-space:nowrap;pointer-events:none;z-index:2;}
   .itembar-baseline{height:2px;background:rgba(255,255,255,.35);border-radius:2px;}
   .itembar-names{display:flex;gap:16px;margin-top:8px;}
   .itembar-name-col{width:150px;flex-shrink:0;text-align:center;padding:0 4px;}
@@ -3657,11 +3661,34 @@ function renderLineItemsBreakdown(){
   const barsHtml = groups.map(g=>{
     const targetH = Math.max(5, Math.round(g.totalQty/scaleMax*CHART_H));
     const doneH = Math.max(g.doneQty>0?3:0, Math.round(g.doneQty/scaleMax*CHART_H));
+    // Actual pcs finished so far, shown floating right above the top of the
+    // green bar itself — tracks doneH exactly so it always sits just above
+    // wherever that bar currently ends, no matter how tall/short it is
+    // relative to the target bar. When the item is fully (or almost fully)
+    // done, the two bars are nearly the same height, and a second floating
+    // label up there would land right on top of the target qtychip (there's
+    // only ~22px of headroom above the tallest bar before running into the
+    // search box above the chart) — in that case, fold the done count into
+    // the qtychip itself instead of floating a second label that has
+    // nowhere clear to go.
+    const doneQtyRounded = Math.round(g.doneQty);
+    const wouldCollideWithQtychip = (targetH-doneH) < 20;
+    let qtychipExtra = '';
+    let doneLabelHtml = '';
+    if(doneQtyRounded>0){
+      if(wouldCollideWithQtychip){
+        qtychipExtra = doneQtyRounded>=g.totalQty
+          ? ` <span style="color:#8ef0bf;">✓</span>`
+          : ` <span style="color:#8ef0bf;">(${doneQtyRounded.toLocaleString()})</span>`;
+      }else{
+        doneLabelHtml = `<div class="itembar-donelabel" style="bottom:${doneH+4}px;">${doneQtyRounded.toLocaleString()}</div>`;
+      }
+    }
     return `<div class="itembar-col" data-itembar-name="${escapeHtml(g.name.toLowerCase())}">
-      <div class="itembar-qtychip">${g.totalQty.toLocaleString()}</div>
+      <div class="itembar-qtychip">${g.totalQty.toLocaleString()}${qtychipExtra}</div>
       <div class="itembar-pair">
         <div class="itembar-barwrap"><div class="itembar-target" style="height:${targetH}px;"></div></div>
-        <div class="itembar-barwrap"><div class="itembar-done" style="height:${doneH}px;"></div></div>
+        <div class="itembar-barwrap">${doneLabelHtml}<div class="itembar-done" style="height:${doneH}px;"></div></div>
       </div>
     </div>`;
   }).join('');
