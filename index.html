@@ -668,6 +668,7 @@
   <!-- OVERVIEW -->
   <div class="view" id="view-overview">
     <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);padding:20px 20px 8px;">
+      <div id="statCardsPeriodWrap"></div>
       <div class="cards-row" id="statCards"></div>
       <div class="cards-row" id="statCardsStatus" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));max-width:520px;"></div>
     </div>
@@ -2558,21 +2559,26 @@ function renderHeaderPct(pct){
 }
 
 function renderOverview(){
-  const ITEMS_VIEW = activeItems();
-  const totalItems = ITEMS_VIEW.length;
-  const totalUnits = ITEMS_VIEW.reduce((a,i)=>a+Number(i.qty||0),0);
-  const totalValue = ITEMS_VIEW.reduce((a,i)=>a+itemAmount(i),0);
-  const doneItemsForStats = ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
+  // The top stat cards get their OWN Day/Week/Month/Year filter (see
+  // itemsForPeriodState/periodPickerHtml) — everything else further down
+  // this function (Sales Orders table, Materials Nadedelay, Drawings
+  // Kulang, Fully Finished/On Track/Delayed Items lists) stays on the full
+  // all-time item set via the separate ITEMS_VIEW below, unaffected by it.
+  const STAT_ITEMS_VIEW = itemsForPeriodState(overviewStatCardsPeriodState);
+  const totalItems = STAT_ITEMS_VIEW.length;
+  const totalUnits = STAT_ITEMS_VIEW.reduce((a,i)=>a+Number(i.qty||0),0);
+  const totalValue = STAT_ITEMS_VIEW.reduce((a,i)=>a+itemAmount(i),0);
+  const doneItemsForStats = STAT_ITEMS_VIEW.filter(i=>itemCategory(i)==='done');
   const doneCt = doneItemsForStats.length;
   const donePieces = doneItemsForStats.reduce((a,i)=>a+Number(i.qty||0),0);
   const doneValue = doneItemsForStats.reduce((a,i)=>a+itemAmount(i),0);
   const pctDone = totalItems ? Math.round(doneCt/totalItems*100) : 0;
-  const soCount = new Set(ITEMS_VIEW.map(i=>i.soNumber)).size;
+  const soCount = new Set(STAT_ITEMS_VIEW.map(i=>i.soNumber)).size;
   // "On track" = not yet done, and not currently past its own target date —
   // mutually exclusive with both done and delayed, so done+onTrack+delayed
   // always equals totalItems.
-  const delayedItemsArr = ITEMS_VIEW.filter(isItemOverdueNow);
-  const onTrackItemsArr = ITEMS_VIEW.filter(it=>itemCategory(it)!=='done' && !isItemOverdueNow(it));
+  const delayedItemsArr = STAT_ITEMS_VIEW.filter(isItemOverdueNow);
+  const onTrackItemsArr = STAT_ITEMS_VIEW.filter(it=>itemCategory(it)!=='done' && !isItemOverdueNow(it));
   const bottleneckCount = delayedItemsArr.length;
   const onTrackCount = onTrackItemsArr.length;
   const onTrackValue = onTrackItemsArr.reduce((a,i)=>a+itemAmount(i),0);
@@ -2584,11 +2590,16 @@ function renderOverview(){
   // reached Finish Good — grouped by SO number alone since that's the unit
   // the "23 Active Sales Orders" card itself counts.
   const soGroupsForStats = {};
-  ITEMS_VIEW.forEach(it=>{
+  STAT_ITEMS_VIEW.forEach(it=>{
     if(!soGroupsForStats[it.soNumber]) soGroupsForStats[it.soNumber] = [];
     soGroupsForStats[it.soNumber].push(it);
   });
   const completedSoCount = Object.values(soGroupsForStats).filter(items=>items.every(it=>itemCategory(it)==='done')).length;
+
+  // Everything below this line (Sales Orders table, Materials Nadedelay,
+  // Drawings Kulang, Fully Finished/On Track/Delayed Items lists) keeps
+  // using the full all-time item set, same as before this filter existed.
+  const ITEMS_VIEW = activeItems();
 
   renderHeaderPct(pctDone);
 
@@ -2603,6 +2614,15 @@ function renderOverview(){
   };
   const totalValueFont = fitFont(totalValueStr, [[11,24],[13,21],[15,18],[17,16],[20,14]]);
   const doneValueFont = fitFont(doneValueSubStr, [[24,13],[28,12],[32,11],[999,10]]);
+
+  const statCardsPeriodWrap = document.getElementById('statCardsPeriodWrap');
+  if(statCardsPeriodWrap){
+    const picker = periodPickerHtml(overviewStatCardsPeriodState, 'statCards', 'setOverviewStatCardsGranularity', 'setOverviewStatCardsDateFilter');
+    const rangeNote = overviewStatCardsPeriodState.dateFilter
+      ? `<span class="hint" style="color:#fff;opacity:.85;margin-right:8px;">Ipinapakita: ${escapeHtml(periodLabel(overviewStatCardsPeriodState.dateFilter, overviewStatCardsPeriodState.granularity))}</span>`
+      : `<span class="hint" style="color:#fff;opacity:.85;margin-right:8px;">Ipinapakita: Lahat ng panahon</span>`;
+    statCardsPeriodWrap.innerHTML = `<div style="display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">${rangeNote}${picker}</div>`;
+  }
 
   document.getElementById('statCards').innerHTML = `
     <div class="stat-card-lg" style="--sc-accent:var(--blue);--sc-bg:var(--blue-bg);">
@@ -3508,9 +3528,9 @@ function canonicalClientName(rawName){
   if(norm.startsWith('pimes')) return 'PIMES Corp.';
   return name;
 }
-function computeClientAmountGroups(){
+function computeClientAmountGroups(items){
   const groups = new Map();
-  activeItems().forEach(it=>{
+  (items||activeItems()).forEach(it=>{
     const rawName = (it.client||'').trim();
     if(!rawName) return;
     const name = canonicalClientName(rawName);
@@ -3533,9 +3553,10 @@ function renderClientAmountChart(){
   const el = document.getElementById('clientAmountRow');
   if(!el) return;
   el.classList.add('itembar-mode');
-  const groups = computeClientAmountGroups();
+  const periodPicker = periodPickerHtml(clientAmountPeriodState, 'clientAmount', 'setClientAmountGranularity', 'setClientAmountDateFilter');
+  const groups = computeClientAmountGroups(itemsForPeriodState(clientAmountPeriodState));
   if(groups.length===0){
-    el.innerHTML = `<div class="empty-state" style="color:#fff;"><div class="big">💰</div>Wala pang laman ang Production Board.</div>`;
+    el.innerHTML = `<div style="display:flex;justify-content:flex-end;">${periodPicker}</div><div class="empty-state" style="color:#fff;"><div class="big">💰</div>Wala pang laman sa napiling panahon.</div>`;
     return;
   }
   const maxAmt = Math.max(...groups.map(g=>g.totalAmount)) || 1;
@@ -3575,8 +3596,9 @@ function renderClientAmountChart(){
         <span><span class="itembar-swatch itembar-swatch-done"></span>Natapos na halaga</span>
       </div>
     </div>
-    <div class="itembar-searchrow">
-      <input type="text" id="clientAmountSearch" placeholder="🔍 Maghanap ng client…">
+    <div class="itembar-searchrow" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <input type="text" id="clientAmountSearch" placeholder="🔍 Maghanap ng client…" style="flex:1;min-width:200px;">
+      ${periodPicker}
     </div>
     <div class="itembar-scrollshell">
       <div class="itembar-chartarea">
@@ -3615,9 +3637,9 @@ function renderClientAmountChart(){
 // than starting a new one. doneQty is each item's own qty weighted by its
 // itemPctDone() (% of its route's steps marked done), summed per group —
 // an item that's 50% through its route contributes half its pcs as "done".
-function computeItemBarGroups(){
+function computeItemBarGroups(items){
   const groups = new Map();
-  activeItems().forEach(it=>{
+  (items||activeItems()).forEach(it=>{
     const name = (it.description||'').trim();
     if(!name) return;
     const key = name.toLowerCase();
@@ -3645,9 +3667,10 @@ function renderLineItemsBreakdown(){
   const el = document.getElementById('breakdownRow');
   if(!el) return;
   el.classList.add('itembar-mode');
-  const groups = computeItemBarGroups();
+  const periodPicker = periodPickerHtml(lineItemsPeriodState, 'lineItems', 'setLineItemsGranularity', 'setLineItemsDateFilter');
+  const groups = computeItemBarGroups(itemsForPeriodState(lineItemsPeriodState));
   if(groups.length===0){
-    el.innerHTML = `<div class="empty-state" style="color:#fff;"><div class="big">📦</div>Wala pang laman ang Production Board.</div>`;
+    el.innerHTML = `<div style="display:flex;justify-content:flex-end;">${periodPicker}</div><div class="empty-state" style="color:#fff;"><div class="big">📦</div>Wala pang laman sa napiling panahon.</div>`;
     return;
   }
   const maxQty = Math.max(...groups.map(g=>g.totalQty)) || 1;
@@ -3715,8 +3738,9 @@ function renderLineItemsBreakdown(){
         <span><span class="itembar-swatch itembar-swatch-done"></span>Natapos (aktwal)</span>
       </div>
     </div>
-    <div class="itembar-searchrow">
-      <input type="text" id="itembarSearch" placeholder="🔍 Maghanap ng item…">
+    <div class="itembar-searchrow" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <input type="text" id="itembarSearch" placeholder="🔍 Maghanap ng item…" style="flex:1;min-width:200px;">
+      ${periodPicker}
     </div>
     <div class="itembar-scrollshell">
       <div class="itembar-chartarea">
@@ -5141,6 +5165,55 @@ function periodLabel(key, granularity){
     return `Week of ${formatDateLong(key)} – ${formatDateLong(end.toISOString().slice(0,10))}`;
   }
   return formatDateLong(key);
+}
+// Independent Day/Week/Month/Year filters for the Overview page's top stat
+// cards, "Order Amount — per Client" chart, and "Line Items & Pieces — per
+// Item" chart — same Araw-araw/Lingguhan/Buwanan/Taunan picker pattern
+// already used for each person's own "Completed Value" dropdown in Team
+// Scorecard (see personScoreState/renderPersonScorecardDetail), just
+// generalized here since these three sections aren't tied to one person.
+// Filters by each item's dateUploaded (when its SO was added) — dateFilter
+// '' (the default, "Lahat") means every item, so nothing changes from
+// today's all-time view until the owner actually picks a specific period.
+let overviewStatCardsPeriodState = {granularity:'day', dateFilter:''};
+let clientAmountPeriodState = {granularity:'day', dateFilter:''};
+let lineItemsPeriodState = {granularity:'day', dateFilter:''};
+function setOverviewStatCardsGranularity(val){ overviewStatCardsPeriodState.granularity=val; overviewStatCardsPeriodState.dateFilter=''; renderOverview(); }
+function setOverviewStatCardsDateFilter(val){ overviewStatCardsPeriodState.dateFilter=val; renderOverview(); }
+function setClientAmountGranularity(val){ clientAmountPeriodState.granularity=val; clientAmountPeriodState.dateFilter=''; renderClientAmountChart(); }
+function setClientAmountDateFilter(val){ clientAmountPeriodState.dateFilter=val; renderClientAmountChart(); }
+function setLineItemsGranularity(val){ lineItemsPeriodState.granularity=val; lineItemsPeriodState.dateFilter=''; renderLineItemsBreakdown(); }
+function setLineItemsDateFilter(val){ lineItemsPeriodState.dateFilter=val; renderLineItemsBreakdown(); }
+// Items whose SO was uploaded within the given period-state's current
+// selection — dateFilter:'' ("Lahat") returns every active item unchanged.
+function itemsForPeriodState(st){
+  const base = activeItems();
+  if(!st.dateFilter) return base;
+  return base.filter(it=>periodKey(it.dateUploaded||it.dateAdded, st.granularity)===st.dateFilter);
+}
+// Builds the shared granularity+specific-period dropdown pair reused by all
+// three Overview sections above — mirrors renderPersonScorecardDetail's own
+// dropdown markup exactly, just parameterized instead of hardwired to one
+// person's state/ids/setter names.
+function periodPickerHtml(st, idPrefix, granFnName, dateFnName){
+  const keys = new Set();
+  activeItems().forEach(it=>{
+    const d = it.dateUploaded||it.dateAdded;
+    if(d) keys.add(periodKey(d, st.granularity));
+  });
+  const dateOptions = [...keys].sort().reverse();
+  return `<div class="filter-row" style="margin:0;gap:6px;flex-wrap:nowrap;">
+    <select id="gran_${idPrefix}" onchange="${granFnName}(this.value)">
+      <option value="day" ${st.granularity==='day'?'selected':''}>Araw-araw</option>
+      <option value="week" ${st.granularity==='week'?'selected':''}>Lingguhan</option>
+      <option value="month" ${st.granularity==='month'?'selected':''}>Buwanan</option>
+      <option value="year" ${st.granularity==='year'?'selected':''}>Taunan</option>
+    </select>
+    <select id="datefilter_${idPrefix}" onchange="${dateFnName}(this.value)">
+      <option value="">Lahat</option>
+      ${dateOptions.map(k=>`<option value="${k}" ${st.dateFilter===k?'selected':''}>${periodLabel(k,st.granularity)}</option>`).join('')}
+    </select>
+  </div>`;
 }
 // Re-buckets the raw daily values into the chosen granularity, per person.
 function regroupSingle(byDate, granularity){
