@@ -1318,6 +1318,34 @@ function requiredDrawingsForStep(item, stepProcessId){
   if(!sourceProcessId) return null; // this step doesn't consume any drawing
   return { sourceProcessId, meta: DRAWING_PROCESS_MAP[sourceProcessId], drawings: drawingsForItemProcess(item, sourceProcessId) };
 }
+// Every drawing ever attached to this item, across EVERY producer process
+// (Fabrication Drawing, Laser Cutting Nesting Layout, Bystronic Tube
+// Cutting Program, Manual Cutting Scheme, Bending Flat Pattern, Turret
+// Punch Program) — grouped by type, non-empty groups only.
+function allAttachedDrawingsForItem(item){
+  return Object.keys(DRAWING_PROCESS_MAP)
+    .map(processId => ({ processId, meta: DRAWING_PROCESS_MAP[processId], drawings: drawingsForItemProcess(item, processId) }))
+    .filter(g => g.drawings.length>0);
+}
+// Shown on EVERY task card the item passes through, not just the one or two
+// steps that directly consume a given drawing type per DRAWING_PROCESS_MAP's
+// consumedBy (see drawingRequirementHtml below, which stays as the
+// prominent "kulang"/required warning on just those specific steps) — so
+// whoever's handling a LATER step (painting, QC, packing, delivery, ...)
+// can still open/reference every drawing ever attached for this item,
+// instead of it only being visible on the couple of steps that directly
+// need it. Collapsed by default (a <details>) to avoid cluttering every
+// card with the full list when the operator doesn't need it right now.
+function attachedDrawingsSummaryHtml(item){
+  const groups = allAttachedDrawingsForItem(item);
+  if(!groups.length) return '';
+  const totalCount = groups.reduce((a,g)=>a+g.drawings.length,0);
+  const rows = groups.map(g=>g.drawings.map(d=>{
+    const suffix = d.childPart ? ` (${escapeHtml(d.childPart)})` : '';
+    return `<div style="margin-top:3px;">📐 ${drawingLinksForEntry(d, g.meta.label)}${suffix}</div>`;
+  }).join('')).join('');
+  return `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Lahat ng Naka-attach na Drawing (${totalCount})</summary><div class="hint" style="margin-top:4px;">${rows}</div></details>`;
+}
 // Inline widget shown on a task card for a CONSUMING step (welding, laser
 // cutting, bending, ...): lists whatever's attached, or flags it missing so
 // the operator (and management, via the Overview list) can see right away
@@ -1488,42 +1516,53 @@ function currentStepId(item){
   const found = item.route.find(pid => item.routeStatus[pid] !== 'done');
   return found === undefined ? null : found;
 }
-// Two steps that, in real life, both start the moment a Sales Order is
-// uploaded and are worked independently by two separate teams at their own
-// pace, neither one waiting for the other: Material Procurement (buying the
-// materials) and Fabrication Drawing (Engineering making the drawing). See
-// activeStepIds() below for how this actually changes what each team sees.
-const PARALLEL_START_GROUP = ['material_purchasing', 'drawing'];
+// Material Procurement (buying the materials) and the whole Engineering
+// drawing/programming chain both start the moment a Sales Order is
+// uploaded and are worked independently by their own teams at their own
+// pace, neither one waiting for the other. The drawing chain itself is
+// still worked strictly in order (Fabrication Drawing first, then whichever
+// specific cutting/bending PROGRAM this item's route needs), but NONE of it
+// needs the physical material in hand — it's pure drafting/CAD/programming
+// work — so once Fabrication Drawing is done, Engineering should be able to
+// move straight on to the next drawing (Laser/Bystronic/Manual Cutting
+// Program, Bending Flat Pattern, Turret Punch Program) right away, even
+// while Material Procurement still hasn't finished buying the materials.
+// See activeStepIds() below for how this actually changes what each team
+// sees.
+const DRAWING_CHAIN = ['drawing', 'laser_cutting_program', 'bystronic_tube_cutting_program', 'manual_cutting_scheme', 'bending_flat_pattern', 'turret_punch_program'];
 // Which step(s) are actually actionable for their owner(s) right now. For
 // almost the whole app this is just [currentStepId(item)] — a single step,
-// since the route is worked strictly in order — but PARALLEL_START_GROUP is
-// the one exception: when the two not-yet-done steps at the very front of
-// the route are exactly that pair (in EITHER order — one team can genuinely
-// finish before the other, "minsan nauuna si material kaysa kay drawing,
-// minsan naman nauuna si drawing"), BOTH are handed to their respective
-// owners at once instead of forcing the second team to sit and wait for the
-// first team to click Done. That's what actually happens on the shop floor
-// (both start the instant the SO comes in) — gating it in software just
-// meant the second team's real progress went untracked until the first team
-// happened to finish, risking uncoordinated/duplicated work by the time the
-// item finally reaches its first actual production step (laser cutting,
-// bystronic pipe cutting, manual cutting, turret punching — all of which
-// still can't start until genuinely BOTH, and everything between them in
-// the route, are done — that part was already guaranteed by the existing
-// strictly-sequential route model and needs no change here).
+// since the route is worked strictly in order — but the Material
+// Procurement / drawing-chain relationship above is the one exception: for
+// as long as Material Procurement (always the route's very first step,
+// when present) hasn't finished yet, whichever drawing-chain step is
+// currently next for Engineering is handed to them too, instead of forcing
+// Engineering to sit idle waiting for materials once they've finished
+// whatever drawing they just did. That's what actually happens on the shop
+// floor (both threads run independently from SO upload onward) — gating it
+// in software just meant Engineering's real progress went untracked past
+// their first drawing, risking uncoordinated/duplicated work by the time
+// the item finally reaches its first actual production step (laser
+// cutting, bystronic pipe cutting, manual cutting, turret punching — all of
+// which still can't start until genuinely BOTH threads, and everything
+// between them in the route, are done — that part was already guaranteed
+// by the existing strictly-sequential route model and needs no change
+// here).
 //
 // Detected off whichever two steps are genuinely first-and-second-not-done
 // in route order — not a hardcoded position — so a detour spliced in
 // between (see confirmDetour) or any other route rearrangement never falls
-// out of sync with this check; and the moment either member of the pair is
-// marked Done, only the other one stays active alone, same single-current-
-// step behavior as everywhere else in the app.
+// out of sync with this check (a non-drawing-chain step spliced in ahead of
+// the next drawing correctly falls back to sequential-only, since it must
+// be done first); and the moment Material Procurement itself is marked
+// Done, only the drawing-chain step stays active alone, same single-
+// current-step behavior as everywhere else in the app.
 function activeStepIds(item){
   if(!item.route || !item.route.length) return [];
   const notDone = item.route.filter(pid => item.routeStatus[pid] !== 'done');
   if(!notDone.length) return [];
   const first = notDone[0], second = notDone[1];
-  if(second && PARALLEL_START_GROUP.includes(first) && PARALLEL_START_GROUP.includes(second)){
+  if(first==='material_purchasing' && second && DRAWING_CHAIN.includes(second)){
     return [first, second];
   }
   return [first];
@@ -4125,10 +4164,17 @@ async function cycleStep(itemId, processId){
   await saveItem(item);
   const nextId = currentStepId(item);
   // If the next step was actually ALREADY active in parallel alongside the
-  // one just finished (Material Procurement / Fabrication Drawing — see
+  // one just finished (Material Procurement / drawing-chain — see
   // activeStepIds), "moved to X" is misleading — X was never waiting, it's
-  // been running the whole time. Word it as a continuation instead.
-  const nextWasAlreadyParallel = !!(nextId && PARALLEL_START_GROUP.includes(processId) && PARALLEL_START_GROUP.includes(nextId));
+  // been running the whole time. Word it as a continuation instead. Covers
+  // both directions: Material Procurement finishing while a drawing-chain
+  // step was already underway, and any drawing-chain step finishing while
+  // Material Procurement (still always the route's earliest not-done step
+  // in that case) is next.
+  const nextWasAlreadyParallel = !!(nextId && (
+    (processId==='material_purchasing' && DRAWING_CHAIN.includes(nextId)) ||
+    (DRAWING_CHAIN.includes(processId) && nextId==='material_purchasing')
+  ));
   let msg = newStatus==='done'
     ? (nextId
         ? (nextWasAlreadyParallel
@@ -4919,6 +4965,7 @@ function renderPersonActionableTasksHtml(name){
     // assy/child part once they've expanded that section.
     const drawingAttachHtml = drawingAttachFormHtml(t.item, t.processId);
     const drawingsHtml = drawingLinkHtml(t.item);
+    const allDrawingsHtml = attachedDrawingsSummaryHtml(t.item);
     const partsListHtml = partsListTableHtml(t.item, t.processId);
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
     const origTarget = t.item.routeTargetDates[t.processId];
@@ -4975,6 +5022,7 @@ function renderPersonActionableTasksHtml(name){
         ${drawingReqHtml}
         ${drawingAttachHtml}
         ${drawingsHtml}
+        ${allDrawingsHtml}
         ${partsListHtml}
         ${rawPartsHtml}
       </div>
