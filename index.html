@@ -965,7 +965,7 @@
 /* Master fabrication process list, in canonical route order. An item's route
    is always a subset of this list, kept in this same order — so routes never
    need manual reordering, they just follow the real factory sequence.
-   This is the full 30-step process list (Process Owners + Add New SO share
+   This is the full 31-step process list (Process Owners + Add New SO share
    this exact same list — editing it here updates both places at once).
    Ids for steps that already existed under the old, shorter list are kept
    UNCHANGED even where the label wording changed, so every already-saved
@@ -977,6 +977,7 @@ const PROCESS_LIST = [
   {id:'material_purchasing',              label:'Material Procurement', category:'pre'},
   {id:'drawing',                          label:'Fabrication Drawing', category:'pre'},
   {id:'laser_cutting_program',            label:'Laser Cutting Program', category:'pre'},
+  {id:'burring_tapping_countersunk_drawing', label:'Burring-Tapping-Countersunk Drawing', category:'pre'},
   {id:'bystronic_tube_cutting_program',   label:'Bystronic Tube Cutting Program', category:'pre'},
   {id:'manual_cutting_scheme',            label:'Manual Cutting Scheme', category:'pre'},
   {id:'bending_flat_pattern',             label:'Bending Flat Pattern', category:'pre'},
@@ -1059,6 +1060,7 @@ const DEFAULT_OWNERS = {
   material_purchasing: [],
   drawing:              [],
   laser_cutting_program: [],
+  burring_tapping_countersunk_drawing: [],
   bystronic_tube_cutting_program: [],
   manual_cutting_scheme: [],
   bending_flat_pattern:  [],
@@ -1157,12 +1159,15 @@ let MATERIALS = [];
 // owner's actual workflow:
 //   drawing (Fabrication Drawing)               -> item-level    -> feeds welding (main/sub assy)
 //   laser_cutting_program (Nesting Layout)       -> SO-wide       -> feeds laser_cutting (many child parts share one sheet)
+//   burring_tapping_countersunk_drawing          -> item-level    -> feeds burring/tapping/countersunk/burring_2
 //   bystronic_tube_cutting_program               -> SO-wide       -> feeds bystronic_cutting
 //   manual_cutting_scheme                        -> SO-wide       -> feeds manual_cutting
 //   bending_flat_pattern                         -> per child part-> feeds bending (each flat pattern is its own piece)
-// Boring/Tapping/Countersinking (tapping, countersunk, burring, burring_2)
-// are already annotated directly on the Fabrication Drawing per the owner,
-// so they consume the same 'drawing' entries rather than needing their own.
+// Boring/Tapping/Countersinking (tapping, countersunk, burring, burring_2) used
+// to be annotated directly on the Fabrication Drawing — now split out into
+// its own dedicated Burring-Tapping-Countersunk Drawing (own process, right
+// after Laser Cutting Program in the route) per the owner, so it can be
+// tracked, gated, and attached separately from the main Fabrication Drawing.
 // Stored in its own table (drawings_pool), same nullable-itemId +
 // optional-childPart shape as MATERIALS above, so one row can be item-level,
 // child-part-level, or SO-wide general depending on which process made it.
@@ -1170,8 +1175,9 @@ let MATERIALS = [];
 //   childPart (optional, for bending_flat_pattern), uploadedBy, uploadedAt, notes }
 let DRAWINGS_POOL = [];
 const DRAWING_PROCESS_MAP = {
-  drawing:                        { label:'Fabrication Drawing',        scope:'item',      consumedBy:['welding','tapping','countersunk','burring','burring_2'] },
+  drawing:                        { label:'Fabrication Drawing',        scope:'item',      consumedBy:['welding'] },
   laser_cutting_program:          { label:'Laser Cutting Nesting Layout', scope:'so',       consumedBy:['laser_cutting'] },
+  burring_tapping_countersunk_drawing: { label:'Burring-Tapping-Countersunk Drawing', scope:'item', consumedBy:['burring','tapping','countersunk','burring_2'] },
   bystronic_tube_cutting_program: { label:'Bystronic Tube Cutting Program', scope:'so',     consumedBy:['bystronic_cutting'] },
   manual_cutting_scheme:          { label:'Manual Cutting Scheme',      scope:'so',         consumedBy:['manual_cutting'] },
   bending_flat_pattern:           { label:'Bending Flat Pattern',       scope:'childpart',  consumedBy:['bending'] },
@@ -1354,6 +1360,9 @@ function drawingRequirementHtml(item, stepProcessId){
   const req = requiredDrawingsForStep(item, stepProcessId);
   if(!req) return '';
   if(req.drawings.length===0){
+    if(drawingIsMarkedNotRequired(item, req.sourceProcessId, '')){
+      return `<div class="hint" style="color:var(--gray);margin-top:4px;">🚫 Walang ${escapeHtml(req.meta.label)} — minarkahan itong "Hindi Required".</div>`;
+    }
     return `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:5px 8px;border-radius:6px;margin-top:4px;">📐 Kulang sa Drawing — wala pang naka-attach na ${escapeHtml(req.meta.label)}</div>`;
   }
   const links = req.drawings.map(d=>{
@@ -1361,6 +1370,94 @@ function drawingRequirementHtml(item, stepProcessId){
     return `📐 ${drawingLinksForEntry(d, req.meta.label)}${suffix}`;
   }).join('<br>');
   return `<div class="hint" style="color:var(--green);margin-top:4px;">${links}</div>`;
+}
+// Whether a specific drawing (one producing process, optionally scoped to
+// one Sub Assy/Child Part name) has been explicitly marked "Hindi Required"
+// — the escape hatch for a piyesa/step that genuinely doesn't need one,
+// used both to soften the "kulang" warnings above and to unblock cycleStep()
+// (see drawingStepMissingCount) so it doesn't hold an item hostage forever.
+function drawingIsMarkedNotRequired(item, processId, childPart){
+  const key = childPart || '';
+  return !!(item.drawingNotRequired && item.drawingNotRequired[processId] && item.drawingNotRequired[processId][key]);
+}
+function drawingSatisfiedOrNotRequired(item, processId, childPart){
+  const key = childPart || '';
+  const has = drawingsForItemProcess(item, processId).some(d=>(d.childPart||'')===key);
+  return has || drawingIsMarkedNotRequired(item, processId, key);
+}
+function toggleDrawingNotRequired(itemId, processId, childPart){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  if(!item.drawingNotRequired) item.drawingNotRequired = {};
+  if(!item.drawingNotRequired[processId]) item.drawingNotRequired[processId] = {};
+  const key = childPart || '';
+  if(item.drawingNotRequired[processId][key]) delete item.drawingNotRequired[processId][key];
+  else item.drawingNotRequired[processId][key] = true;
+  rerenderCurrentView();
+  renderMyTasks();
+  saveItem(item);
+}
+// The actual gate cycleStep() checks before letting a drawing-PRODUCING
+// process (Fabrication Drawing, Laser Cutting Program, Bystronic Tube
+// Cutting Program, Manual Cutting Scheme, Burring-Tapping-Countersunk
+// Drawing, Bending Flat Pattern, Turret Punch Program) move to "done" —
+// returns the list of specific things still missing (empty = allowed
+// through), NAMED so the block can actually guide whoever hit it straight
+// to what needs fixing, instead of a vague "kulang" with no specifics. For
+// 'drawing' each entry is one un-covered Sub Assy/Child Part name (or the
+// wala-pang-Parts-List placeholder); for every other producing process it's
+// that process's own label (there's only ever one thing to check). Every
+// missing thing must be either an actually-attached drawing, or an explicit
+// "Hindi Required" mark — never silently skipped.
+function drawingStepMissingDetails(item, processId){
+  if(!DRAWING_PROCESS_MAP[processId]) return []; // not a drawing-producing process at all
+  if(processId==='drawing'){
+    // Gated per Sub Assy / Child Part from the Parts List — not just once
+    // for the whole item — since each piyesa can need its own drawing.
+    const names = [];
+    (item.partsList||[]).forEach(s=>{
+      if(s.name) names.push(s.name);
+      (s.childParts||[]).forEach(c=>{ if(c.name) names.push(c.name); });
+    });
+    if(!names.length){
+      // No Sub Assy / Child Part breakdown entered at all yet — still needs
+      // either a plain item-wide drawing attached, or the whole breakdown
+      // explicitly marked "Hindi Required" (see the Parts List section).
+      return drawingSatisfiedOrNotRequired(item, 'drawing', '') ? [] : ['(wala pang Sub Assy/Child Part na nailagay sa Parts List)'];
+    }
+    return names.filter(n=>!drawingSatisfiedOrNotRequired(item, 'drawing', n));
+  }
+  const meta = DRAWING_PROCESS_MAP[processId];
+  return drawingSatisfiedOrNotRequired(item, processId, '') ? [] : [meta.label];
+}
+function drawingStepMissingCount(item, processId){
+  return drawingStepMissingDetails(item, processId).length;
+}
+function itemHasNamedParts(item){
+  return (item.partsList||[]).some(s=> s.name || (s.childParts||[]).some(c=>c.name));
+}
+// The actual blocking alert shown when cycleStep() refuses to mark a
+// drawing-producing step done — a real modal (not a toast) so it stays on
+// screen and actually GUIDES the person: names every specific Sub
+// Assy/Child Part (or drawing type) still missing, and reminds them of the
+// two ways to clear it (attach it, or mark it "Hindi Required").
+function openDrawingMissingAlert(item, processId, missing){
+  const meta = DRAWING_PROCESS_MAP[processId];
+  const box = document.getElementById('modalBox');
+  let bodyHtml;
+  if(processId==='drawing'){
+    const listHtml = missing.map(n=>`<li>${escapeHtml(n)}</li>`).join('');
+    bodyHtml = `
+      <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>Fabrication Drawing</b> ng <b>${escapeHtml(item.itemCode)}</b> — kulang pa ng naka-attach na drawing (o "Hindi Required" na marka) ang mga sumusunod:</p>
+      <ul style="margin:8px 0;padding-left:22px;font-weight:700;">${listHtml}</ul>
+      <p class="hint">Buksan ang "🧩 Parts List" sa task card na ito para mag-attach ng drawing sa bawat isa, o pindutin ang "🚫 Hindi Required" doon kung hindi naman kailangan ang drawing para dito.</p>`;
+  }else{
+    bodyHtml = `
+      <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>${escapeHtml(meta.label)}</b> ng <b>${escapeHtml(item.itemCode)}</b> — wala pang naka-attach na drawing dito.</p>
+      <p class="hint">Gamitin ang "📎 I-attach ang ${escapeHtml(meta.label)}" na form sa task card na ito, o pindutin ang "🚫 Hindi Required" doon kung hindi naman kailangan.</p>`;
+  }
+  box.innerHTML = `<h4>⚠️ Kulang pa bago matapos</h4>${bodyHtml}<div class="modal-actions"><button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
+  document.getElementById('modalOverlay').classList.add('show');
 }
 // Stable DOM-id suffix for one attach-form instance — item + process, plus
 // child part when this form is scoped to one specific piyesa (either the
@@ -1427,6 +1524,22 @@ function drawingAttachFormHtml(item, processId, childPart){
   const pendingFileHtml = pendingFile
     ? `<div class="hint" style="margin-top:2px;color:var(--green);font-weight:700;">📎 Naka-stage: ${escapeHtml(pendingFile.name)} — pindutin ang "+ I-attach"</div>`
     : '';
+  // "Hindi Required" escape hatch — this drawing-producing step's item CAN'T
+  // be marked done (see drawingStepMissingCount/cycleStep) until either
+  // something is attached here or this is pressed. For 'drawing' specifically
+  // this only makes sense scoped to ONE Sub Assy/Child Part (childPart set —
+  // the per-piyesa row inside the Parts List) or, when there's no Parts List
+  // breakdown at all yet, this same item-wide (blank childPart) form — never
+  // shown redundantly for the item-wide form once real Sub Assy/Child Part
+  // rows exist, since those rows are what actually gates completion then.
+  const showNotRequiredToggle = processId!=='drawing' || !!childPart || !itemHasNamedParts(item);
+  const notRequiredKey = childPart || '';
+  const isNotRequired = drawingIsMarkedNotRequired(item, processId, notRequiredKey);
+  const notRequiredHtml = showNotRequiredToggle ? (
+    isNotRequired
+      ? `<div class="hint" style="margin-top:4px;color:var(--gray);">🚫 Minarkahang "Hindi Required" — hindi na ito hahadlangan sa pagtapos. <button type="button" class="irc-edit" onclick="toggleDrawingNotRequired('${item.id}','${processId}','${jsAttr(notRequiredKey)}')">↩ Kailangan pala</button></div>`
+      : `<div style="margin-top:4px;"><button type="button" class="irc-edit" onclick="toggleDrawingNotRequired('${item.id}','${processId}','${jsAttr(notRequiredKey)}')">🚫 Hindi Required (walang drawing dito)</button></div>`
+  ) : '';
   return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
     <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}${meta.scope==='so'?' (para sa buong SO)':''}</div>
     ${existingHtml}
@@ -1438,6 +1551,7 @@ function drawingAttachFormHtml(item, processId, childPart){
       <input type="file" id="drwFile_${uid}" style="font-size:11px;max-width:150px;" title="O mag-upload ng file mula sa computer/cellphone" onchange="rememberPendingDrawingFile('${uid}', this)">
       <button type="button" class="btn secondary btn-sm" onclick="attachDrawingFromTaskCard('${item.id}','${processId}','${childPart.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')">+ I-attach</button>
     </div>
+    ${notRequiredHtml}
   </div>`;
 }
 // Handles both a pasted link AND a picked file — if a file was chosen it's
@@ -1529,7 +1643,7 @@ function currentStepId(item){
 // while Material Procurement still hasn't finished buying the materials.
 // See activeStepIds() below for how this actually changes what each team
 // sees.
-const DRAWING_CHAIN = ['drawing', 'laser_cutting_program', 'bystronic_tube_cutting_program', 'manual_cutting_scheme', 'bending_flat_pattern', 'turret_punch_program'];
+const DRAWING_CHAIN = ['drawing', 'laser_cutting_program', 'burring_tapping_countersunk_drawing', 'bystronic_tube_cutting_program', 'manual_cutting_scheme', 'bending_flat_pattern', 'turret_punch_program'];
 // Which step(s) are actually actionable for their owner(s) right now. For
 // almost the whole app this is just [currentStepId(item)] — a single step,
 // since the route is worked strictly in order — but the Material
@@ -1566,6 +1680,91 @@ function activeStepIds(item){
     return [first, second];
   }
   return [first];
+}
+// Steps where the actual physical/drafting work is normally done per SHEET
+// (one laser-cutting nesting layout, one Bystronic tube-cutting program, one
+// manual cutting scheme, one turret-punch program — plus the four production
+// steps that consume them) rather than per line item — a single sheet/run
+// commonly finishes parts belonging to several different items on the same
+// SO at once. For these steps only, "My Tasks" offers a bulk "Tapos na"
+// action so the owner isn't forced to click Done one item at a time for work
+// that was, in reality, finished in one pass.
+const SHEET_BASED_PROCESSES = ['laser_cutting_program','bystronic_tube_cutting_program','manual_cutting_scheme','turret_punch_program','laser_cutting','bystronic_cutting','manual_cutting','turret_punching'];
+let bulkCompleteState = { soNumber:'', client:'', processId:'', checked: new Set() };
+function itemsBulkEligibleForStep(soNumber, client, processId){
+  // Items that still need someone assigned first are left out on purpose —
+  // that needs its own Assign… modal, not a bulk one-click action — so they
+  // stay visible only in the owner's individual "kailangan i-assign" list.
+  return activeItems().filter(it=>
+    it.soNumber===soNumber && it.client===client &&
+    activeStepIds(it).includes(processId) &&
+    it.routeStatus[processId] !== 'done' &&
+    !needsAssignment(it, processId)
+  );
+}
+function openBulkCompleteModal(itemId, processId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const eligible = itemsBulkEligibleForStep(item.soNumber, item.client, processId);
+  bulkCompleteState = { soNumber:item.soNumber, client:item.client, processId, checked: new Set(eligible.map(it=>it.id)) };
+  renderBulkCompleteModal();
+}
+function toggleBulkCompleteItem(id){
+  if(bulkCompleteState.checked.has(id)) bulkCompleteState.checked.delete(id); else bulkCompleteState.checked.add(id);
+  renderBulkCompleteModal();
+}
+function renderBulkCompleteModal(){
+  const { soNumber, client, processId, checked } = bulkCompleteState;
+  const eligible = itemsBulkEligibleForStep(soNumber, client, processId);
+  const rowsHtml = eligible.length ? eligible.map(it=>{
+    const isChecked = checked.has(it.id);
+    return `<label style="display:flex;align-items:center;gap:8px;padding:8px 6px;border-bottom:1px solid var(--border);cursor:pointer;">
+      <input type="checkbox" ${isChecked?'checked':''} onchange="toggleBulkCompleteItem('${it.id}')" style="width:16px;height:16px;flex-shrink:0;">
+      <span style="flex:1;">
+        <div style="font-weight:700;">${escapeHtml(it.itemCode)}</div>
+        <div class="hint">${escapeHtml(it.description)} · ${it.qty} ${it.unit}</div>
+      </span>
+    </label>`;
+  }).join('') : `<div class="hint">Walang ibang item na naka-queue/ongoing dito sa ${processLabel(processId)} para sa SO na ito.</div>`;
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `
+    <h4>Tapusin Marami — ${processLabel(processId)}</h4>
+    <p class="hint">${escapeHtml(soNumber)} · ${escapeHtml(client)} — i-check ang lahat ng item na kasama sa sheet/run na katatapos mo lang, tapos i-confirm. Naka-check na by default lahat ng kwalipikado.</p>
+    <div style="max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin:10px 0;">${rowsHtml}</div>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn" onclick="confirmBulkComplete()">Tapusin ang mga Naka-check</button>
+    </div>
+  `;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+async function confirmBulkComplete(){
+  const { processId, checked } = bulkCompleteState;
+  const ids = [...checked];
+  if(!ids.length){ showToast('Wala kang pinili na item.'); return; }
+  closeModal();
+  const origToast = showToast;
+  showToast = ()=>{}; // suppress cycleStep's own per-item toast — one summary toast at the end instead
+  let doneCount = 0;
+  try{
+    for(const id of ids){
+      const it = ITEMS.find(i=>i.id===id);
+      if(!it) continue;
+      // Safety guard: if a step needs assignment first, cycleStep() opens the
+      // assign modal and returns WITHOUT changing status — bail out of the
+      // loop for this item instead of spinning forever.
+      let prevStatus = null;
+      while(it.routeStatus[processId] && it.routeStatus[processId] !== 'done' && activeStepIds(it).includes(processId)){
+        if(it.routeStatus[processId]===prevStatus) break;
+        prevStatus = it.routeStatus[processId];
+        await cycleStep(id, processId);
+      }
+      if(it.routeStatus[processId]==='done') doneCount++;
+    }
+  } finally {
+    showToast = origToast;
+  }
+  showToast(`${doneCount} item ang na-mark done sa ${processLabel(processId)}.`);
 }
 function itemPctDone(item){
   if(!item.route || !item.route.length) return 0;
@@ -1957,11 +2156,117 @@ function partsListDrawingCellHtml(item, name, canAttach){
     return `<span class="hint" style="color:var(--gray);">Pangalanan muna ang piyesa para maka-attach dito ng sarili nitong drawing.</span>`;
   }
   const existing = drawingsForItemProcess(item, 'drawing').filter(d=>(d.childPart||'')===name);
+  const isNotRequired = drawingIsMarkedNotRequired(item, 'drawing', name);
   let cell = existing.length
     ? existing.map(d=>`<div>${drawingLinksForEntry(d, 'Fabrication Drawing')}</div>`).join('')
-    : `<span class="hint" style="color:${canAttach?'var(--red)':'var(--gray)'};">${canAttach?'kulang':'—'}</span>`;
+    : (isNotRequired
+        ? `<span class="hint" style="color:var(--gray);">🚫 hindi required</span>`
+        : `<span class="hint" style="color:${canAttach?'var(--red)':'var(--gray)'};">${canAttach?'kulang':'—'}</span>`);
   if(canAttach) cell += drawingAttachFormHtml(item, 'drawing', name);
   return cell;
+}
+// The 3 first-stage cutting production steps (Laser Cutting, Manual
+// Cutting, Bystronic Pipe Laser Cutting) are where the raw material
+// actually becomes physical Sub Assy/Child Part pieces — per the owner,
+// this is exactly where mixing several items' worth of parts on one sheet
+// makes it easy to lose track of how many of EACH piyesa actually got cut.
+// Gated the same "must log before Done/Partial" way as the drawing steps:
+// every Sub Assy/Child Part named in the Parts List needs an actual
+// completed COUNT logged here (not a drawing) before this step can be
+// marked done or partially forwarded — and however many pieces are being
+// forwarded (full qty, or a Partial split) has to be something the logged
+// counts can actually cover, so a claimed "5 pcs done" can't sail through
+// on only enough Post Assy pieces logged for 3. See cycleStep/confirmPartial
+// for where this is actually enforced.
+const PARTS_COUNT_GATED_PROCESSES = ['laser_cutting','manual_cutting','bystronic_cutting'];
+// item.partsProgress[processId][pieceName] = how many of that Sub
+// Assy/Child Part this process has logged as physically completed so far —
+// entered directly on the task card (see partsCountInputHtml), independent
+// per process since each of the 3 gated steps cuts its own separate batch.
+function partsCountInputHtml(item, processId, name){
+  if(!name){
+    return `<span class="hint" style="color:var(--gray);">Pangalanan muna ang piyesa sa Fabrication Drawing step para malagyan dito ng bilang.</span>`;
+  }
+  const val = (item.partsProgress && item.partsProgress[processId] && item.partsProgress[processId][name]!==undefined)
+    ? item.partsProgress[processId][name] : '';
+  return `<input type="number" min="0" value="${val}" placeholder="0" style="font-size:12px;padding:2px 5px;width:65px;" onchange="updatePartsProgress('${item.id}','${processId}','${jsAttr(name)}',this.value)">`;
+}
+function updatePartsProgress(itemId, processId, name, value){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  if(!item.partsProgress) item.partsProgress = {};
+  if(!item.partsProgress[processId]) item.partsProgress[processId] = {};
+  const num = Number(value);
+  if(value===''||isNaN(num)||num<0) delete item.partsProgress[processId][name];
+  else item.partsProgress[processId][name] = num;
+  rerenderCurrentView();
+  renderMyTasks();
+  saveItem(item);
+}
+// Flat list of every named Sub Assy/Child Part with its qtyPerUnit — same
+// traversal as drawingStepMissingDetails, reused here for the count gate.
+function partsCountEntries(item){
+  const entries = [];
+  (item.partsList||[]).forEach(s=>{
+    if(s.name) entries.push({name:s.name, qtyPerUnit:Number(s.qtyPerUnit)||0});
+    (s.childParts||[]).forEach(c=>{ if(c.name) entries.push({name:c.name, qtyPerUnit:Number(c.qtyPerUnit)||0}); });
+  });
+  return entries;
+}
+// Returns null when this process/item combo isn't gated at all (not one of
+// the 3 cutting processes, or the item has no Parts List breakdown to check
+// against — same as the drawing gate, nothing forces a Parts List to
+// exist). Otherwise: {missing: [names with NO count logged at all],
+// insufficient: [{name, logged, needed}] whose logged count can't cover
+// claimedQty, maxSupportableQty: the largest qty the logged counts can
+// actually support right now}.
+function partsCountCheck(item, processId, claimedQty){
+  if(!PARTS_COUNT_GATED_PROCESSES.includes(processId)) return null;
+  const entries = partsCountEntries(item);
+  if(!entries.length) return null;
+  const progress = (item.partsProgress && item.partsProgress[processId]) || {};
+  const missing = [];
+  const insufficient = [];
+  let maxSupportableQty = Infinity;
+  entries.forEach(e=>{
+    const logged = progress[e.name];
+    if(logged===undefined || logged===null || logged===''){
+      missing.push(e.name);
+      maxSupportableQty = 0;
+      return;
+    }
+    if(e.qtyPerUnit>0){
+      const supportable = Math.floor(logged / e.qtyPerUnit);
+      if(supportable < maxSupportableQty) maxSupportableQty = supportable;
+      const needed = e.qtyPerUnit * claimedQty;
+      if(logged < needed) insufficient.push({name:e.name, logged, needed});
+    }
+  });
+  if(maxSupportableQty===Infinity) maxSupportableQty = claimedQty; // no qtyPerUnit>0 entries at all — nothing to compute against
+  return { missing, insufficient, maxSupportableQty };
+}
+// The blocking alert shown when cycleStep()/confirmPartial() refuse to mark
+// one of the 3 gated cutting steps done/partial — a real modal, same
+// treatment as openDrawingMissingAlert, naming every specific piece that's
+// either missing a count entirely or under-logged for the quantity being
+// claimed, plus what the logged counts can actually support right now.
+function openPartsCountMissingAlert(item, processId, check, claimedQty){
+  const box = document.getElementById('modalBox');
+  const missingHtml = check.missing.length
+    ? `<p>Wala ka pang nailagay na bilang ng nagawa para sa:</p><ul style="margin:8px 0;padding-left:22px;font-weight:700;">${check.missing.map(n=>`<li>${escapeHtml(n)}</li>`).join('')}</ul>`
+    : '';
+  const insufficientHtml = check.insufficient.length
+    ? `<p>Kulang pa ang nailagay na bilang para masuporta ang <b>${claimedQty} ${escapeHtml(item.unit)}</b> na ipapasa:</p><ul style="margin:8px 0;padding-left:22px;">${check.insufficient.map(x=>`<li><b>${escapeHtml(x.name)}</b> — nailagay: ${x.logged}, kailangan: ${x.needed}</li>`).join('')}</ul>`
+    : '';
+  const supportNote = isFinite(check.maxSupportableQty)
+    ? `<p class="hint">Batay sa mga bilang na nailagay mo ngayon, <b>${check.maxSupportableQty} ${escapeHtml(item.unit)}</b> lang ang kayang i-suporta.</p>`
+    : '';
+  box.innerHTML = `<h4>⚠️ Kulang pa ang bilang ng nagawang piyesa</h4>
+    <p>Hindi pa pwedeng i-mark na Tapos/Partial ang <b>${escapeHtml(item.itemCode)}</b> sa <b>${escapeHtml(processLabel(processId))}</b>:</p>
+    ${missingHtml}${insufficientHtml}${supportNote}
+    <p class="hint">Buksan ang "🧩 Parts List" sa task card na ito at ilagay ang tamang bilang ng nagawang Sub Assy/Child Part bago mag-Tapos o Partial.</p>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
+  document.getElementById('modalOverlay').classList.add('show');
 }
 // Child Part total references the item qty directly (NOT further
 // multiplied by the parent Sub Assy's qtyPerUnit — per the owner, a Child
@@ -2062,9 +2367,16 @@ const PARTS_LIST_GROUP_ACCENTS = [
 ];
 function partsListTableHtml(item, processId){
   const canAttach = processId==='drawing';
+  // Laser Cutting, Manual Cutting, and Bystronic Pipe Laser Cutting — the 3
+  // first-stage cutting steps that actually turn raw material into physical
+  // Sub Assy/Child Part pieces — get an editable "Nagawa" count column
+  // instead of the drawing cell, so cutting can log exactly how many of
+  // each piyesa came off THIS run. See partsCountCheck/PARTS_COUNT_GATED_PROCESSES.
+  const canLogCount = PARTS_COUNT_GATED_PROCESSES.includes(processId);
   const hasList = item.partsList && item.partsList.length;
   if(!hasList && !canAttach) return '';
   const mainQty = Number(item.qty)||0;
+  const colCount = 4; // Piyesa, Qty/parent, Total Kailangan, + (Nagawa OR Fabrication Drawing)
   const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:2px 5px;width:130px;" onchange="${changeFn}">`;
   const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:2px 5px;width:55px;" onchange="${changeFn}">`;
   // Small formula caption under each total — spells out that the number
@@ -2072,6 +2384,7 @@ function partsListTableHtml(item, processId){
   // visibly obvious a freshly-added row is computed off the real Main
   // Assy quantity, not something disconnected from it.
   const formulaHint = (parts) => `<div class="hint" style="font-size:9.5px;font-weight:400;margin-top:2px;white-space:nowrap;">${parts.join(' × ')}</div>`;
+  const lastColCell = (name) => canLogCount ? partsCountInputHtml(item, processId, name) : partsListDrawingCellHtml(item, name, canAttach);
   const rows = (item.partsList||[]).map((s, subIdx)=>{
     const accent = PARTS_LIST_GROUP_ACCENTS[subIdx % PARTS_LIST_GROUP_ACCENTS.length];
     const groupBorder = `border-left:4px solid ${accent.color};background:${accent.bg};`;
@@ -2084,7 +2397,7 @@ function partsListTableHtml(item, processId){
       ? qtyInput(s.qtyPerUnit, `updatePartsListSubField('${item.id}',${subIdx},'qtyPerUnit',this.value)`)
       : s.qtyPerUnit;
     const removeBtn = canAttach ? ` <button type="button" class="irc-edit" style="color:var(--red);font-weight:700;" title="Alisin ang Sub Assy na ito (at lahat ng Child Part nito)" onclick="removePartsListSubAssy('${item.id}',${subIdx})">🗑 Alisin</button>` : '';
-    let inner = `<tr style="${groupBorder}${dividerTop}"><td style="display:flex;align-items:flex-start;flex-wrap:wrap;gap:2px;">${badge}${nameCell} <span class="hint">(Sub Assy)</span>${removeBtn}</td><td>${qtyCell}</td><td><b>${Number(s.totalQty||0).toLocaleString()}</b>${formulaHint([s.qtyPerUnit, mainQty+' '+item.unit])}</td><td>${partsListDrawingCellHtml(item, s.name, canAttach)}</td></tr>`;
+    let inner = `<tr style="${groupBorder}${dividerTop}"><td style="display:flex;align-items:flex-start;flex-wrap:wrap;gap:2px;">${badge}${nameCell} <span class="hint">(Sub Assy)</span>${removeBtn}</td><td>${qtyCell}</td><td><b>${Number(s.totalQty||0).toLocaleString()}</b>${formulaHint([s.qtyPerUnit, mainQty+' '+item.unit])}</td><td>${lastColCell(s.name)}</td></tr>`;
     (s.childParts||[]).forEach((c, childIdx)=>{
       const childBadge = `<span style="display:inline-block;min-width:15px;height:15px;line-height:13px;text-align:center;border-radius:50%;border:1.5px solid ${accent.color};color:${accent.color};font-size:8.5px;font-weight:700;margin-right:4px;flex:0 0 auto;">${subIdx+1}.${childIdx+1}</span>`;
       const cNameCell = canAttach
@@ -2094,10 +2407,10 @@ function partsListTableHtml(item, processId){
         ? qtyInput(c.qtyPerUnit, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'qtyPerUnit',this.value)`)
         : c.qtyPerUnit;
       const cRemoveBtn = canAttach ? ` <button type="button" class="irc-edit" style="color:var(--red);font-weight:700;" title="Alisin ang Child Part na ito" onclick="removePartsListChildPart('${item.id}',${subIdx},${childIdx})">🗑 Alisin</button>` : '';
-      inner += `<tr style="${groupBorder}"><td style="padding-left:20px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:2px;">↳ ${childBadge}${cNameCell} <span class="hint">(Child Part ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}")</span>${cRemoveBtn}</td><td>${cQtyCell}</td><td>${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, mainQty+' '+item.unit])}</td><td>${partsListDrawingCellHtml(item, c.name, canAttach)}</td></tr>`;
+      inner += `<tr style="${groupBorder}"><td style="padding-left:20px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:2px;">↳ ${childBadge}${cNameCell} <span class="hint">(Child Part ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}")</span>${cRemoveBtn}</td><td>${cQtyCell}</td><td>${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, mainQty+' '+item.unit])}</td><td>${lastColCell(c.name)}</td></tr>`;
     });
     if(canAttach){
-      inner += `<tr style="${groupBorder}"><td style="padding-left:20px;" colspan="4"><button type="button" class="btn secondary btn-sm" onclick="addPartsListChildPart('${item.id}',${subIdx})">+ Child Part sa Sub Assy #${subIdx+1}${s.name?(' ('+escapeHtml(s.name)+')'):''}</button></td></tr>`;
+      inner += `<tr style="${groupBorder}"><td style="padding-left:20px;" colspan="${colCount}"><button type="button" class="btn secondary btn-sm" onclick="addPartsListChildPart('${item.id}',${subIdx})">+ Child Part sa Sub Assy #${subIdx+1}${s.name?(' ('+escapeHtml(s.name)+')'):''}</button></td></tr>`;
     }
     return inner;
   }).join('');
@@ -2107,9 +2420,10 @@ function partsListTableHtml(item, processId){
   // whatever the person actually clicked (open OR manually collapsed).
   const openKey = `${item.id}|${processId}`;
   const isOpen = PARTS_LIST_OPEN_KEYS.has(openKey);
+  const lastColHeader = canLogCount ? 'Nagawa (Completed)' : 'Fabrication Drawing';
   return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table">
-      <tr><th>Piyesa</th><th>Qty/parent</th><th>Total Kailangan</th><th>Fabrication Drawing</th></tr>
+      <tr><th>Piyesa</th><th>Qty/parent</th><th>Total Kailangan</th><th>${lastColHeader}</th></tr>
       ${rows}
     </table></div>
     ${addSubBtn}
@@ -4111,6 +4425,32 @@ async function cycleStep(itemId, processId){
     return;
   }
   const newStatus = nextStatus(item.routeStatus[processId]);
+  // A drawing-PRODUCING step (Fabrication Drawing, Laser Cutting Program,
+  // Burring-Tapping-Countersunk Drawing, Bystronic Tube Cutting Program,
+  // Manual Cutting Scheme, Bending Flat Pattern, Turret Punch Program) can't
+  // be marked done while something it's responsible for is neither attached
+  // nor explicitly marked "Hindi Required" — see drawingStepMissingDetails.
+  // Queue->ongoing is never blocked, only the final tap into "done". A real
+  // modal (not a toast) so whoever hit it actually gets guided — it names
+  // every specific Sub Assy/Child Part (or drawing type) still missing,
+  // instead of a vague "kulang" that disappears in two seconds.
+  const missingDrawings = newStatus==='done' ? drawingStepMissingDetails(item, processId) : [];
+  if(missingDrawings.length){
+    openDrawingMissingAlert(item, processId, missingDrawings);
+    return;
+  }
+  // Same idea for the 3 first-stage cutting steps (Laser Cutting, Manual
+  // Cutting, Bystronic Pipe Laser Cutting) — can't be marked done without
+  // having logged an actual completed COUNT for every Sub Assy/Child Part,
+  // and that count has to be enough to cover the full qty being claimed
+  // done here. See partsCountCheck/openPartsCountMissingAlert.
+  if(newStatus==='done'){
+    const countCheck = partsCountCheck(item, processId, Number(item.qty)||0);
+    if(countCheck && (countCheck.missing.length || countCheck.insufficient.length)){
+      openPartsCountMissingAlert(item, processId, countCheck, Number(item.qty)||0);
+      return;
+    }
+  }
   // NOTE: previously this blocked the FINAL step of the route from completing
   // until all split-off siblings of this line item collectively reached it.
   // Per updated instructions, a partial/split-off piece must be free to
@@ -4218,6 +4558,15 @@ async function confirmPartial(itemId, processId){
     await cycleStep(itemId, processId);
     return;
   }
+  // Same "must have logged enough Sub Assy/Child Part count" gate as a full
+  // Done (see cycleStep) — but checked against the PARTIAL qty being
+  // forwarded here, not the full remaining qty, since that's what's actually
+  // being claimed as finished right now.
+  const countCheck = partsCountCheck(item, processId, doneQty);
+  if(countCheck && (countCheck.missing.length || countCheck.insufficient.length)){
+    openPartsCountMissingAlert(item, processId, countCheck, doneQty);
+    return;
+  }
   if(!item.lineageId) item.lineageId = item.id;
   if(item.originalQty===undefined) item.originalQty = totalQty;
   // Bank whatever's currently running on the ORIGINAL before splitting, so
@@ -4259,6 +4608,30 @@ async function confirmPartial(itemId, processId){
   }
   clone.partsList = rescaleParts(clone.partsList, doneQty);
   item.partsList = rescaleParts(item.partsList, item.qty);
+  // The logged "Nagawa" counts split the same way — the forwarded clone
+  // takes exactly what its qty needed (already confirmed sufficient by the
+  // countCheck gate above), and whatever's left over stays on the remaining
+  // item so it isn't silently double-counted toward the NEXT partial/full
+  // completion of this same step. Only THIS step's own logged counts are
+  // touched — a different process's counts on the same item aren't affected
+  // by a split happening at this one.
+  if(item.partsProgress && item.partsProgress[processId]){
+    const qtyPerUnitByName = {};
+    partsCountEntries(item).forEach(e=>{ qtyPerUnitByName[e.name] = e.qtyPerUnit; });
+    const srcProgress = item.partsProgress[processId];
+    const cloneProgress = {};
+    const remainProgress = {};
+    Object.keys(srcProgress).forEach(name=>{
+      const logged = srcProgress[name];
+      const used = (qtyPerUnitByName[name]||0) * doneQty;
+      if(used>0) cloneProgress[name] = used;
+      const leftover = logged - used;
+      if(leftover>0) remainProgress[name] = leftover;
+    });
+    clone.partsProgress = Object.assign({}, item.partsProgress, { [processId]: cloneProgress });
+    if(Object.keys(remainProgress).length) item.partsProgress[processId] = remainProgress;
+    else delete item.partsProgress[processId];
+  }
   ITEMS.push(clone);
   closeModal();
   renderBoard(); renderOverview();
@@ -4377,6 +4750,10 @@ const CUTTING_QUICK_RETURN_ENGINEERING = {
   manual_cutting: 'manual_cutting_scheme',
   bystronic_cutting: 'bystronic_tube_cutting_program',
   turret_punching: 'turret_punch_program',
+  burring: 'burring_tapping_countersunk_drawing',
+  tapping: 'burring_tapping_countersunk_drawing',
+  countersunk: 'burring_tapping_countersunk_drawing',
+  burring_2: 'burring_tapping_countersunk_drawing',
 };
 // Same idea, one level earlier in the pipeline: the 5 Engineering processes
 // that each produce their own cutting/bending "program" document (Laser
@@ -4386,7 +4763,7 @@ const CUTTING_QUICK_RETURN_ENGINEERING = {
 // incomplete while making the program, they need a quick way back to
 // 'drawing' too, same one-click detour-and-auto-return mechanism.
 const ENGINEERING_QUICK_RETURN_TO_DRAWING = [
-  'laser_cutting_program', 'bystronic_tube_cutting_program', 'manual_cutting_scheme',
+  'laser_cutting_program', 'burring_tapping_countersunk_drawing', 'bystronic_tube_cutting_program', 'manual_cutting_scheme',
   'bending_flat_pattern', 'turret_punch_program',
 ];
 function quickReturnButtonsHtml(itemId, processId){
@@ -4944,6 +5321,15 @@ function renderPersonActionableTasksHtml(name){
     const partialBtn = Number(t.item.qty)>1 ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${t.item.id}','${t.processId}')">➗</button>` : '';
     const detourBtn = `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${t.item.id}','${t.processId}')">🔧</button>`;
     const quickReturnBtns = quickReturnButtonsHtml(t.item.id, t.processId);
+    // Sheet/run-based steps (laser cutting nesting, Bystronic tube cutting
+    // program, manual cutting scheme, turret punch program — plus their four
+    // production counterparts) are normally finished for several items on
+    // the same SO in one pass, not one item at a time — offer a bulk "Tapos
+    // na" action right alongside the individual pill instead of forcing one
+    // click per item. Only shown when at least one OTHER eligible item on
+    // the same SO/step actually exists — a lone item has nothing to bulk with.
+    const bulkEligibleCount = SHEET_BASED_PROCESSES.includes(t.processId) ? itemsBulkEligibleForStep(t.item.soNumber, t.item.client, t.processId).length : 0;
+    const bulkBtn = bulkEligibleCount>1 ? `<button class="irc-edit" title="Tapusin ang maraming item na kasama sa parehong sheet/run" onclick="openBulkCompleteModal('${t.item.id}','${t.processId}')">📦 Tapusin Marami (${bulkEligibleCount})</button>` : '';
     const stripeCls = taskIdx%2===0 ? 'stripe-a' : 'stripe-b';
     const cardClass = (t.overdue || t.isSplit) ? '' : stripeCls;
     const cardStyle = t.overdue ? 'border-color:#f0c3c3;background:var(--red-bg);' : (t.isSplit ? 'border-color:#c9b8e8;background:#f4f0fb;border-left:4px solid #6a5acd;' : '');
@@ -5033,6 +5419,7 @@ function renderPersonActionableTasksHtml(name){
           ${partialBtn}
           ${detourBtn}
           ${quickReturnBtns}
+          ${bulkBtn}
           <div class="pill ${t.status}" onclick="cycleStep('${t.item.id}','${t.processId}');">${t.status}</div>
         </div>
         ${startStampHtml}
@@ -6664,7 +7051,7 @@ async function extractPdfTextAndItems(file){
     const content = await page.getTextContent();
     text += reconstructLinesFromTextContent(content) + '\n';
     content.items.forEach(it=>{
-      if(it.str && it.str.trim()) items.push({x: it.transform[4], y: it.transform[5], str: it.str});
+      if(it.str && it.str.trim()) items.push({x: it.transform[4], y: it.transform[5], str: it.str, page: p});
     });
   }
   return {text, items};
@@ -6701,16 +7088,43 @@ function extractClientFromItems(items){
   joined = joined.replace(/^[A-Z]{2,}\d{2,}\s*/, '').trim(); // drop the leading customer code, e.g. "CUST76206"
   return joined;
 }
-// Same column-position idea, applied to the item table: finds the
-// "Description"/"Quantity" header labels to get the Description column's
-// x-range, then anchors one row per recognized unit word (pc, lot, set,
-// ...) and gathers every fragment in that column between this row and the
-// next — reconstructing a wrapped multi-line description (e.g. a part
-// number + dimensions on their own continuation line) instead of only the
-// first line. Returns null if the expected headers aren't found, so the
-// caller can fall back to the older flattened-text approach for a
-// differently-laid-out PDF.
+// A multi-page SO repeats the item table's "Description"/"Quantity" column
+// headers on every page that continues the table, but pdf.js hands back x/y
+// coordinates that are PAGE-LOCAL — page 2's rows sit at the same kind of
+// y-values as page 1's, the numbers don't keep counting down across pages.
+// Treating every item's position globally (as if every page were stacked
+// into one tall page) used to interleave rows from different pages by raw
+// y-coordinate instead of true reading order, and silently dropped whichever
+// page's rows didn't fall inside page 1's own header/boundary box — which is
+// exactly why a 2nd/3rd page of items either came out scrambled or vanished.
+// Grouping fragments by their own `page` number first, running the same
+// column-position row-detection independently on EACH page, then
+// concatenating the pages in order (page 1's rows, then page 2's, ...) fixes
+// both: every page finds its own header and its own boundary, and nothing
+// from one page ever gets compared by y-coordinate to something on another.
 function extractItemsFromPositions(items){
+  if(!items || !items.length) return null;
+  const pageNums = [...new Set(items.map(it=> it.page!==undefined ? it.page : 1))].sort((a,b)=>a-b);
+  let results = [];
+  let anyPageHadTable = false;
+  pageNums.forEach(pn=>{
+    const pageItems = items.filter(it=> (it.page!==undefined ? it.page : 1) === pn);
+    const pageResults = extractItemsFromPositionsForPage(pageItems);
+    if(pageResults){ anyPageHadTable = true; results = results.concat(pageResults); }
+  });
+  return anyPageHadTable ? results : null;
+}
+// Same column-position idea, applied to the item table of a SINGLE page:
+// finds the "Description"/"Quantity" header labels to get the Description
+// column's x-range, then anchors one row per recognized unit word (pc, lot,
+// set, ...) and gathers every fragment in that column between this row and
+// the next — reconstructing a wrapped multi-line description (e.g. a part
+// number + dimensions on their own continuation line) instead of only the
+// first line. Returns null if the expected headers aren't found on this
+// page (e.g. a totals-only closing page with no item table), so the caller
+// either moves on to the next page or falls back to the older flattened-text
+// approach for a differently-laid-out PDF.
+function extractItemsFromPositionsForPage(items){
   if(!items || !items.length) return null;
   const norm = s => (s||'').trim();
   const Y_TOL = 3;
