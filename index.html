@@ -4664,7 +4664,14 @@ async function assignStep(itemId, processId, name){
   if(!item) return;
   if(!item.stepAssignee) item.stepAssignee = {};
   item.stepAssignee[processId] = name;
-  closeModal();
+  // If this Assign… was triggered from inside an open "Mga Tasks ni X"
+  // profile popup (Team Workload → click a person → Assign… on one of
+  // their multi-owner tasks), keep that popup open instead of closing
+  // everything — renderMyTasks() below refreshes it in place via
+  // refreshProfileModalIfOpen() — so the person can assign the next task
+  // right away without the round-trip back to the Team Workload grid and
+  // re-clicking the same person again.
+  if(!profileModalOpenFor) closeModal();
   renderBoard(); renderOverview();
   if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
   renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
