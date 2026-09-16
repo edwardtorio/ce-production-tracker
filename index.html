@@ -3606,11 +3606,34 @@ function renderSoSection(){
   if(filtered.length===0){
     rows += `<tr><td colspan="8" style="color:var(--gray);text-align:center;padding:16px;">Walang tugma sa search.</td></tr>`;
   }else{
-    filtered.sort((a,b)=>a.soNumber.localeCompare(b.soNumber)).forEach(so=>{
+    // Order: pinaka-matagal na naka-delay (not yet 100% AND past target) sa
+    // pinaka-taas, pababa hanggang sa mga hindi pa overdue (sorted by
+    // pinakamalapit na target date) — then ALL fully-finished SOs (100%) sa
+    // pinaka-ibaba, pinaka-latest na natapos ang unahan doon. "Natapos" per
+    // SO = pinaka-huling routeCompletedAt ng huling stage ng bawat item
+    // nito (see itemCompletionDate) — pareho ng "Fully Finished" badge sa
+    // ibaba, isang pct===100 lang ang ibig sabihin talagang tapos na lahat.
+    const enriched = filtered.map(so=>{
       const totalStagesForSO = so.items.reduce((a,it)=>a+it.route.length,0);
       const doneStagesForSO = so.items.reduce((a,it)=>a + it.route.filter(pid=>it.routeStatus[pid]==='done').length, 0);
       const pct = totalStagesForSO ? Math.round(doneStagesForSO/totalStagesForSO*100) : 0;
       const overdue = so.targetDelivery && pct<100 && new Date(so.targetDelivery) < new Date();
+      const delayDays = overdue ? Math.floor((new Date() - new Date(so.targetDelivery+'T23:59:59')) / 86400000) : 0;
+      const completionDates = so.items.map(itemCompletionDate).filter(Boolean);
+      const completionDate = completionDates.length ? completionDates.sort().slice(-1)[0] : '';
+      return { so, pct, overdue, delayDays, completionDate };
+    });
+    enriched.sort((a,b)=>{
+      const aDone = a.pct===100, bDone = b.pct===100;
+      if(aDone !== bDone) return aDone ? 1 : -1; // fully-finished SOs always sink to the bottom
+      if(!aDone){
+        if(b.delayDays !== a.delayDays) return b.delayDays - a.delayDays; // longest-delayed first
+        const at = a.so.targetDelivery || '9999-12-31', bt = b.so.targetDelivery || '9999-12-31';
+        return at.localeCompare(bt); // among equally (un)delayed, soonest target date first
+      }
+      return (b.completionDate||'').localeCompare(a.completionDate||''); // most-recently-finished first
+    });
+    enriched.forEach(({so, pct, overdue})=>{
       const safeSo = jsAttr(so.soNumber), safeClient = jsAttr(so.client);
       const expandKey = so.soNumber + '||' + so.client;
       const expanded = !!soExpandState[expandKey];
