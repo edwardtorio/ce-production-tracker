@@ -3027,6 +3027,22 @@ function renderOverview(){
     soMap[key].pieces += Number(it.qty||0);
     soMap[key].value += itemAmount(it);
   });
+  // Same ordering fix as Browse Existing SOs (see renderBrowseSo) — the
+  // "Line Items" expand row on the Sales Orders list (soItemsBreakdownHtml)
+  // reads straight from this so.items array, so without this it fell back
+  // to insertion order instead of the sequence the items actually appear
+  // in on the originally attached SO. Items without a soLineNo (added
+  // before this tracking existed) keep sliding in after the ones whose
+  // position IS known, same stable-sort behavior as Browse Existing SOs.
+  Object.values(soMap).forEach(so=>{
+    so.items.sort((a,b)=>{
+      const an = a.soLineNo, bn = b.soLineNo;
+      if(an!==undefined && bn!==undefined) return an-bn;
+      if(an!==undefined) return -1;
+      if(bn!==undefined) return 1;
+      return 0;
+    });
+  });
 
   const archivedMap = {};
   archivedItems().forEach(it=>{
@@ -3713,17 +3729,55 @@ function renderFinishedSection(){
   let filtered = items;
   if(finishedSelected.size>0) filtered = filtered.filter(i=>finishedSelected.has(i.soNumber));
   if(searchTerms.length) filtered = filtered.filter(i=>matchesAnySearchTerm(i, searchTerms));
-  let rows = '<tr><th>SO Number</th><th>Client</th><th>Item</th><th>Qty</th><th>Value</th></tr>';
+  let rows = '<tr><th>SO Number</th><th>Client</th><th>Item</th><th>Qty</th><th>Value</th><th>Actions</th></tr>';
   if(filtered.length===0){
-    rows += `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:16px;">Walang tugma sa search.</td></tr>`;
+    rows += `<tr><td colspan="6" style="color:var(--gray);text-align:center;padding:16px;">Walang tugma sa search.</td></tr>`;
   }else{
     filtered.forEach(it=>{
       rows += `<tr><td class="so-num">${escapeHtml(it.soNumber)}</td><td class="client-name">${escapeHtml(it.client)}</td>
         <td><b>${escapeHtml(it.itemCode)}</b><br><span style="color:var(--gray);font-size:11px;">${escapeHtml(it.description)}</span></td>
-        <td>${it.qty} ${it.unit}</td><td>${fmtPHP(itemAmount(it))}</td></tr>`;
+        <td>${it.qty} ${it.unit}</td><td>${fmtPHP(itemAmount(it))}</td>
+        <td style="white-space:nowrap;"><button class="btn ghost btn-sm" title="Hindi pa talaga tapos — ibalik sa Ongoing" onclick="openRevertFinishedModal('${jsAttr(it.id)}')">↩ Ibalik, hindi pa tapos</button></td></tr>`;
     });
   }
   document.getElementById('finishedTable').innerHTML = rows;
+}
+// Undo an accidental "Tapos/Delivered" tap on an item's LAST route step —
+// e.g. Finish Good/Delivery got clicked Done too soon, but the piece isn't
+// actually finished/shipped yet. Once an item's final step is done it drops
+// out of every active task list (activeStepIds has nothing left to offer),
+// so there is otherwise no pill anywhere left to click back — this is the
+// one place (the Finished Goods list itself) that can send it back.
+function openRevertFinishedModal(itemId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const lastId = item.route[item.route.length-1];
+  if(item.routeStatus[lastId]!=='done'){ showToast('Hindi na ito naka-mark na tapos.'); return; }
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `<h4>Ibalik bilang Hindi Pa Tapos</h4>
+    <p><b>${escapeHtml(item.itemCode)}</b> (${escapeHtml(item.soNumber)} · ${escapeHtml(item.client)}) ay naka-mark na Tapos sa <b>${processLabel(lastId)}</b>. Kung hindi pa talaga ito kumpleto/naihatid, ibabalik itong Ongoing at makikita ulit bilang aktibong task ng may-ari ng ${processLabel(lastId)}.</p>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn" style="background:var(--red);" onclick="confirmRevertFinished('${itemId}')">Oo, ibalik sa Ongoing</button>
+    </div>`;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+async function confirmRevertFinished(itemId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const lastId = item.route[item.route.length-1];
+  if(item.routeStatus[lastId]!=='done'){ closeModal(); return; }
+  ensureTimingFields(item);
+  item.routeStatus[lastId] = 'ongoing';
+  if(item.routeCompletedAt) delete item.routeCompletedAt[lastId];
+  startActiveSegment(item, lastId); // work isn't actually finished — resume the clock
+  item.actualDeliveryDate = ''; // no longer accurate now that it's not really delivered
+  closeModal();
+  renderBoard(); renderOverview();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  renderMyTasks();
+  await saveItem(item);
+  showToast(`${item.itemCode} · ibinalik sa Ongoing — makikita ulit sa task list ng ${processLabel(lastId)}`);
 }
 
 function renderStuckSection(){
