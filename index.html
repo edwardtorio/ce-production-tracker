@@ -1174,6 +1174,22 @@ let MATERIALS = [];
 // { id, soNumber, client, itemId (optional), processId, url, name,
 //   childPart (optional, for bending_flat_pattern), uploadedBy, uploadedAt, notes }
 let DRAWINGS_POOL = [];
+// Self-logged, day-by-day activity entries — for whenever a person has
+// nothing queued/ongoing/assigned to them (see renderPersonActionableTasksHtml)
+// but is still doing real work (housekeeping, helping another line, etc.)
+// that should still count toward their performance. Not tied to any item
+// or process — plain per-person free-text entries with their own
+// queue/ongoing/done cycle, a target-vs-done piece count, and the same
+// timer+pause mechanics as a normal task card (see activityActiveSecondsSoFar).
+// Persisted inside the shared 'meta' table under key 'activityLog' (see
+// persistState/persistMeta/loadInitialState) rather than its own Supabase
+// table, since it's a single small array, same pattern as owners/photos/
+// costRates/periodCosts.
+// { id, person, date (YYYY-MM-DD, the day it was logged for), description,
+//   targetQty, doneQty, status:'queue'|'ongoing'|'done', activeSeconds,
+//   startedAt (Date.now() ms while running, null when not), paused,
+//   createdAt, completedAt }
+let ACTIVITY_LOG = [];
 const DRAWING_PROCESS_MAP = {
   drawing:                        { label:'Fabrication Drawing',        scope:'item',      consumedBy:['welding'] },
   laser_cutting_program:          { label:'Laser Cutting Nesting Layout', scope:'so',       consumedBy:['laser_cutting'] },
@@ -2493,6 +2509,7 @@ async function persistState(){
       {key:'photos', data: TEAM_PHOTOS},
       {key:'costRates', data: PROCESS_COST_RATES},
       {key:'periodCosts', data: PERIOD_COST_ENTRIES},
+      {key:'activityLog', data: ACTIVITY_LOG},
     ];
     const {error: metaError} = await sbClient.from('meta').upsert(metaRows, {onConflict:'key'});
     if(metaError) throw metaError;
@@ -2547,6 +2564,7 @@ async function persistMeta(){
       {key:'photos', data: TEAM_PHOTOS},
       {key:'costRates', data: PROCESS_COST_RATES},
       {key:'periodCosts', data: PERIOD_COST_ENTRIES},
+      {key:'activityLog', data: ACTIVITY_LOG},
     ];
     const {error} = await sbClient.from('meta').upsert(metaRows, {onConflict:'key'});
     if(error) throw error;
@@ -2611,6 +2629,38 @@ async function deleteMaterialLine(id){
   renderMaterialsTab();
   if(typeof sbClient==='undefined' || !sbClient || isReadOnly || capabilityUnavailable) return;
   try{ await sbClient.from('materials_requests').delete().eq('id', id); }catch(e){}
+}
+// Self-logged Activity Log — lives inside the shared 'meta' table (key
+// 'activityLog', see persistState/persistMeta) rather than its own table,
+// so every save just re-uploads the whole ACTIVITY_LOG array alongside the
+// other small meta blobs. Same lightweight wrapper shape as saveMaterialLine.
+async function persistActivityLog(){
+  if(typeof sbClient==='undefined' || !sbClient){ capabilityUnavailable = true; return {ok:false, code:'capability_disabled'}; }
+  try{
+    const {error} = await sbClient.from('meta').upsert([{key:'activityLog', data: ACTIVITY_LOG}], {onConflict:'key'});
+    if(error) throw error;
+    return {ok:true};
+  }catch(e){
+    return {ok:false, code:'upstream_error', message: e && e.message};
+  }
+}
+async function saveActivityLog(){
+  if(isReadOnly || capabilityUnavailable){ return; }
+  updateSyncBadge('saving');
+  let result = await persistActivityLog();
+  if(!result.ok && result.code==='upstream_error'){
+    await sleep(400 + Math.random()*400);
+    result = await persistActivityLog();
+  }
+  if(result.ok){ updateSyncBadge('saved'); return; }
+  if(result.code==='capability_disabled'){
+    capabilityUnavailable = true;
+    updateSyncBadge('unavailable');
+    showToast('Hindi available ang pag-save dito ngayon.');
+    return;
+  }
+  updateSyncBadge('offline');
+  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
 }
 // Engineering drawings pipeline — its own table (drawings_pool), same
 // single-row upsert pattern as persistMaterialLine().
@@ -2775,12 +2825,14 @@ async function loadInitialState(){
     TEAM_PHOTOS = seed.photos && typeof seed.photos==='object' ? seed.photos : JSON.parse(JSON.stringify(DEFAULT_PHOTOS));
     PROCESS_COST_RATES = seed.costRates && typeof seed.costRates==='object' ? seed.costRates : JSON.parse(JSON.stringify(DEFAULT_COST_RATES));
     PERIOD_COST_ENTRIES = Array.isArray(seed.periodCosts) ? seed.periodCosts : [];
+    ACTIVITY_LOG = Array.isArray(seed.activityLog) ? seed.activityLog : [];
   }else{
     ITEMS = itemsRows.map(r=>r.data).filter(Boolean);
     PROCESS_OWNERS = metaByKey.owners && typeof metaByKey.owners==='object' ? metaByKey.owners : JSON.parse(JSON.stringify(DEFAULT_OWNERS));
     TEAM_PHOTOS = metaByKey.photos && typeof metaByKey.photos==='object' ? metaByKey.photos : JSON.parse(JSON.stringify(DEFAULT_PHOTOS));
     PROCESS_COST_RATES = metaByKey.costRates && typeof metaByKey.costRates==='object' ? metaByKey.costRates : JSON.parse(JSON.stringify(DEFAULT_COST_RATES));
     PERIOD_COST_ENTRIES = Array.isArray(metaByKey.periodCosts) ? metaByKey.periodCosts : [];
+    ACTIVITY_LOG = Array.isArray(metaByKey.activityLog) ? metaByKey.activityLog : [];
   }
 
   let changed = firstRun;
@@ -3910,7 +3962,9 @@ function pauseResumeHtml(item, processId){
 }
 // Refreshes just the running-clock text nodes every 30s (no full re-render,
 // no publish) so an active timer visibly ticks forward without needing an
-// action to trigger a redraw.
+// action to trigger a redraw. Also covers Activity Log entries' own clocks
+// (see activityPauseResumeHtml) — same data-attribute pattern, just keyed
+// by activity id instead of item+process.
 setInterval(()=>{
   document.querySelectorAll('[data-clock-item]').forEach(el=>{
     const it = ITEMS.find(i=>i.id===el.dataset.clockItem);
@@ -3918,6 +3972,11 @@ setInterval(()=>{
     const pid = el.dataset.clockProcess;
     if(it.routeStatus[pid]!=='ongoing' || (it.routePaused&&it.routePaused[pid])) return;
     el.textContent = '🕐 ' + formatHoursMinutes(activeSecondsSoFar(it, pid));
+  });
+  document.querySelectorAll('[data-clock-activity]').forEach(el=>{
+    const a = ACTIVITY_LOG.find(x=>x.id===el.dataset.clockActivity);
+    if(!a || a.status!=='ongoing' || a.paused) return;
+    el.textContent = '🕐 ' + formatHoursMinutes(activityActiveSecondsSoFar(a));
   });
 }, 30000);
 
@@ -4725,6 +4784,10 @@ function openAssignModal(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
   const owners = ownersFor(processId);
+  // Splitting the piece count across several people only makes sense with
+  // more than 1 piece AND more than 1 possible owner to split it among —
+  // see openSplitAssignModal.
+  const canSplit = owners.length>1 && Number(item.qty)>1;
   const box = document.getElementById('modalBox');
   box.innerHTML = `
     <h4>Sino ang gagawa nito?</h4>
@@ -4732,9 +4795,106 @@ function openAssignModal(itemId, processId){
     <div style="display:flex;flex-direction:column;gap:8px;">
       ${owners.map(name=>`<button class="btn secondary" style="justify-content:flex-start;" onclick="assignStep('${itemId}','${processId}','${jsAttr(name)}')">${avatarHtml(name,22)} &nbsp;${ownerDisplayLabel(processId,name)}</button>`).join('')}
     </div>
+    ${canSplit ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);">
+      <button class="btn secondary btn-sm" onclick="openSplitAssignModal('${itemId}','${processId}')">🔀 Hatiin sa Ilang Tao (${item.qty} ${escapeHtml(item.unit)})</button>
+    </div>` : ''}
     <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancel</button></div>
   `;
   document.getElementById('modalOverlay').classList.add('show');
+}
+// Splits one multi-owner task's piece count across several people at once —
+// e.g. a 10-pc welding job: 2 pcs to Welder 1, 4 to Welder 2, 3 to Welder 3,
+// 1 to Welder 4 — instead of forcing the whole quantity onto a single
+// assignee. Each allocation becomes its own line item (same pattern as
+// confirmPartial's split-off clone), sharing the same lineageId so they're
+// flagged as split pieces of the same original job (see isPartOfSplit).
+function openSplitAssignModal(itemId, processId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const owners = ownersFor(processId);
+  const totalQty = Number(item.qty)||0;
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `
+    <h4>Hatiin ang Trabaho sa Ilang Tao</h4>
+    <p><b>${escapeHtml(item.itemCode)}</b> — ${processLabel(processId)}. Kabuuang dami: <b>${totalQty} ${escapeHtml(item.unit)}</b>. Ilagay kung ilang piraso ang ibibigay sa bawat tao — dapat magkatumbas ng eksakto sa ${totalQty} ang kabuuan.</p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      ${owners.map((name,i)=>`
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${avatarHtml(name,22)}
+          <span style="flex:1 1 auto;">${ownerDisplayLabel(processId,name)}</span>
+          <input type="number" min="0" max="${totalQty}" value="0" id="splitQty-${i}" style="width:80px;">
+        </div>`).join('')}
+    </div>
+    <div class="hint" id="splitAssignTotalHint" style="margin-top:8px;"></div>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn" onclick="confirmSplitAssign('${itemId}','${processId}')">I-confirm ang Hati</button>
+    </div>
+  `;
+  document.getElementById('modalOverlay').classList.add('show');
+  const inputs = owners.map((name,i)=>document.getElementById(`splitQty-${i}`));
+  function refreshSplitAssignTotal(){
+    const sum = inputs.reduce((a,el)=>a+(Math.max(0,Math.floor(Number(el.value)||0))),0);
+    const hint = document.getElementById('splitAssignTotalHint');
+    if(!hint) return;
+    hint.innerHTML = `Kabuuan: <b style="${sum===totalQty?'color:var(--green);':'color:var(--red);'}">${sum}</b> / ${totalQty} ${escapeHtml(item.unit)}`;
+  }
+  inputs.forEach(el=>{ if(el) el.addEventListener('input', refreshSplitAssignTotal); });
+  refreshSplitAssignTotal();
+}
+async function confirmSplitAssign(itemId, processId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const owners = ownersFor(processId);
+  const totalQty = Number(item.qty)||0;
+  const allocations = owners.map((name,i)=>{
+    const el = document.getElementById(`splitQty-${i}`);
+    return { name, qty: Math.max(0, Math.floor(Number(el && el.value)||0)) };
+  }).filter(a=>a.qty>0);
+  if(allocations.length===0){ showToast('Maglagay ng dami para sa kahit isang tao.'); return; }
+  const sum = allocations.reduce((a,x)=>a+x.qty,0);
+  if(sum!==totalQty){ showToast(`Ang kabuuan (${sum}) ay dapat eksaktong ${totalQty} ${item.unit}.`); return; }
+  if(allocations.length===1){
+    // Only one person actually got any quantity — no real split needed,
+    // same result as just picking them normally in openAssignModal.
+    closeModal();
+    await assignStep(itemId, processId, allocations[0].name);
+    return;
+  }
+  ensureTimingFields(item);
+  if(item.routeStatus[processId]==='ongoing') finalizeActiveSegment(item, processId); // bank any running time before duplicating state
+  if(!item.lineageId) item.lineageId = item.id;
+  if(item.originalQty===undefined) item.originalQty = totalQty;
+  // Same proportional-rescale as confirmPartial's own rescaleParts — each
+  // split-off piece only needs parts for ITS quantity, not the full
+  // original count.
+  function rescaleParts(list, newMainQty){
+    if(!list || !list.length) return list;
+    return list.map(s=>({
+      name:s.name, qtyPerUnit:s.qtyPerUnit, totalQty: s.qtyPerUnit * newMainQty,
+      childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit * newMainQty }))
+    }));
+  }
+  const newItems = [];
+  allocations.forEach((alloc, idx)=>{
+    // The FIRST allocation reuses the original item's own id/row — every
+    // other allocation gets its own brand-new cloned line item, same
+    // approach as confirmPartial's clone-off-the-original pattern.
+    const target = idx===0 ? item : JSON.parse(JSON.stringify(item));
+    if(idx!==0){ target.id = uid(); newItems.push(target); }
+    target.qty = alloc.qty;
+    if(!target.stepAssignee) target.stepAssignee = {};
+    target.stepAssignee[processId] = alloc.name;
+    target.partsList = rescaleParts(target.partsList, alloc.qty);
+    target.splitNote = `Hinati sa ${allocations.length} tao mula sa ${totalQty} ${item.unit} — ${alloc.qty} ${item.unit} na dito kay ${alloc.name}.`;
+  });
+  ITEMS.push(...newItems);
+  closeModal();
+  renderBoard(); renderOverview();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
+  await save();
+  showToast(`${item.itemCode} · ${processLabel(processId)} hinati sa ${allocations.length} tao: ${allocations.map(a=>`${a.name} (${a.qty})`).join(', ')}`);
 }
 async function assignStep(itemId, processId, name){
   const item = ITEMS.find(i=>i.id===itemId);
@@ -5350,6 +5510,169 @@ function renderTeam(){
 // beyond that one person's own device/session.
 function selectPersonOverall(name){ selectedProcess = null; openScorecardProfile(name); }
 function selectPerson(p, processId){ selectedProcess = processId; openScorecardProfile(p); }
+/* ---------- Activity Log (self-logged tasks when nothing is queued) ---------- */
+// Total banked+running seconds so far for one activity entry — same idea as
+// activeSecondsSoFar(item, processId), just flat fields instead of nested
+// by processId since an activity entry isn't tied to any item/process.
+function activityActiveSecondsSoFar(a){
+  let secs = a.activeSeconds || 0;
+  if(a.startedAt) secs += Math.max(0, (Date.now() - a.startedAt)) / 1000;
+  return secs;
+}
+function todayActivityLogFor(name){
+  const today = todayDateStr();
+  return ACTIVITY_LOG.filter(a=>a.person===name && a.date===today);
+}
+// Same pause/resume + running-clock widget as pauseResumeHtml(item,
+// processId), keyed by activity id via data-clock-activity instead of
+// data-clock-item/data-clock-process — see the shared setInterval refresher.
+function activityPauseResumeHtml(a){
+  if(a.status!=='ongoing') return '';
+  const secs = activityActiveSecondsSoFar(a);
+  if(a.paused){
+    return `<span class="hint" style="color:var(--gray);">⏸ Naka-pause · ${formatHoursMinutes(secs)}</span>
+      <button class="irc-edit" style="color:var(--accent-teal-dk);" title="Ipagpatuloy" onclick="resumeActivityLog('${a.id}')">▶ Ipagpatuloy</button>`;
+  }
+  return `<span class="hint clock-running" style="color:var(--accent-teal-dk);font-weight:700;" data-clock-activity="${a.id}">🕐 ${formatHoursMinutes(secs)}</span>
+    <button class="irc-edit" title="I-pause" onclick="pauseActivityLog('${a.id}')">⏸ I-pause</button>`;
+}
+async function addActivityLogEntry(name, description, targetQty){
+  const desc = (description||'').trim();
+  if(!desc){ showToast('Maglagay muna ng gagawin bago mag-idagdag.'); return; }
+  const entry = {
+    id: 'act_' + Date.now() + '_' + Math.random().toString(36).slice(2,8),
+    person: name,
+    date: todayDateStr(),
+    description: desc,
+    targetQty: Math.max(0, Number(targetQty)||0),
+    doneQty: 0,
+    status: 'queue',
+    activeSeconds: 0,
+    startedAt: null,
+    paused: false,
+    createdAt: new Date().toISOString(),
+    completedAt: null,
+  };
+  ACTIVITY_LOG.push(entry);
+  renderMyTasks();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  await saveActivityLog();
+  showToast(`Naidagdag sa Activity Log: "${desc}"`);
+}
+async function cycleActivityStatus(activityId){
+  const a = ACTIVITY_LOG.find(x=>x.id===activityId);
+  if(!a) return;
+  const newStatus = nextStatus(a.status);
+  if(newStatus==='ongoing'){
+    a.startedAt = Date.now();
+    a.paused = false;
+  }else{
+    // Leaving "ongoing" (into 'done', or wrapping back to 'queue') — bank
+    // whatever segment was running, same as finalizeActiveSegment(item, pid).
+    if(a.startedAt){ a.activeSeconds = (a.activeSeconds||0) + Math.max(0,(Date.now()-a.startedAt))/1000; a.startedAt = null; }
+    a.paused = false;
+    a.completedAt = newStatus==='done' ? new Date().toISOString() : null;
+  }
+  a.status = newStatus;
+  renderMyTasks();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  await saveActivityLog();
+}
+async function pauseActivityLog(activityId){
+  const a = ACTIVITY_LOG.find(x=>x.id===activityId);
+  if(!a || a.status!=='ongoing' || !a.startedAt) return;
+  a.activeSeconds = (a.activeSeconds||0) + Math.max(0,(Date.now()-a.startedAt))/1000;
+  a.startedAt = null;
+  a.paused = true;
+  renderMyTasks();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  await saveActivityLog();
+}
+async function resumeActivityLog(activityId){
+  const a = ACTIVITY_LOG.find(x=>x.id===activityId);
+  if(!a || a.status!=='ongoing' || !a.paused) return;
+  a.startedAt = Date.now();
+  a.paused = false;
+  renderMyTasks();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  await saveActivityLog();
+}
+async function updateActivityQty(activityId, field, value){
+  const a = ACTIVITY_LOG.find(x=>x.id===activityId);
+  if(!a) return;
+  const num = Math.max(0, Number(value)||0);
+  if(field==='target') a.targetQty = num; else if(field==='done') a.doneQty = num;
+  renderMyTasks();
+  await saveActivityLog();
+}
+async function removeActivityLogEntry(activityId){
+  ACTIVITY_LOG = ACTIVITY_LOG.filter(a=>a.id!==activityId);
+  renderMyTasks();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  await saveActivityLog();
+}
+// The "add today's activity" mini-form plus this person's list of entries
+// logged for TODAY — shown in place of the plain empty state whenever they
+// have nothing queued/ongoing/assigned (see renderPersonActionableTasksHtml),
+// so there's always somewhere to log real work that isn't tied to a
+// specific SO/item/process.
+function activityLogSectionHtml(name){
+  const safeName = jsAttr(name);
+  const entries = todayActivityLogFor(name).sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
+  const rows = entries.map(a=>`
+      <div class="task-card">
+        <div class="tinfo">
+          <div class="stagelbl">📝 Sariling Activity — ${escapeHtml(formatDateLong(a.date))}</div>
+          <div class="desc">${escapeHtml(a.description)}</div>
+          <div style="display:flex;gap:10px;align-items:flex-end;margin-top:6px;flex-wrap:wrap;">
+            <div class="field" style="margin:0;"><label style="font-size:10px;">Target pcs</label><input type="number" min="0" value="${a.targetQty}" style="width:70px;font-size:12px;padding:2px 5px;" onchange="updateActivityQty('${a.id}','target',this.value)"></div>
+            <div class="field" style="margin:0;"><label style="font-size:10px;">Nagawang pcs</label><input type="number" min="0" value="${a.doneQty}" style="width:70px;font-size:12px;padding:2px 5px;" onchange="updateActivityQty('${a.id}','done',this.value)"></div>
+            <button class="irc-edit" style="color:var(--red);" title="Alisin ang activity na ito" onclick="removeActivityLogEntry('${a.id}')">🗑 Alisin</button>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
+          <div class="pill ${a.status}" onclick="cycleActivityStatus('${a.id}');">${a.status}</div>
+          <div style="display:flex;align-items:center;gap:6px;">${activityPauseResumeHtml(a)}</div>
+        </div>
+      </div>`).join('');
+  const formHtml = `
+      <div class="task-card" style="border-style:dashed;">
+        <div class="tinfo" style="width:100%;">
+          <div class="stagelbl" style="margin-bottom:6px;">📝 Magdagdag ng Activity Ngayong Araw (${escapeHtml(formatDateLong(todayDateStr()))})</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+            <div class="field" style="flex:1 1 220px;margin:0;"><label>Gagawin</label><input type="text" id="newActivityDesc-${safeName}" placeholder="Halimbawa: Pag-aayos ng stock room"></div>
+            <div class="field" style="width:110px;margin:0;"><label>Target pcs</label><input type="number" id="newActivityTarget-${safeName}" min="0" placeholder="0"></div>
+            <button class="btn btn-sm" onclick="addActivityLogEntry('${safeName}', document.getElementById('newActivityDesc-${safeName}').value, document.getElementById('newActivityTarget-${safeName}').value); document.getElementById('newActivityDesc-${safeName}').value=''; document.getElementById('newActivityTarget-${safeName}').value='';">+ Idagdag</button>
+          </div>
+        </div>
+      </div>`;
+  return `<div class="empty-state"><div class="big">✅</div>Nothing waiting for you right now.</div>${rows}${formHtml}`;
+}
+// All-time list of this person's Activity Log entries (not just today's),
+// shown on their scorecard profile so self-logged work counts toward their
+// performance the same way regular task completions do (see
+// renderScorecardProfile) — "isama ito as task nila para sa performance".
+function personActivityLogPerformanceHtml(name){
+  const entries = ACTIVITY_LOG.filter(a=>a.person===name).sort((a,b)=> b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  if(entries.length===0) return '';
+  const totalTarget = entries.reduce((a,e)=>a+(Number(e.targetQty)||0),0);
+  const totalDone = entries.reduce((a,e)=>a+(Number(e.doneQty)||0),0);
+  const doneCount = entries.filter(e=>e.status==='done').length;
+  const rows = entries.map(a=>`<tr>
+      <td>${formatDateLong(a.date)}</td>
+      <td>${escapeHtml(a.description)}</td>
+      <td>${a.targetQty}</td>
+      <td>${a.doneQty}</td>
+      <td><span class="pill ${a.status}" style="cursor:default;">${a.status}</span></td>
+    </tr>`).join('');
+  return `<div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Sariling Activity Log — Performance</div>
+    <div class="hint" style="margin-bottom:6px;">${entries.length} activity log ${entries.length===1?'entry':'entries'} · ${doneCount} tapos · ${totalDone.toLocaleString()} / ${totalTarget.toLocaleString()} pcs nagawa</div>
+    <div class="mini-table-wrap"><table class="mini-table">
+      <tr><th>Petsa</th><th>Activity</th><th>Target pcs</th><th>Nagawang pcs</th><th>Status</th></tr>
+      ${rows}
+    </table></div>`;
+}
+
 // Builds the actionable task-card list (with the status pill, return/partial
 // buttons, drawings, parts list, catch-up date, etc.) for one person — used
 // inside their profile popup (see renderScorecardProfile).
@@ -5397,7 +5720,7 @@ function renderPersonActionableTasksHtml(name){
     `).join('');
   }
   if(tasks.length===0 && needsAssign.length===0){
-    html += `<div class="empty-state"><div class="big">✅</div>Nothing waiting for you right now.</div>`;
+    html += activityLogSectionHtml(name);
   }else{
   html += tasks.map((t, taskIdx)=>{
     const curIdx = t.item.route.indexOf(t.processId);
@@ -6166,6 +6489,7 @@ function renderScorecardProfile(name){
     <div class="score-task-label" style="margin-bottom:6px;">Performance per Process — ${escapeHtml(perfPeriodLabel)}</div>
     ${periodDropdowns}
     ${taskRows}
+    ${personActivityLogPerformanceHtml(name)}
     <div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Mga Task — Target vs. Actual na Natapos — ${escapeHtml(perfPeriodLabel)}</div>
     <div class="mini-table-wrap"><table class="mini-table" style="min-width:560px;">
       <tr><th>Item</th><th>Quantity</th><th>Target Date</th><th>Actual na Natapos</th><th>Duration</th></tr>
@@ -8385,7 +8709,9 @@ function handleRemoteMetaChange(payload){
   else if(row.key==='photos') TEAM_PHOTOS = row.data;
   else if(row.key==='costRates') PROCESS_COST_RATES = row.data;
   else if(row.key==='periodCosts') PERIOD_COST_ENTRIES = row.data;
+  else if(row.key==='activityLog') ACTIVITY_LOG = Array.isArray(row.data) ? row.data : [];
   rerenderCurrentView();
+  renderMyTasks(); // keeps an open "Mga Tasks ni X" popup's Activity Log section in sync across viewers
 }
 function handleRemoteMaterialChange(payload){
   if(payload.eventType==='DELETE'){
