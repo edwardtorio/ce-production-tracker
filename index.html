@@ -1091,6 +1091,22 @@ const SEED_ITEMS = [
 ];
 const SEED_ROUTE = ['laser_cutting','burring','bending','welding','finishing','powder_coating','final_inspection','packaging','finish_goods'];
 
+// Fixed QC inspection checklist shown on every Final Inspection task card —
+// every point must be ticked before that item can be marked Done at Final
+// Inspection (see inspectionChecklistMissing/cycleStep). Same list for every
+// item; not per-item configurable, per the request that this just be a
+// standard checklist of what the inspector needs to check.
+const FINAL_INSPECTION_CHECKLIST = [
+  {key:'qty_count',     label:'Tamang bilang ng piraso (quantity/count) ayon sa order'},
+  {key:'dimensions',    label:'Sukat/dimensions tugma sa drawing'},
+  {key:'weld_joints',   label:'Walang depekto sa weld/joints (crack, porosity, undercut)'},
+  {key:'assembly',      label:'Tamang pagkakabuo ng Sub Assy/Child Part (kumpleto at wastong kabit)'},
+  {key:'finish_coating',label:'Kalidad ng finish/paint/powder coating (walang peeling, uneven, o kupas)'},
+  {key:'hardware',      label:'Kumpleto ang hardware (baut, turnilyo, bracket, atbp.)'},
+  {key:'marking',       label:'Tamang marking/labeling ng item'},
+  {key:'packaging_safe',label:'Ligtas at maayos ang packaging para sa delivery'},
+];
+
 // Parts breakdown read directly off the actual "MA Rack" engineering drawings
 // (Bill of Materials table on each drawing) — confirmed identical across the
 // 63", 55", and 31" variants: 4x Post Assy + 4x Shelf per unit (these are the
@@ -2281,6 +2297,57 @@ function openPartsCountMissingAlert(item, processId, check, claimedQty){
     <p>Hindi pa pwedeng i-mark na Tapos/Partial ang <b>${escapeHtml(item.itemCode)}</b> sa <b>${escapeHtml(processLabel(processId))}</b>:</p>
     ${missingHtml}${insufficientHtml}${supportNote}
     <p class="hint">Buksan ang "🧩 Parts List" sa task card na ito at ilagay ang tamang bilang ng nagawang Sub Assy/Child Part bago mag-Tapos o Partial.</p>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+// Final Inspection QC checklist — every item passing through Final
+// Inspection gets the same fixed FINAL_INSPECTION_CHECKLIST points, each
+// tickable independently. Blocks that item from being marked Done at Final
+// Inspection until every point is checked — see the cycleStep gate below.
+function inspectionChecklistMissing(item){
+  const checked = item.inspectionChecklist || {};
+  return FINAL_INSPECTION_CHECKLIST.filter(c=>!checked[c.key]);
+}
+function inspectionChecklistHtml(item, processId){
+  if(processId!=='final_inspection') return '';
+  const checked = item.inspectionChecklist || {};
+  const rows = FINAL_INSPECTION_CHECKLIST.map(c=>{
+    const isChecked = !!checked[c.key];
+    return `<label style="display:flex;align-items:flex-start;gap:6px;font-size:12px;padding:3px 0;cursor:pointer;${isChecked?'color:var(--green);':''}">
+      <input type="checkbox" style="margin-top:2px;" ${isChecked?'checked':''} onchange="toggleInspectionChecklistItem('${item.id}','${c.key}')">
+      <span>${isChecked?'✅ ':''}${escapeHtml(c.label)}</span>
+    </label>`;
+  }).join('');
+  const missingCount = inspectionChecklistMissing(item).length;
+  const statusNote = missingCount
+    ? `<div class="hint" style="color:var(--red);font-weight:700;margin-top:2px;">⚠️ ${missingCount} item pa ang kulang bago pwede i-mark na Tapos</div>`
+    : `<div class="hint" style="color:var(--green);font-weight:700;margin-top:2px;">✅ Kumpleto na ang inspection checklist</div>`;
+  return `<div style="margin-top:6px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;background:var(--bg2,#f8f8f8);">
+    <div style="font-weight:800;font-size:12px;margin-bottom:2px;">🔍 Inspection Checklist</div>
+    ${rows}
+    ${statusNote}
+  </div>`;
+}
+async function toggleInspectionChecklistItem(itemId, key){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  if(!item.inspectionChecklist) item.inspectionChecklist = {};
+  item.inspectionChecklist[key] = !item.inspectionChecklist[key];
+  item.updatedAt = new Date().toISOString();
+  rerenderCurrentView();
+  renderMyTasks();
+  await save();
+}
+// The blocking alert shown when cycleStep() refuses to mark Final
+// Inspection done while checklist points are still unticked — same
+// treatment as openDrawingMissingAlert/openPartsCountMissingAlert.
+function openInspectionChecklistMissingAlert(item, missing){
+  const listHtml = missing.map(c=>`<li>${escapeHtml(c.label)}</li>`).join('');
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `<h4>⚠️ Kulang pa ang Inspection Checklist</h4>
+    <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>Final Inspection</b> ng <b>${escapeHtml(item.itemCode)}</b> — kulang pa ang mga sumusunod:</p>
+    <ul style="margin:8px 0;padding-left:22px;font-weight:700;">${listHtml}</ul>
+    <p class="hint">Buksan ang "🔍 Inspection Checklist" sa task card na ito at tsekan ang bawat item bago i-mark na Tapos.</p>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
   document.getElementById('modalOverlay').classList.add('show');
 }
@@ -4587,6 +4654,16 @@ async function cycleStep(itemId, processId){
       return;
     }
   }
+  // Final Inspection can't be marked Done until every point on its fixed QC
+  // checklist has been ticked — see FINAL_INSPECTION_CHECKLIST/
+  // inspectionChecklistMissing/openInspectionChecklistMissingAlert.
+  if(newStatus==='done' && processId==='final_inspection'){
+    const missingChecklist = inspectionChecklistMissing(item);
+    if(missingChecklist.length){
+      openInspectionChecklistMissingAlert(item, missingChecklist);
+      return;
+    }
+  }
   // NOTE: previously this blocked the FINAL step of the route from completing
   // until all split-off siblings of this line item collectively reached it.
   // Per updated instructions, a partial/split-off piece must be free to
@@ -5761,6 +5838,7 @@ function renderPersonActionableTasksHtml(name){
     const allDrawingsHtml = attachedDrawingsSummaryHtml(t.item);
     const partsListHtml = partsListTableHtml(t.item, t.processId);
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
+    const inspectionChecklistWidgetHtml = inspectionChecklistHtml(t.item, t.processId);
     const origTarget = t.item.routeTargetDates[t.processId];
     // Numbered catch-up schedule (1st/2nd/3rd, then critical) for THIS task's
     // current step — see advanceCatchUpSchedules() for the full rationale.
@@ -5818,6 +5896,7 @@ function renderPersonActionableTasksHtml(name){
         ${allDrawingsHtml}
         ${partsListHtml}
         ${rawPartsHtml}
+        ${inspectionChecklistWidgetHtml}
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
         <div class="task-process-badge">${processLabel(t.processId)}</div>
