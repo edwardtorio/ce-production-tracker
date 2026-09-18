@@ -2903,6 +2903,14 @@ async function loadInitialState(){
   }
 
   let changed = firstRun;
+  // Snapshot every item exactly as it came off Supabase, BEFORE any of the
+  // self-heal/migration/catch-up-schedule fixes below touch it — see the
+  // write-back at the end of this function for why: on anything but a
+  // brand-new database, only the items this load actually changes get
+  // written back, never the whole ITEMS array, so this load never clobbers
+  // an edit another viewer saves to some OTHER, untouched item while this
+  // load is in flight.
+  const beforeItemSnapshots = firstRun ? null : new Map(ITEMS.map(it=>[it.id, JSON.stringify(it)]));
   ITEMS.forEach(it=>{
     if(!it.route){ migrateLegacyItem(it); changed = true; }
     if(it.dateUploaded===undefined){ it.dateUploaded = it.dateAdded || ''; changed = true; }
@@ -2971,22 +2979,50 @@ async function loadInitialState(){
   if(backfillCatchUpHistory(ITEMS)) changed = true;
   if(advanceCatchUpSchedules(ITEMS)) changed = true;
   // Merge in any processes that didn't exist yet when owners were last saved.
+  let metaChanged = false;
   PROCESS_LIST.forEach(p=>{
     if(PROCESS_OWNERS[p.id]===undefined){
       PROCESS_OWNERS[p.id] = DEFAULT_OWNERS[p.id] ? DEFAULT_OWNERS[p.id].slice() : [];
-      changed = true;
+      changed = true; metaChanged = true;
     }
     if(PROCESS_COST_RATES[p.id]===undefined){
       PROCESS_COST_RATES[p.id] = {manpowerPerHour:0, electricityPerHour:0};
-      changed = true;
+      changed = true; metaChanged = true;
     }
   });
   Object.keys(DEFAULT_PHOTOS).forEach(name=>{
-    if(TEAM_PHOTOS[name]===undefined){ TEAM_PHOTOS[name] = DEFAULT_PHOTOS[name]; changed = true; }
+    if(TEAM_PHOTOS[name]===undefined){ TEAM_PHOTOS[name] = DEFAULT_PHOTOS[name]; changed = true; metaChanged = true; }
   });
-  // First-ever load of a brand-new database (seeding it) or a migration that
-  // touched the loaded data — write it back so every viewer shares it.
-  if(changed && !capabilityUnavailable){ await persistState(); }
+  // First-ever load of a brand-new database (seeding it) writes everything in
+  // one shot via persistState() — there is no one else to race against yet.
+  //
+  // On every SUBSEQUENT load, though, persistState() must NEVER be used here:
+  // it upserts this browser's entire (possibly seconds-stale) ITEMS snapshot
+  // back to Supabase, so if anyone else saved an edit to some OTHER item
+  // in between this load's read and this write, that edit gets silently
+  // overwritten back to the stale value this load happened to read — items
+  // "bumabalik" (revert) after someone else's refresh, and which ones get
+  // clobbered depends purely on timing (this was a real bug: any refresh
+  // that needed even one item's catch-up schedule advanced re-saved EVERY
+  // item, including ones with nothing to do with catch-up schedules).
+  // Instead, persist only the specific items this load's self-heal/
+  // migration/catch-up logic actually mutated, one row at a time — exactly
+  // like a normal single-item save — plus the meta rows only when a meta
+  // default was actually filled in just now.
+  if(!capabilityUnavailable){
+    if(firstRun){
+      await persistState();
+    }else{
+      if(beforeItemSnapshots){
+        const touchedIds = ITEMS.filter(it=>JSON.stringify(it)!==beforeItemSnapshots.get(it.id)).map(it=>it.id);
+        for(const id of touchedIds){
+          const it = ITEMS.find(i=>i.id===id);
+          if(it) await persistItem(it);
+        }
+      }
+      if(metaChanged) await persistMeta();
+    }
+  }
   return changed;
 }
 function showToast(msg){
