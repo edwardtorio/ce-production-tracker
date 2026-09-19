@@ -6531,7 +6531,7 @@ function renderScorecardProfile(name){
   </div>`;
 
   const personTasks = getPersonTaskRows(name, granularity, profilePeriodState.dateFilter).filter(r=>r.done);
-  const taskListRows = personTasks.length ? personTasks.map(r=>{
+  const taskListRowsHtml = personTasks.map(r=>{
     let durationCell = '<span style="color:var(--gray);">—</span>';
     if(r.target && r.actualAt){
       const diffMs = new Date(r.target+'T23:59:59') - new Date(r.actualAt);
@@ -6551,7 +6551,39 @@ function renderScorecardProfile(name){
       <td>${r.actual ? formatDateLong(r.actual) : '—'}</td>
       <td>${durationCell}</td>
     </tr>`;
-  }).join('') : `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:14px;">Wala pang natapos na task.</td></tr>`;
+  });
+  // Finished Sariling Activity Log entries belong in this same Target vs.
+  // Actual history — once someone marks one Done, it needs to show up right
+  // here alongside their real SO task completions (per the request), but it
+  // must NEVER create or touch a Sales Order/item: this only reads straight
+  // off ACTIVITY_LOG and renders it, nothing is added to ITEMS/SO tracking.
+  const personActivityDoneRows = ACTIVITY_LOG.filter(a=>{
+    if(a.person!==name || a.status!=='done') return false;
+    if(profilePeriodState.dateFilter){
+      const dateForPeriod = a.completedAt ? a.completedAt.slice(0,10) : a.date;
+      if(!dateForPeriod || periodKey(dateForPeriod, granularity)!==profilePeriodState.dateFilter) return false;
+    }
+    return true;
+  });
+  const activityListRowsHtml = personActivityDoneRows.map(a=>{
+    const completedDate = a.completedAt ? a.completedAt.slice(0,10) : '';
+    const spentSecs = Number(a.activeSeconds)||0;
+    const hrs = Math.floor(spentSecs/3600), mins = Math.floor((spentSecs%3600)/60);
+    const durationCell = `<span style="color:var(--gray);">Oras ginugol: ${hrs}h ${mins}m</span>`;
+    return `<tr>
+      <td>
+        <div style="font-weight:700;">📝 ${escapeHtml(a.description||'(walang detalye)')}</div>
+        <div class="hint">Sariling Activity — hindi bahagi ng SO</div>
+      </td>
+      <td>${escapeHtml(String(a.doneQty!=null?a.doneQty:0))} / ${escapeHtml(String(a.targetQty!=null?a.targetQty:0))} pc</td>
+      <td>${a.date?formatDateLong(a.date):'—'}</td>
+      <td>${completedDate?formatDateLong(completedDate):'—'}</td>
+      <td>${durationCell}</td>
+    </tr>`;
+  });
+  const taskListRows = (taskListRowsHtml.length || activityListRowsHtml.length)
+    ? taskListRowsHtml.join('') + activityListRowsHtml.join('')
+    : `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:14px;">Wala pang natapos na task.</td></tr>`;
 
   const taskRows = sc.tasks.map(t=>{
     const pct = t.assigned ? Math.round(t.completed/t.assigned*100) : 0;
