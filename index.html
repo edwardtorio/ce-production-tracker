@@ -8046,7 +8046,20 @@ async function handlePdfUpload(file){
     if(document.querySelectorAll('#itemRows .item-row-wrap').length===0) addItemRow();
   }
 }
-document.getElementById('pdfUpload').addEventListener('change', (e)=>{ const file = e.target.files[0]; if(file) handlePdfUpload(file); });
+document.getElementById('pdfUpload').addEventListener('change', (e)=>{
+  const file = e.target.files[0];
+  // Clear the input's value right away, BEFORE handlePdfUpload runs. Some
+  // browsers never fire another 'change' event if the exact same file
+  // (same name/path) is selected again — the FileList "looks" unchanged to
+  // them — so re-uploading a PDF with the same filename (very common: SO
+  // exports/downloads often keep the same name) silently did nothing on the
+  // 2nd+ try, leaving the dropzone stuck showing the PREVIOUS upload's
+  // success state. That looked like the page had "hung", but it was really
+  // just never re-triggered. Resetting .value here forces the browser to
+  // treat the next pick of that same file as a fresh selection.
+  e.target.value = '';
+  if(file) handlePdfUpload(file);
+});
 /* ---------- Google Drive picker (alternative to local file upload) ----------
    Lets the SO PDF be picked directly from the user's Google Drive (including
    shared drives) instead of having to download it to the computer first. Once
@@ -8971,6 +8984,15 @@ async function submitSO(){
     checkSoNumberDuplicate();
     itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; rowCurrency = {}; rowFxInfo = {}; DRAFT_ROWS = {}; saveDraftsLocal();
     currentSoPdf = null;
+    // Reset the dropzone back to its empty/ready look too — otherwise it
+    // kept showing "<filename> uploaded" from the SO that was just added,
+    // even though the form underneath it had already been cleared for the
+    // next one, which made the screen look stuck/confusing on a 2nd upload.
+    const dzAfterSubmit = document.getElementById('dropzone'), dzTextAfterSubmit = document.getElementById('dzText');
+    if(dzAfterSubmit) dzAfterSubmit.className = 'dropzone';
+    if(dzTextAfterSubmit) dzTextAfterSubmit.innerHTML = `<b>Click to upload</b> the SO PDF — SO Number, Client, and items will be filled in automatically below.`;
+    document.getElementById('uploadStatus').textContent = '';
+    document.getElementById('autofillNote').style.display = 'none';
     addItemRow();
     renderBoard(); renderOverview(); renderBrowseSo();
     document.querySelector('.tab[data-view="board"]').click();
