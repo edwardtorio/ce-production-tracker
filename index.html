@@ -2322,24 +2322,33 @@ function inspectionChecklistMissing(item){
 function inspectionChecklistHtml(item, processId){
   if(processId!=='final_inspection') return '';
   const checked = item.inspectionChecklist || {};
+  // Every row shares the SAME two-column grid (content on the left, one
+  // fixed-width action/status column on the right) regardless of state —
+  // this is what keeps the "Hindi Applicable" button/badge lined up in
+  // exactly the same spot on every row, instead of drifting beside or below
+  // the label depending on how long that particular point's text happens to
+  // wrap (that drift was the actual bug being reported: it looked "maalat"
+  // because the button had no fixed home).
+  const rowGrid = 'display:grid;grid-template-columns:1fr 132px;align-items:start;column-gap:8px;font-size:12px;padding:5px 0;border-bottom:1px solid var(--line);';
   const rows = FINAL_INSPECTION_CHECKLIST.map(c=>{
     const v = checked[c.key];
     const isNA = !!(v && typeof v==='object' && v.na);
     const isChecked = v===true;
     if(isNA){
-      return `<div style="padding:3px 0;font-size:12px;color:var(--gray);">
-        <div>🚫 <s>${escapeHtml(c.label)}</s> — <b>Hindi Applicable</b></div>
-        <div class="hint" style="margin-left:16px;">Dahilan: ${escapeHtml(v.reason)}</div>
-        <button type="button" class="irc-edit" style="margin-left:16px;" onclick="clearInspectionChecklistNA('${item.id}','${c.key}')">↩ Kailangan pala / Ibalik</button>
+      const left = `<div style="color:var(--gray);">
+        <div>🚫 <s>${escapeHtml(c.label)}</s></div>
+        <div class="hint" style="margin-top:2px;">Dahilan: ${escapeHtml(v.reason)}</div>
+        <button type="button" class="irc-edit" style="margin-top:2px;" onclick="clearInspectionChecklistNA('${item.id}','${c.key}')">↩ Kailangan pala / Ibalik</button>
       </div>`;
+      const right = `<span style="display:inline-block;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px;background:var(--gray-bg);color:var(--gray);white-space:nowrap;">🚫 N/A</span>`;
+      return `<div style="${rowGrid}">${left}<div style="text-align:right;">${right}</div></div>`;
     }
-    return `<div style="display:flex;align-items:flex-start;gap:6px;font-size:12px;padding:3px 0;flex-wrap:wrap;">
-      <label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;flex:1 1 auto;min-width:200px;${isChecked?'color:var(--green);':''}">
-        <input type="checkbox" style="margin-top:2px;" ${isChecked?'checked':''} onchange="toggleInspectionChecklistItem('${item.id}','${c.key}')">
-        <span>${isChecked?'✅ ':''}${escapeHtml(c.label)}</span>
-      </label>
-      ${isChecked?'':`<button type="button" class="irc-edit" style="flex:0 0 auto;" onclick="openInspectionChecklistNAModal('${item.id}','${c.key}')">🚫 Hindi Applicable</button>`}
-    </div>`;
+    const left = `<label style="display:flex;align-items:flex-start;gap:6px;cursor:pointer;${isChecked?'color:var(--green);':''}">
+      <input type="checkbox" style="margin-top:2px;flex:0 0 auto;" ${isChecked?'checked':''} onchange="toggleInspectionChecklistItem('${item.id}','${c.key}')">
+      <span>${isChecked?'✅ ':''}${escapeHtml(c.label)}</span>
+    </label>`;
+    const right = isChecked ? '' : `<button type="button" class="irc-edit" onclick="openInspectionChecklistNAModal('${item.id}','${c.key}')">🚫 Hindi Applicable</button>`;
+    return `<div style="${rowGrid}">${left}<div style="text-align:right;white-space:nowrap;">${right}</div></div>`;
   }).join('');
   const missingCount = inspectionChecklistMissing(item).length;
   const statusNote = missingCount
@@ -7780,16 +7789,42 @@ function extractItemsFromPositions(items){
   });
   return anyPageHadTable ? results : null;
 }
+// Every unit-of-measurement word/abbreviation the SO-PDF parser recognizes
+// when scanning the "Units" column — this is what actually anchors a table
+// row (see extractItemsFromPositionsForPage below), so a unit missing from
+// this list doesn't just show up blank, it makes that whole row invisible
+// to the parser. Started out covering only pc/unit/set/box/kg/pair/lot;
+// expanded to cover more unit types actually seen on SO templates this
+// tracker receives — length (lm), area (sqm/sqft), weight (ton/mt), volume
+// (gal/liter/litre), and common packaging units (roll/sheet/pack/pail/bag/
+// drum/can/coil/spool/reel/bundle/pallet/ea).
+//
+// Deliberately NOT included: bare "m"/"cm"/"mm"/"in"/"ft"/"yd"/"g"/"l" —
+// these look like obvious units to add, but real SO item DESCRIPTIONS in
+// this business constantly contain their own standalone "cm"/"IN" text
+// fragments as part of a dimension callout (e.g. "86 cm X 36 cm X 160 cm"
+// or "79 x 31 x 31 IN") — pdf.js hands those back as their own positioned
+// text items, so adding them here caused the row-anchor scan to fire on
+// every dimension figure in the description too, not just the real Units
+// column, and shredded the whole table into dozens of bogus rows (caught by
+// test_pdf_multipage_positions.js / test_pdf_real_pdfjs_positions.js, which
+// exercise real extracted PDF text). Only add a unit here once it's
+// confirmed to not collide with ordinary dimension/description text.
+const SO_UNIT_WORD_PATTERN = '(?:pcs?|units?|sets?|box(?:es)?|kgs?|pairs?|lots?|' +
+  'lm|sqm|sqft|' +
+  'mt|tons?|gal(?:lon)?s?|liters?|litres?|ltrs?|' +
+  'rolls?|sheets?|packs?|pails?|bags?|drums?|cans?|coils?|spools?|reels?|bundles?|pallets?|ea(?:ch)?)';
+const SO_UNIT_WORD_REGEX = new RegExp('^' + SO_UNIT_WORD_PATTERN + '$', 'i');
 // Same column-position idea, applied to the item table of a SINGLE page:
 // finds the "Description"/"Quantity" header labels to get the Description
 // column's x-range, then anchors one row per recognized unit word (pc, lot,
-// set, ...) and gathers every fragment in that column between this row and
-// the next — reconstructing a wrapped multi-line description (e.g. a part
-// number + dimensions on their own continuation line) instead of only the
-// first line. Returns null if the expected headers aren't found on this
-// page (e.g. a totals-only closing page with no item table), so the caller
-// either moves on to the next page or falls back to the older flattened-text
-// approach for a differently-laid-out PDF.
+// set, lm, sqm, ...) and gathers every fragment in that column between this
+// row and the next — reconstructing a wrapped multi-line description (e.g.
+// a part number + dimensions on their own continuation line) instead of
+// only the first line. Returns null if the expected headers aren't found on
+// this page (e.g. a totals-only closing page with no item table), so the
+// caller either moves on to the next page or falls back to the older
+// flattened-text approach for a differently-laid-out PDF.
 function extractItemsFromPositionsForPage(items){
   if(!items || !items.length) return null;
   const norm = s => (s||'').trim();
@@ -7798,8 +7833,7 @@ function extractItemsFromPositionsForPage(items){
   const qtyHeader = items.find(it=> norm(it.str).toLowerCase()==='quantity');
   if(!header || !qtyHeader) return null;
   const descX0 = header.x, descX1 = qtyHeader.x;
-  const unitRegex = /^(pcs?|units?|sets?|boxes?|kgs?|pairs?|lots?)$/i;
-  const unitItems = items.filter(it=> unitRegex.test(norm(it.str)) && it.y < header.y)
+  const unitItems = items.filter(it=> SO_UNIT_WORD_REGEX.test(norm(it.str)) && it.y < header.y)
     .sort((a,b)=> b.y - a.y);
   if(!unitItems.length) return null;
   const boundaryItem = items.filter(it=> /^project id/i.test(norm(it.str)) && it.y < header.y)
@@ -7917,7 +7951,7 @@ function parseSoText(text, items){
     // whichever currency symbol precedes the Rate figure decides
     // rateCurrency; parseSoText()'s caller converts USD rows to pesos
     // afterward using that day's FX rate instead of leaving them blank.
-    const rowRegex = /(\d+(?:\.\d+)?)\s+(pcs?|units?|sets?|boxes?|kgs?|pairs?|lots?|pc|pcs|lot)\b\s*(PHP|₱|\$)\s?([\d,]+\.?\d*)\s+(?:PHP|₱|\$)\s?[\d,]+\.?\d*/gi;
+    const rowRegex = new RegExp('(\\d+(?:\\.\\d+)?)\\s+(' + SO_UNIT_WORD_PATTERN + ')\\b\\s*(PHP|₱|\\$)\\s?([\\d,]+\\.?\\d*)\\s+(?:PHP|₱|\\$)\\s?[\\d,]+\\.?\\d*', 'gi');
     let lastIndex = 0, rm;
     while((rm = rowRegex.exec(clean)) !== null){
       const chunk = clean.slice(lastIndex, rm.index).trim();
