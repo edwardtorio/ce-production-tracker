@@ -2555,13 +2555,7 @@ function partsListTableHtml(item, processId){
   // Bending Flat Pattern, see below) just reads/attaches against the
   // existing piyesa list Engineering already built.
   const canEditPartsList = processId==='drawing';
-  // Laser Cutting, Manual Cutting, and Bystronic Pipe Laser Cutting — the 3
-  // first-stage cutting steps that actually turn raw material into physical
-  // Sub Assy/Child Part pieces — get an editable "Nagawa" count column
-  // instead of the drawing cell, so cutting can log exactly how many of
-  // each piyesa came off THIS run. See partsCountCheck/PARTS_COUNT_GATED_PROCESSES.
-  const canLogCount = PARTS_COUNT_GATED_PROCESSES.includes(processId);
-  // The three per-piyesa drawing types EACH get their own column now, shown
+  // The three per-piyesa drawing types EACH get their own column, shown
   // SIDE BY SIDE on every card (not just whichever one the current card's
   // own process happens to produce) — Fabrication Drawing first, then
   // Burring-Tapping-Countersunk Drawing in the middle, then Bending Flat
@@ -2575,10 +2569,23 @@ function partsListTableHtml(item, processId){
   const canAttachFabDrawingHere = processId==='drawing';
   const canAttachBurringHere = processId==='burring_tapping_countersunk_drawing';
   const canAttachBendingHere = processId==='bending_flat_pattern';
+  // A 4th "Natapos (Completed)" column, editable per-process, appears
+  // ALONGSIDE the 3 drawing columns (not instead of them) for every actual
+  // production/delivery step — Laser Cutting all the way through Delivery
+  // (category !== 'pre', i.e. everything except the Engineering
+  // drawing/nesting-program planning steps) — so each of those steps can
+  // log its own count of how many of each piyesa it has finished, same
+  // data model as the old cutting-only Nagawa column (partsCountInputHtml,
+  // keyed per processId+name) but no longer limited to just the 3 cutting
+  // steps. NOTE: this only controls what's SHOWN here — the actual
+  // must-log-before-Done/Partial enforcement is unchanged, still gated to
+  // just PARTS_COUNT_GATED_PROCESSES (see partsCountCheck).
+  const processMeta = PROCESS_LIST.find(p=>p.id===processId);
+  const showNatapos = !!processMeta && processMeta.category!=='pre';
   const hasList = item.partsList && item.partsList.length;
   if(!hasList && !canEditPartsList) return '';
   const mainQty = Number(item.qty)||0;
-  const colCount = canLogCount ? 4 : 6; // Piyesa, Qty/parent, Total Kailangan, + (Nagawa) OR + (Fabrication Drawing, Burring-Tapping-Countersunk Drawing, Bending Flat Pattern)
+  const colCount = showNatapos ? 7 : 6; // Piyesa, Qty/parent, Total Kailangan, Fabrication Drawing, Burring-Tapping-Countersunk Drawing, Bending Flat Pattern, + (Natapos, only mula Laser Cutting hanggang Delivery)
   const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:2px 5px;width:130px;" onchange="${changeFn}">`;
   const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:2px 5px;width:55px;" onchange="${changeFn}">`;
   // Small formula caption under each total — spells out that the number
@@ -2596,9 +2603,12 @@ function partsListTableHtml(item, processId){
   // there as a safety net on very narrow screens, but shouldn't normally
   // be needed.
   const drawColCellPad = 'padding:6px 6px;';
-  const lastColsHtml = (name) => canLogCount
-    ? `<td style="${cellPad}">${partsCountInputHtml(item, processId, name)}</td>`
-    : `<td style="${drawColCellPad}${colDivider}">${fabDrawingCell(name)}</td><td style="${drawColCellPad}${colDivider}">${burringCell(name)}</td><td style="${drawColCellPad}">${bendingCell(name)}</td>`;
+  // Trailing columns for one row: the three drawing columns always, plus
+  // the Natapos count column right after Bending Flat Pattern when this
+  // process is one of the ones that gets it (showNatapos) — Bending Flat
+  // Pattern keeps its divider in that case since it's no longer the true
+  // last column, and only drops it when Natapos isn't shown.
+  const lastColsHtml = (name) => `<td style="${drawColCellPad}${colDivider}">${fabDrawingCell(name)}</td><td style="${drawColCellPad}${colDivider}">${burringCell(name)}</td><td style="${drawColCellPad}${showNatapos?colDivider:''}">${bendingCell(name)}</td>${showNatapos ? `<td style="${cellPad}">${partsCountInputHtml(item, processId, name)}</td>` : ''}`;
   // Visual language, chosen so the split between groups AND between a Sub
   // Assy and its own Child Parts is obvious at a glance, without reading
   // every row: each group gets one accent color (rotating), and within a
@@ -2655,15 +2665,14 @@ function partsListTableHtml(item, processId){
   // whatever the person actually clicked (open OR manually collapsed).
   const openKey = `${item.id}|${processId}`;
   const isOpen = PARTS_LIST_OPEN_KEYS.has(openKey);
-  // Three separate headers side by side (Fabrication Drawing, then
-  // Burring-Tapping-Countersunk Drawing, then Bending Flat Pattern) instead
-  // of one switching header — see lastColsHtml above. Smaller header font
-  // here specifically so all three fit without wrapping the whole card
-  // wider than the screen.
+  // Headers for the drawing columns (Fabrication Drawing, then
+  // Burring-Tapping-Countersunk Drawing, then Bending Flat Pattern) side by
+  // side — see lastColsHtml above. Smaller header font here specifically
+  // so all of them fit without wrapping the whole card wider than the
+  // screen. Natapos (Completed) is a 4th header, mula Laser Cutting
+  // hanggang Delivery lang (showNatapos).
   const drawColHeaderStyle = 'font-size:9.5px;white-space:normal;';
-  const lastColsHeaderHtml = canLogCount
-    ? `<th>Nagawa (Completed)</th>`
-    : `<th style="${colDivider}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.drawing.label)}</th><th style="${colDivider}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.burring_tapping_countersunk_drawing.label)}</th><th style="${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.bending_flat_pattern.label)}</th>`;
+  const lastColsHeaderHtml = `<th style="${colDivider}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.drawing.label)}</th><th style="${colDivider}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.burring_tapping_countersunk_drawing.label)}</th><th style="${showNatapos?colDivider:''}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.bending_flat_pattern.label)}</th>${showNatapos ? `<th>Natapos (Completed)</th>` : ''}`;
   return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table" style="border-collapse:separate;border-spacing:0;">
       <tr><th style="${colDivider}">Piyesa</th><th style="${colDivider}">Qty/parent</th><th style="${colDivider}">Total Kailangan</th>${lastColsHeaderHtml}</tr>
