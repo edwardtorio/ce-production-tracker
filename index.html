@@ -1598,7 +1598,7 @@ function drawingAttachFormHtml(item, processId, childPart){
 // Assy/Child Part right next to the Parts List instead of here (see
 // partsListTableHtml), since it needs to be scoped to one specific piyesa,
 // not the whole item/SO like these 6.
-const ENGINEERING_DRAWING_BOX_ORDER = ['drawing','laser_cutting_program','manual_cutting_scheme','bystronic_tube_cutting_program','turret_punch_program','burring_tapping_countersunk_drawing'];
+const ENGINEERING_DRAWING_BOX_ORDER = ['drawing','laser_cutting_program','manual_cutting_scheme','bystronic_tube_cutting_program','turret_punch_program'];
 function isEngineeringDrawingProcess(processId){ return ENGINEERING_DRAWING_BOX_ORDER.includes(processId); }
 function engineeringDrawingBoxesHtml(item){
   return ENGINEERING_DRAWING_BOX_ORDER.map(pid=>`<div style="margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:2px;">${drawingAttachFormHtml(item, pid)}</div>`).join('');
@@ -2561,17 +2561,24 @@ function partsListTableHtml(item, processId){
   // instead of the drawing cell, so cutting can log exactly how many of
   // each piyesa came off THIS run. See partsCountCheck/PARTS_COUNT_GATED_PROCESSES.
   const canLogCount = PARTS_COUNT_GATED_PROCESSES.includes(processId);
-  // The Parts List always shows BOTH per-piyesa drawing columns side by
-  // side — Fabrication Drawing AND Bending Flat Pattern — instead of just
-  // one column that used to switch depending on which card you're viewing.
-  // Each column can only be ATTACHED from its own producing card; every
-  // other card sees both, read-only, same as before but for two columns.
+  // The three per-piyesa drawing types EACH get their own column now, shown
+  // SIDE BY SIDE on every card (not just whichever one the current card's
+  // own process happens to produce) — Fabrication Drawing first, then
+  // Burring-Tapping-Countersunk Drawing in the middle, then Bending Flat
+  // Pattern last, since all three are scoped per Sub Assy/Child Part and
+  // all three matter for the same row at a glance, together, without any
+  // horizontal scrolling needed to see all of them. The attach FORM itself
+  // only shows in whichever column's producing card this actually is
+  // (canAttachFabDrawingHere / canAttachBurringHere / canAttachBendingHere)
+  // — every other card (welding, packaging, laser cutting, ...) still sees
+  // all three columns, just read-only links, same as before.
   const canAttachFabDrawingHere = processId==='drawing';
+  const canAttachBurringHere = processId==='burring_tapping_countersunk_drawing';
   const canAttachBendingHere = processId==='bending_flat_pattern';
   const hasList = item.partsList && item.partsList.length;
   if(!hasList && !canEditPartsList) return '';
   const mainQty = Number(item.qty)||0;
-  const colCount = canLogCount ? 4 : 5; // Piyesa, Qty/parent, Total Kailangan, + (Nagawa OR Fab Drawing + Bending Flat Pattern)
+  const colCount = canLogCount ? 4 : 6; // Piyesa, Qty/parent, Total Kailangan, + (Nagawa) OR + (Fabrication Drawing, Burring-Tapping-Countersunk Drawing, Bending Flat Pattern)
   const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:2px 5px;width:130px;" onchange="${changeFn}">`;
   const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:2px 5px;width:55px;" onchange="${changeFn}">`;
   // Small formula caption under each total — spells out that the number
@@ -2580,10 +2587,18 @@ function partsListTableHtml(item, processId){
   // Assy quantity, not something disconnected from it.
   const formulaHint = (parts) => `<div class="hint" style="font-size:9.5px;font-weight:400;margin-top:2px;white-space:nowrap;">${parts.join(' × ')}</div>`;
   const fabDrawingCell = (name) => partsListDrawingCellHtml(item, name, 'drawing', canAttachFabDrawingHere);
+  const burringCell = (name) => partsListDrawingCellHtml(item, name, 'burring_tapping_countersunk_drawing', canAttachBurringHere);
   const bendingCell = (name) => partsListDrawingCellHtml(item, name, 'bending_flat_pattern', canAttachBendingHere);
+  // Narrower padding for these 3 drawing columns specifically (vs. the
+  // default cellPad used by Piyesa/Qty/Total) so all three plus the first
+  // three columns realistically fit on screen together without forcing
+  // horizontal scrolling — the mini-table-wrap's overflow-x:auto is still
+  // there as a safety net on very narrow screens, but shouldn't normally
+  // be needed.
+  const drawColCellPad = 'padding:6px 6px;';
   const lastColsHtml = (name) => canLogCount
     ? `<td style="${cellPad}">${partsCountInputHtml(item, processId, name)}</td>`
-    : `<td style="${cellPad}${colDivider}">${fabDrawingCell(name)}</td><td style="${cellPad}">${bendingCell(name)}</td>`;
+    : `<td style="${drawColCellPad}${colDivider}">${fabDrawingCell(name)}</td><td style="${drawColCellPad}${colDivider}">${burringCell(name)}</td><td style="${drawColCellPad}">${bendingCell(name)}</td>`;
   // Visual language, chosen so the split between groups AND between a Sub
   // Assy and its own Child Parts is obvious at a glance, without reading
   // every row: each group gets one accent color (rotating), and within a
@@ -2640,9 +2655,15 @@ function partsListTableHtml(item, processId){
   // whatever the person actually clicked (open OR manually collapsed).
   const openKey = `${item.id}|${processId}`;
   const isOpen = PARTS_LIST_OPEN_KEYS.has(openKey);
+  // Three separate headers side by side (Fabrication Drawing, then
+  // Burring-Tapping-Countersunk Drawing, then Bending Flat Pattern) instead
+  // of one switching header — see lastColsHtml above. Smaller header font
+  // here specifically so all three fit without wrapping the whole card
+  // wider than the screen.
+  const drawColHeaderStyle = 'font-size:9.5px;white-space:normal;';
   const lastColsHeaderHtml = canLogCount
     ? `<th>Nagawa (Completed)</th>`
-    : `<th style="${colDivider}">${escapeHtml(DRAWING_PROCESS_MAP.drawing.label)}</th><th>${escapeHtml(DRAWING_PROCESS_MAP.bending_flat_pattern.label)}</th>`;
+    : `<th style="${colDivider}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.drawing.label)}</th><th style="${colDivider}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.burring_tapping_countersunk_drawing.label)}</th><th style="${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.bending_flat_pattern.label)}</th>`;
   return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table" style="border-collapse:separate;border-spacing:0;">
       <tr><th style="${colDivider}">Piyesa</th><th style="${colDivider}">Qty/parent</th><th style="${colDivider}">Total Kailangan</th>${lastColsHeaderHtml}</tr>
@@ -6092,13 +6113,14 @@ function renderPersonActionableTasksHtml(name){
     // Engineering to additionally tag a drawing to one specific sub
     // assy/child part once they've expanded that section.
     //
-    // On the 6 "producing" Engineering steps specifically (see
-    // ENGINEERING_DRAWING_BOX_ORDER), show ALL 6 drawing/program types as
+    // On the 5 "producing" Engineering steps specifically (see
+    // ENGINEERING_DRAWING_BOX_ORDER), show ALL 5 drawing/program types as
     // their own square/area together instead of just the one matching this
     // card's own process — whoever's handling ANY of these steps for this
     // item can then see and attach every type from the one card. Every
-    // other process (including the consuming steps and Bending Flat
-    // Pattern, which stays tied to the Parts List instead) keeps the single
+    // other process (including the consuming steps, and Bending Flat
+    // Pattern + Burring-Tapping-Countersunk Drawing, which both stay tied
+    // to the Parts List instead — see partsListTableHtml) keeps the single
     // matching-type form as before.
     const drawingAttachHtml = isEngineeringDrawingProcess(t.processId) ? engineeringDrawingBoxesHtml(t.item) : drawingAttachFormHtml(t.item, t.processId);
     const drawingsHtml = drawingLinkHtml(t.item);
