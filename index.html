@@ -2561,21 +2561,17 @@ function partsListTableHtml(item, processId){
   // instead of the drawing cell, so cutting can log exactly how many of
   // each piyesa came off THIS run. See partsCountCheck/PARTS_COUNT_GATED_PROCESSES.
   const canLogCount = PARTS_COUNT_GATED_PROCESSES.includes(processId);
-  // Which drawing type the last column is/attaches: when the task card's
-  // OWN process is itself a per-item/per-childpart drawing PRODUCER
-  // (Fabrication Drawing, or Bending Flat Pattern — the only two with a
-  // scope other than 'so'), the column is THAT process's own drawing, attach
-  // form included, right here per-piyesa — instead of only the generic
-  // item-wide free-text-child-part form above the Parts List. Every other
-  // card (welding, packaging, ...) keeps showing the plain Fabrication
-  // Drawing reference, read-only, same as before.
-  const drawingMeta = DRAWING_PROCESS_MAP[processId];
-  const drawingSourceProcessId = (drawingMeta && drawingMeta.scope!=='so') ? processId : 'drawing';
-  const canAttachDrawingHere = drawingSourceProcessId===processId;
+  // The Parts List always shows BOTH per-piyesa drawing columns side by
+  // side — Fabrication Drawing AND Bending Flat Pattern — instead of just
+  // one column that used to switch depending on which card you're viewing.
+  // Each column can only be ATTACHED from its own producing card; every
+  // other card sees both, read-only, same as before but for two columns.
+  const canAttachFabDrawingHere = processId==='drawing';
+  const canAttachBendingHere = processId==='bending_flat_pattern';
   const hasList = item.partsList && item.partsList.length;
   if(!hasList && !canEditPartsList) return '';
   const mainQty = Number(item.qty)||0;
-  const colCount = 4; // Piyesa, Qty/parent, Total Kailangan, + (Nagawa OR Drawing)
+  const colCount = canLogCount ? 4 : 5; // Piyesa, Qty/parent, Total Kailangan, + (Nagawa OR Fab Drawing + Bending Flat Pattern)
   const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:2px 5px;width:130px;" onchange="${changeFn}">`;
   const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:2px 5px;width:55px;" onchange="${changeFn}">`;
   // Small formula caption under each total — spells out that the number
@@ -2583,7 +2579,11 @@ function partsListTableHtml(item, processId){
   // visibly obvious a freshly-added row is computed off the real Main
   // Assy quantity, not something disconnected from it.
   const formulaHint = (parts) => `<div class="hint" style="font-size:9.5px;font-weight:400;margin-top:2px;white-space:nowrap;">${parts.join(' × ')}</div>`;
-  const lastColCell = (name) => canLogCount ? partsCountInputHtml(item, processId, name) : partsListDrawingCellHtml(item, name, drawingSourceProcessId, canAttachDrawingHere);
+  const fabDrawingCell = (name) => partsListDrawingCellHtml(item, name, 'drawing', canAttachFabDrawingHere);
+  const bendingCell = (name) => partsListDrawingCellHtml(item, name, 'bending_flat_pattern', canAttachBendingHere);
+  const lastColsHtml = (name) => canLogCount
+    ? `<td style="${cellPad}">${partsCountInputHtml(item, processId, name)}</td>`
+    : `<td style="${cellPad}${colDivider}">${fabDrawingCell(name)}</td><td style="${cellPad}">${bendingCell(name)}</td>`;
   // Visual language, chosen so the split between groups AND between a Sub
   // Assy and its own Child Parts is obvious at a glance, without reading
   // every row: each group gets one accent color (rotating), and within a
@@ -2613,7 +2613,7 @@ function partsListTableHtml(item, processId){
     // Sub Assy row: the ONE row in this group that's fully tinted with the
     // group's accent color — the clear "group header" row.
     const subRowStyle = `border-left:5px solid ${accent.color};background:${accent.bg};${dividerTop}`;
-    let inner = `<tr style="${subRowStyle}"><td style="${cellPad}${colDivider}display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">${badge}${nameCell}${subAssyChip(accent.color)}${removeBtn}</td><td style="${cellPad}${colDivider}">${qtyCell}</td><td style="${cellPad}${colDivider}"><b>${Number(s.totalQty||0).toLocaleString()}</b>${formulaHint([s.qtyPerUnit, mainQty+' '+item.unit])}</td><td style="${cellPad}">${lastColCell(s.name)}</td></tr>`;
+    let inner = `<tr style="${subRowStyle}"><td style="${cellPad}${colDivider}display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">${badge}${nameCell}${subAssyChip(accent.color)}${removeBtn}</td><td style="${cellPad}${colDivider}">${qtyCell}</td><td style="${cellPad}${colDivider}"><b>${Number(s.totalQty||0).toLocaleString()}</b>${formulaHint([s.qtyPerUnit, mainQty+' '+item.unit])}</td>${lastColsHtml(s.name)}</tr>`;
     (s.childParts||[]).forEach((c, childIdx)=>{
       const childBadge = `<span style="display:inline-block;min-width:15px;height:15px;line-height:13px;text-align:center;border-radius:50%;border:1.5px solid ${accent.color};color:${accent.color};font-size:8.5px;font-weight:700;margin-right:4px;flex:0 0 auto;">${subIdx+1}.${childIdx+1}</span>`;
       const cNameCell = canEditPartsList
@@ -2627,7 +2627,7 @@ function partsListTableHtml(item, processId){
       // "one level down" from its Sub Assy — only the thin colored left
       // rail (same accent) and the indent + "↳" tie it back to its parent.
       const childRowStyle = `border-left:5px solid ${accent.color};background:#fff;`;
-      inner += `<tr style="${childRowStyle}"><td style="${cellPad}${colDivider}padding-left:26px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">↳ ${childBadge}${cNameCell}${childChip(accent.color)}${cRemoveBtn}<div class="hint" style="width:100%;margin-left:19px;">ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}"</div></td><td style="${cellPad}${colDivider}">${cQtyCell}</td><td style="${cellPad}${colDivider}">${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, mainQty+' '+item.unit])}</td><td style="${cellPad}">${lastColCell(c.name)}</td></tr>`;
+      inner += `<tr style="${childRowStyle}"><td style="${cellPad}${colDivider}padding-left:26px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">↳ ${childBadge}${cNameCell}${childChip(accent.color)}${cRemoveBtn}<div class="hint" style="width:100%;margin-left:19px;">ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}"</div></td><td style="${cellPad}${colDivider}">${cQtyCell}</td><td style="${cellPad}${colDivider}">${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, mainQty+' '+item.unit])}</td>${lastColsHtml(c.name)}</tr>`;
     });
     if(canEditPartsList){
       inner += `<tr style="border-left:5px solid ${accent.color};background:#fff;"><td style="padding:5px 8px 7px 26px;" colspan="${colCount}"><button type="button" class="btn secondary btn-sm" onclick="addPartsListChildPart('${item.id}',${subIdx})">+ Child Part sa Sub Assy #${subIdx+1}${s.name?(' ('+escapeHtml(s.name)+')'):''}</button></td></tr>`;
@@ -2640,10 +2640,12 @@ function partsListTableHtml(item, processId){
   // whatever the person actually clicked (open OR manually collapsed).
   const openKey = `${item.id}|${processId}`;
   const isOpen = PARTS_LIST_OPEN_KEYS.has(openKey);
-  const lastColHeader = canLogCount ? 'Nagawa (Completed)' : (DRAWING_PROCESS_MAP[drawingSourceProcessId] ? DRAWING_PROCESS_MAP[drawingSourceProcessId].label : 'Fabrication Drawing');
+  const lastColsHeaderHtml = canLogCount
+    ? `<th>Nagawa (Completed)</th>`
+    : `<th style="${colDivider}">${escapeHtml(DRAWING_PROCESS_MAP.drawing.label)}</th><th>${escapeHtml(DRAWING_PROCESS_MAP.bending_flat_pattern.label)}</th>`;
   return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table" style="border-collapse:separate;border-spacing:0;">
-      <tr><th style="${colDivider}">Piyesa</th><th style="${colDivider}">Qty/parent</th><th style="${colDivider}">Total Kailangan</th><th>${lastColHeader}</th></tr>
+      <tr><th style="${colDivider}">Piyesa</th><th style="${colDivider}">Qty/parent</th><th style="${colDivider}">Total Kailangan</th>${lastColsHeaderHtml}</tr>
       ${rows}
     </table></div>
     ${addSubBtn}
