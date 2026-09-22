@@ -4800,7 +4800,6 @@ function renderBoard(){
       });
       const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${it.id}','${cur}')">↩ Ibalik sa nakaraan</button>` : '';
       const partialBtn = (cur && Number(it.qty)>1) ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${it.id}','${cur}')">➗ Partial</button>` : '';
-      const detourBtn = cur ? `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${it.id}','${cur}')">🔧 Kailangan ng ibang proseso</button>` : '';
       const quickReturnBtns = cur ? quickReturnButtonsHtml(it.id, cur) : '';
       const returnNote = it.lastReturn ? `<div class="hint" style="color:var(--red);margin-top:6px;">↩ Ibinalik mula sa ${processLabel(it.lastReturn.fromProcess)}${it.lastReturn.reason ? ': "'+it.lastReturn.reason+'"' : ''}</div>` : '';
       const detourPendingNote = (cur && it.detourFrom && it.detourFrom[cur]) ? `<div class="hint" style="color:#6a5acd;margin-top:6px;">🔧 Kinakailangan ito ni ${processLabel(it.detourFrom[cur])} bago magpatuloy${(it.detourReason && it.detourReason[cur]) ? ': "'+it.detourReason[cur]+'"' : ''} — babalik doon pagkatapos dito.</div>` : '';
@@ -4826,7 +4825,6 @@ function renderBoard(){
             ${pauseResumeHtml(it, cur)}
             ${returnBtn}
             ${partialBtn}
-            ${detourBtn}
             ${quickReturnBtns}
             <button class="irc-edit" title="Edit item" onclick="openEditItemModal('${it.id}')">✎ Edit</button>
           </div>
@@ -6045,7 +6043,6 @@ function renderPersonActionableTasksHtml(name){
     const curIdx = t.item.route.indexOf(t.processId);
     const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${t.item.id}','${t.processId}')">↩</button>` : '';
     const partialBtn = Number(t.item.qty)>1 ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${t.item.id}','${t.processId}')">➗</button>` : '';
-    const detourBtn = `<button class="irc-edit" title="Kailangan ng ibang proseso (hindi kasama sa route)" onclick="openDetourModal('${t.item.id}','${t.processId}')">🔧</button>`;
     const quickReturnBtns = quickReturnButtonsHtml(t.item.id, t.processId);
     // Sheet/run-based steps (laser cutting nesting, Bystronic tube cutting
     // program, manual cutting scheme, turret punch program — plus their four
@@ -6145,7 +6142,6 @@ function renderPersonActionableTasksHtml(name){
         <div style="display:flex;align-items:center;gap:6px;">
           ${returnBtn}
           ${partialBtn}
-          ${detourBtn}
           ${quickReturnBtns}
           ${bulkBtn}
           <div class="pill ${t.status}" onclick="cycleStep('${t.item.id}','${t.processId}');">${t.status}</div>
