@@ -2662,6 +2662,53 @@ function avatarHtml(name, size){
 let saving = false, isReadOnly = false, capabilityUnavailable = false;
 let dataLoadFailed = false;
 let PENDING_DELETE_IDS = []; // item ids removed locally (permanent delete) since the last successful save — persistState() deletes these rows from Supabase, then clears this.
+// The last known-good, server-confirmed state of each item (itemId -> its
+// JSON.stringify snapshot) — set whenever this browser learns an item's
+// state from an authoritative source: the initial load, a realtime update
+// from another viewer, or right after OUR OWN save of that item succeeds.
+// persistState()/persistItem() use this to tell "an item I actually changed
+// just now" apart from "an item that just happens to be sitting in my local
+// ITEMS array unchanged" — and, for the ones I did change, to 3-way-merge
+// my edit onto the freshest server copy instead of blindly overwriting the
+// whole row. See threeWayMergeItem() for why this matters: without it, ANY
+// save from ANY screen (adding a new SO, editing SO/item details, adding a
+// material request — not just marking a step Done) re-uploads this
+// browser's full local copy of whatever it touches, which used to silently
+// revert a teammate's very recent "Done" tap on a COMPLETELY different item
+// back to its earlier status whenever their update hadn't round-tripped
+// back to this browser yet — for any process, whenever two people happened
+// to be updating around the same time.
+let ITEM_BASE_SNAPSHOTS = new Map();
+function rememberItemBase(it){ if(it && it.id!==undefined && it.id!==null) ITEM_BASE_SNAPSHOTS.set(it.id, JSON.stringify(it)); }
+function rememberItemsBase(items){ (items||[]).forEach(rememberItemBase); }
+// Recursively merges OUR local edit onto THEIRS (the freshest server copy),
+// using BASE (what we started from before we made our edit) to tell what we
+// actually changed apart from what just happens to differ because someone
+// else changed it first. For any given value: if we changed it from base,
+// our version wins (this is what lets a teammate's own genuine revert of
+// their OWN step go through — they changed it, so their new value IS their
+// "ours" on their own save); if we did NOT change it, theirs wins (picks up
+// whatever a teammate concurrently saved to that same item that we don't
+// even know about yet). Plain objects are merged key-by-key so two people
+// editing DIFFERENT processes/fields on the SAME item never clobber each
+// other; arrays and primitives are compared/replaced as whole values.
+function threeWayMergeValue(base, ours, theirs){
+  const isPlainObj = v => v && typeof v==='object' && !Array.isArray(v);
+  if(isPlainObj(base) || isPlainObj(ours) || isPlainObj(theirs)){
+    const baseObj = isPlainObj(base) ? base : {};
+    const oursObj = isPlainObj(ours) ? ours : {};
+    const theirsObj = isPlainObj(theirs) ? theirs : {};
+    const keys = new Set([...Object.keys(baseObj), ...Object.keys(oursObj), ...Object.keys(theirsObj)]);
+    const result = {};
+    keys.forEach(k=>{ result[k] = threeWayMergeValue(baseObj[k], oursObj[k], theirsObj[k]); });
+    Object.keys(result).forEach(k=>{ if(result[k]===undefined) delete result[k]; });
+    return result;
+  }
+  const oursChanged = JSON.stringify(ours) !== JSON.stringify(base);
+  if(oursChanged) return ours;
+  return theirs!==undefined ? theirs : ours;
+}
+function threeWayMergeItem(base, ours, theirs){ return threeWayMergeValue(base, ours, theirs); }
 const sleep = ms => new Promise(r=>setTimeout(r, ms));
 function updateSyncBadge(state){
   const el = document.getElementById('syncBadge');
@@ -2672,23 +2719,35 @@ function updateSyncBadge(state){
   else if(state==='readonly') el.innerHTML = '<span class="sync-dot offline"></span>Read-only — changes here won\'t be saved';
   else if(state==='unavailable') el.innerHTML = '<span class="sync-dot offline"></span>Saving unavailable in this view';
 }
-// Pushes the current in-memory state to Supabase: one upserted row per item
-// (so other viewers' unrelated edits are never clobbered), the four meta
-// rows (owners/photos/costRates/periodCosts), and a delete for any items
-// removed locally since the last save. No page reload happens on either end
-// — everyone stays exactly on the tab/person/scroll they're already on.
+// Pushes the current in-memory state to Supabase. Items are NOT
+// blind-upserted as a whole array — only the ones this browser actually
+// changed (per ITEM_BASE_SNAPSHOTS) get saved, each merged onto the
+// freshest server copy via persistItem(). This used to be a straight
+// `ITEMS.map(...)` upsert of EVERY item, every time ANY save() fired —
+// adding a new SO, editing SO/item details, adding a material request,
+// literally any edit anywhere in the app — so any of those saves could
+// silently revert a teammate's very recent update to some OTHER,
+// completely unrelated item back to whatever this browser's local copy
+// still had, if that teammate's own save hadn't round-tripped back here
+// yet. Also persists the four meta rows and any pending item deletions.
+// No page reload happens on either end — everyone stays exactly on the
+// tab/person/scroll they're already on.
 async function persistState(){
   if(typeof sbClient==='undefined' || !sbClient){ capabilityUnavailable = true; return {ok:false, code:'capability_disabled'}; }
   try{
-    const rows = ITEMS.map(it=>({ id: it.id, item_code: it.itemCode||'', so_number: it.soNumber||'', client: it.client||'', data: it }));
-    if(rows.length){
-      const {error} = await sbClient.from('items').upsert(rows, {onConflict:'id'});
-      if(error) throw error;
+    const touchedItems = ITEMS.filter(it=>{
+      const baseJSON = ITEM_BASE_SNAPSHOTS.get(it.id);
+      return baseJSON===undefined || baseJSON!==JSON.stringify(it);
+    });
+    for(const it of touchedItems){
+      const result = await persistItem(it);
+      if(!result.ok) return result; // bubble up capability_disabled / upstream_error as-is — save()'s own retry handles the transient case
     }
     if(PENDING_DELETE_IDS.length){
       const idsToDelete = PENDING_DELETE_IDS.slice();
       const {error} = await sbClient.from('items').delete().in('id', idsToDelete);
       if(error) throw error;
+      idsToDelete.forEach(id=>ITEM_BASE_SNAPSHOTS.delete(id));
       PENDING_DELETE_IDS = PENDING_DELETE_IDS.filter(id=>!idsToDelete.includes(id));
     }
     const metaRows = [
@@ -2705,16 +2764,37 @@ async function persistState(){
     return {ok:false, code: 'upstream_error', message: e && e.message};
   }
 }
-// Upserts just ONE item's row — used by the hot, frequently-clicked
-// per-item actions (marking a step done, pause/resume) so a tap only ever
-// uploads that one item (a few KB) instead of every item in the tracker
-// (hundreds of KB), which is what made those taps feel slow to save.
+// Upserts just ONE item's row — used both by the hot, frequently-clicked
+// per-item actions (marking a step done, pause/resume) and by persistState()
+// above for each item it finds locally changed, so a save only ever uploads
+// the item(s) actually touched (a few KB) instead of every item in the
+// tracker (hundreds of KB). When we have a known "base" snapshot for this
+// item (its last server-confirmed state, from ITEM_BASE_SNAPSHOTS), this
+// also re-fetches the FRESHEST copy from the server first and 3-way-merges
+// our edit onto it (see threeWayMergeItem) instead of blindly overwriting
+// the row — so a teammate's own concurrent edit to a DIFFERENT field of
+// this same item survives, and only reverts if THEY are the one who
+// changed it back. A brand-new item (no base snapshot yet) just inserts
+// as-is, same as before.
 async function persistItem(item){
   if(typeof sbClient==='undefined' || !sbClient){ capabilityUnavailable = true; return {ok:false, code:'capability_disabled'}; }
   try{
-    const row = { id: item.id, item_code: item.itemCode||'', so_number: item.soNumber||'', client: item.client||'', data: item };
+    let toSave = item;
+    const baseJSON = ITEM_BASE_SNAPSHOTS.get(item.id);
+    if(baseJSON!==undefined){
+      try{
+        const {data: freshRow, error: fetchErr} = await sbClient.from('items').select('data').eq('id', item.id).maybeSingle();
+        if(!fetchErr && freshRow && freshRow.data){
+          toSave = threeWayMergeItem(JSON.parse(baseJSON), item, freshRow.data);
+          const idx = ITEMS.findIndex(it=>it.id===item.id);
+          if(idx>=0) ITEMS[idx] = toSave;
+        }
+      }catch(mergeErr){ /* best effort — fall back to saving our own local copy as-is below */ }
+    }
+    const row = { id: toSave.id, item_code: toSave.itemCode||'', so_number: toSave.soNumber||'', client: toSave.client||'', data: toSave };
     const {error} = await sbClient.from('items').upsert([row], {onConflict:'id'});
     if(error) throw error;
+    rememberItemBase(toSave);
     return {ok:true};
   }catch(e){
     return {ok:false, code:'upstream_error', message: e && e.message};
@@ -3031,6 +3111,12 @@ async function loadInitialState(){
   // an edit another viewer saves to some OTHER, untouched item while this
   // load is in flight.
   const beforeItemSnapshots = firstRun ? null : new Map(ITEMS.map(it=>[it.id, JSON.stringify(it)]));
+  // This load's own read is now this browser's authoritative "last known
+  // server state" for every item — seed ITEM_BASE_SNAPSHOTS from it (see its
+  // declaration for why persistState()/persistItem() need this). Items the
+  // self-heal below actually changes get their snapshot refreshed again
+  // after their own persistItem() call succeeds further down.
+  if(beforeItemSnapshots) ITEM_BASE_SNAPSHOTS = new Map(beforeItemSnapshots);
   ITEMS.forEach(it=>{
     if(!it.route){ migrateLegacyItem(it); changed = true; }
     if(it.dateUploaded===undefined){ it.dateUploaded = it.dateAdded || ''; changed = true; }
@@ -9007,12 +9093,18 @@ async function submitSO(){
 // screen. No reload, no navigation — the viewer stays exactly where they are.
 function handleRemoteItemChange(payload){
   if(payload.eventType==='DELETE'){
-    if(payload.old && payload.old.id) ITEMS = ITEMS.filter(it=>it.id!==payload.old.id);
+    if(payload.old && payload.old.id){ ITEMS = ITEMS.filter(it=>it.id!==payload.old.id); ITEM_BASE_SNAPSHOTS.delete(payload.old.id); }
   }else{
     const newData = payload.new && payload.new.data;
     if(!newData || !newData.id) return;
     const idx = ITEMS.findIndex(it=>it.id===newData.id);
     if(idx>=0) ITEMS[idx] = newData; else ITEMS.push(newData);
+    // A teammate's own change just arrived and IS now the authoritative
+    // server state for this item — remember it as our new base too, so our
+    // own next save merges onto (or, if we haven't touched this item at
+    // all, simply keeps) whatever they just did instead of comparing
+    // against our own possibly much-older copy.
+    rememberItemBase(newData);
   }
   rerenderCurrentView();
 }
