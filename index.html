@@ -1586,6 +1586,23 @@ function drawingAttachFormHtml(item, processId, childPart){
     ${notRequiredHtml}
   </div>`;
 }
+// Fixed display order for the 6 "producing" drawing/program types shown
+// TOGETHER as their own distinct square/area on every Engineering task card
+// (Fabrication Drawing, Laser Cutting Program, Manual Cutting Scheme,
+// Bystronic Cutting Program, Turret Punch Program, Burring-Tapping-
+// Countersunk Drawing) — so whoever is handling ANY one of these steps for
+// an item can see and attach every type from that same card, not only the
+// single type matching this particular card's own process (useful when one
+// person/team ends up doing several of these steps for the same item).
+// Bending Flat Pattern is deliberately excluded — it stays attached per Sub
+// Assy/Child Part right next to the Parts List instead of here (see
+// partsListTableHtml), since it needs to be scoped to one specific piyesa,
+// not the whole item/SO like these 6.
+const ENGINEERING_DRAWING_BOX_ORDER = ['drawing','laser_cutting_program','manual_cutting_scheme','bystronic_tube_cutting_program','turret_punch_program','burring_tapping_countersunk_drawing'];
+function isEngineeringDrawingProcess(processId){ return ENGINEERING_DRAWING_BOX_ORDER.includes(processId); }
+function engineeringDrawingBoxesHtml(item){
+  return ENGINEERING_DRAWING_BOX_ORDER.map(pid=>`<div style="margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:2px;">${drawingAttachFormHtml(item, pid)}</div>`).join('');
+}
 // Handles both a pasted link AND a picked file — if a file was chosen it's
 // uploaded to the shared 'drawings' Storage bucket first (async), so any
 // process owner afterwards can view/download that exact file on their own
@@ -6072,7 +6089,16 @@ function renderPersonActionableTasksHtml(name){
     // default) Parts List first. The per-piyesa forms stay available for
     // Engineering to additionally tag a drawing to one specific sub
     // assy/child part once they've expanded that section.
-    const drawingAttachHtml = drawingAttachFormHtml(t.item, t.processId);
+    //
+    // On the 6 "producing" Engineering steps specifically (see
+    // ENGINEERING_DRAWING_BOX_ORDER), show ALL 6 drawing/program types as
+    // their own square/area together instead of just the one matching this
+    // card's own process — whoever's handling ANY of these steps for this
+    // item can then see and attach every type from the one card. Every
+    // other process (including the consuming steps and Bending Flat
+    // Pattern, which stays tied to the Parts List instead) keeps the single
+    // matching-type form as before.
+    const drawingAttachHtml = isEngineeringDrawingProcess(t.processId) ? engineeringDrawingBoxesHtml(t.item) : drawingAttachFormHtml(t.item, t.processId);
     const drawingsHtml = drawingLinkHtml(t.item);
     const allDrawingsHtml = attachedDrawingsSummaryHtml(t.item);
     const partsListHtml = partsListTableHtml(t.item, t.processId);
