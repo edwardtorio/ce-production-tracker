@@ -1378,11 +1378,25 @@ function attachedDrawingsSummaryHtml(item){
   const groups = allAttachedDrawingsForItem(item);
   if(!groups.length) return '';
   const totalCount = groups.reduce((a,g)=>a+g.drawings.length,0);
-  const rows = groups.map(g=>g.drawings.map(d=>{
-    const suffix = d.childPart ? ` (${escapeHtml(d.childPart)})` : '';
-    return `<div style="margin-top:3px;">📐 ${drawingLinksForEntry(d, g.meta.label)}${suffix}</div>`;
-  }).join('')).join('');
-  return `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Lahat ng Naka-attach na Drawing (${totalCount})</summary><div class="hint" style="margin-top:4px;">${rows}</div></details>`;
+  // Sorted out into its own bordered box PER drawing type (Fabrication
+  // Drawing, Laser Cutting Nesting Layout, Burring-Tapping-Countersunk
+  // Drawing, Bystronic Tube Cutting Program, Manual Cutting Scheme, Bending
+  // Flat Pattern, Turret Punch Program), with a header naming the type and
+  // how many are attached — same box-per-type visual language as the
+  // Engineering "producing" cards (see engineeringDrawingBoxesHtml) —
+  // instead of one flat list mixing every type together undifferentiated.
+  // Shown on every task card from Material Withdrawal all the way through
+  // Delivery (in fact on every card this widget renders on at all), so
+  // whoever's handling any of those steps can find/open the exact drawing
+  // type they need at a glance instead of hunting through a mixed list.
+  const groupBoxes = groups.map(g=>{
+    const rows = g.drawings.map(d=>{
+      const suffix = d.childPart ? ` (${escapeHtml(d.childPart)})` : '';
+      return `<div style="margin-top:3px;">📐 ${drawingLinksForEntry(d, g.meta.label)}${suffix}</div>`;
+    }).join('');
+    return `<div style="margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;"><div style="font-weight:700;font-size:10.5px;color:var(--steel-700);">${escapeHtml(g.meta.label)} (${g.drawings.length})</div>${rows}</div>`;
+  }).join('');
+  return `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Lahat ng Naka-attach na Drawing (${totalCount})</summary><div class="hint" style="margin-top:4px;">${groupBoxes}</div></details>`;
 }
 // Inline widget shown on a task card for a CONSUMING step (welding, laser
 // cutting, bending, ...): lists whatever's attached, or flags it missing so
