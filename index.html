@@ -323,7 +323,7 @@
   table.mini-table{width:100%;border-collapse:collapse;font-size:12px;}
   table.mini-table th{text-align:left;padding:7px 10px;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;
     color:var(--gray);border-bottom:1.5px solid var(--line);white-space:nowrap;}
-  table.mini-table td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  table.mini-table td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle;word-break:break-word;overflow-wrap:anywhere;}
   table.mini-table tr:last-child td{border-bottom:none;}
   table.mini-table .so-num{font-family:var(--font-mono);font-weight:700;color:var(--accent-teal-dk);}
   table.mini-table .client-name{color:var(--steel-800);}
@@ -1368,14 +1368,30 @@ function drawingTypeTagHtml(d){
   if(!meta) return '';
   return `<span style="display:inline-block;font-size:10px;font-weight:800;letter-spacing:.2px;color:var(--accent-teal-dk);background:#e3f3f0;border-radius:4px;padding:1px 5px;margin-right:4px;">${escapeHtml(meta.label)}</span>`;
 }
-function drawingLinksForEntry(d, fallbackLabel){
+// compact=true is used inside the Parts List table's per-piyesa drawing
+// columns (see partsListDrawingCellHtml) — that table already has 3 drawing
+// columns side by side (plus Piyesa/Qty/Total/Natapos), each with its own
+// header already naming the drawing type, so repeating the full type-tag
+// badge AND a long, un-truncated filename in every single cell used to blow
+// the table way past what fits on screen, forcing endless "nag-scroll ako
+// pakanan" horizontal scrolling just to see the Natapos/qty column. Compact
+// mode drops the redundant type tag, truncates the filename to a short
+// ellipsis (full name still available via the title tooltip and by actually
+// clicking through), and shows the download action as an icon only.
+function drawingLinksForEntry(d, fallbackLabel, compact){
   const label = escapeHtml(d.name || fallbackLabel || 'Drawing');
-  const typeTag = drawingTypeTagHtml(d);
-  if(!d.url) return `<span>${typeTag}${label}</span>`;
-  const viewLink = `<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener">👁 ${label}</a>`;
+  const typeTag = compact ? '' : drawingTypeTagHtml(d);
+  const labelSpan = compact
+    ? `<span style="display:inline-block;max-width:78px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;">${label}</span>`
+    : label;
+  if(!d.url) return `<span title="${label}">${typeTag}${labelSpan}</span>`;
+  const viewLink = `<a href="${escapeHtml(d.url)}" target="_blank" rel="noopener" title="${label}">👁 ${labelSpan}</a>`;
   if(!d.storagePath) return `${typeTag}${viewLink}`;
   const dlHref = d.url + (d.url.includes('?') ? '&' : '?') + 'download';
-  return `${typeTag}${viewLink} <a href="${escapeHtml(dlHref)}" style="margin-left:4px;">⬇ I-download</a>`;
+  const dlLink = compact
+    ? `<a href="${escapeHtml(dlHref)}" style="margin-left:4px;" title="I-download">⬇</a>`
+    : `<a href="${escapeHtml(dlHref)}" style="margin-left:4px;">⬇ I-download</a>`;
+  return `${typeTag}${viewLink} ${dlLink}`;
 }
 // Every drawing entry relevant to ONE process step of ONE item — scope
 // depends on DRAWING_PROCESS_MAP: 'item' matches by itemId, 'so' matches
@@ -1397,12 +1413,63 @@ function requiredDrawingsForStep(item, stepProcessId){
   if(!sourceProcessId) return null; // this step doesn't consume any drawing
   return { sourceProcessId, meta: DRAWING_PROCESS_MAP[sourceProcessId], drawings: drawingsForItemProcess(item, sourceProcessId) };
 }
+// Two DRAWINGS_POOL entries scoped differently (one attached item-wide with
+// a blank childPart, another attached specifically to a Sub Assy/Child
+// Part — or even the same piyesa attached twice by mistake) can end up
+// pointing at the EXACT same file/link. This is especially easy on a
+// simple single-piyesa item, where "the item" and "its one piyesa" are
+// really the same physical part, so someone attaches the identical drawing
+// both ways without realizing it's now showing twice everywhere that lists
+// attached drawings. Rather than displaying it twice, merge entries that
+// share the same url into ONE row, combining whichever childPart label(s)
+// they were each scoped to (so no scoping info is silently lost) instead
+// of arbitrarily keeping just one and dropping the other's context.
+// Entries with no url at all (nothing concrete to compare) are never
+// merged together, since there's no reliable signal they're identical.
+function dedupeDrawingsForDisplay(drawings){
+  const result = []; // ordered list of { d, childParts: Set }
+  const urlIndex = new Map();
+  drawings.forEach(d=>{
+    if(d.url && urlIndex.has(d.url)){
+      result[urlIndex.get(d.url)].childParts.add(d.childPart||'');
+      return;
+    }
+    const entry = { d, childParts: new Set([d.childPart||'']) };
+    if(d.url) urlIndex.set(d.url, result.length);
+    result.push(entry);
+  });
+  return result.map(({d, childParts})=>({ d, childParts: [...childParts].filter(Boolean) }));
+}
+// Whether a drawing TYPE actually has anything to do with this item's own
+// route — i.e. either the producing process itself is one of this item's
+// own steps (covers item-scoped types like Fabrication Drawing, Bending
+// Flat Pattern, Burring-Tapping-Countersunk Drawing), or the step(s) it
+// feeds (DRAWING_PROCESS_MAP's consumedBy) are (covers the SO-scoped
+// "program" types — Laser Cutting Program, Bystronic Tube Cutting Program,
+// Manual Cutting Scheme, Turret Punch Program). This matters because the
+// SO-scoped types are matched in DRAWINGS_POOL by soNumber+client alone
+// (see drawingsForItemProcess's scope:'so' branch) — with NO check that
+// this particular item actually goes through that process — so an item
+// that never touches Manual Cutting at all could otherwise still show a
+// "Manual Cutting Scheme" drawing here just because some OTHER item on the
+// same SO happens to use it.
+function isDrawingTypeRelevantToItem(item, processId){
+  const meta = DRAWING_PROCESS_MAP[processId];
+  if(!meta || !item.route) return false;
+  if(item.route.includes(processId)) return true;
+  return (meta.consumedBy||[]).some(pid=>item.route.includes(pid));
+}
 // Every drawing ever attached to this item, across EVERY producer process
 // (Fabrication Drawing, Laser Cutting Nesting Layout, Bystronic Tube
 // Cutting Program, Manual Cutting Scheme, Bending Flat Pattern, Turret
-// Punch Program) — grouped by type, non-empty groups only.
+// Punch Program) — grouped by type, non-empty groups only, and only for
+// types actually relevant to this item's own route (see
+// isDrawingTypeRelevantToItem — otherwise an SO-scoped type like Manual
+// Cutting Scheme could leak in from a completely different item on the
+// same SO that this item never shares that step with).
 function allAttachedDrawingsForItem(item){
   return Object.keys(DRAWING_PROCESS_MAP)
+    .filter(processId => isDrawingTypeRelevantToItem(item, processId))
     .map(processId => ({ processId, meta: DRAWING_PROCESS_MAP[processId], drawings: drawingsForItemProcess(item, processId) }))
     .filter(g => g.drawings.length>0);
 }
@@ -1423,9 +1490,17 @@ function attachedDrawingsSummaryHtml(item){
   // summary excludes those two and only covers drawing types that AREN'T
   // already broken out in the Parts List.
   const EXCLUDED_FROM_SUMMARY = ['bending_flat_pattern','burring_tapping_countersunk_drawing'];
-  const groups = allAttachedDrawingsForItem(item).filter(g=>!EXCLUDED_FROM_SUMMARY.includes(g.processId));
+  // Dedupe each group's drawings up front (see dedupeDrawingsForDisplay) —
+  // an item-wide attach and a piyesa-scoped attach pointing at the exact
+  // same file/link (easy to do by mistake, especially on a simple
+  // single-piyesa item) used to show as two separate boxes here even though
+  // they're really the same drawing. Both the per-type count and the
+  // overall total below now reflect the deduped counts, not raw entries.
+  const groups = allAttachedDrawingsForItem(item)
+    .filter(g=>!EXCLUDED_FROM_SUMMARY.includes(g.processId))
+    .map(g=>({ ...g, deduped: dedupeDrawingsForDisplay(g.drawings) }));
   if(!groups.length) return '';
-  const totalCount = groups.reduce((a,g)=>a+g.drawings.length,0);
+  const totalCount = groups.reduce((a,g)=>a+g.deduped.length,0);
   // Sorted out into its own bordered box PER drawing type (Fabrication
   // Drawing, Laser Cutting Nesting Layout, Burring-Tapping-Countersunk
   // Drawing, Bystronic Tube Cutting Program, Manual Cutting Scheme, Bending
@@ -1438,16 +1513,18 @@ function attachedDrawingsSummaryHtml(item){
   // whoever's handling any of those steps can find/open the exact drawing
   // type they need at a glance instead of hunting through a mixed list.
   const groupBoxes = groups.map(g=>{
-    const rows = g.drawings.map(d=>{
-      const suffix = d.childPart ? ` (${escapeHtml(d.childPart)})` : '';
+    const rows = g.deduped.map(({d, childParts})=>{
+      const suffix = childParts.length ? ` (${childParts.map(p=>escapeHtml(p)).join(', ')})` : '';
       // Colored border around the ENTIRE box (all 4 sides, not just a left
       // edge) matching the drawing's own Sub Assy/Child Part group accent —
       // same color it gets in the Parts List table (see
       // partsListAccentForName) — so which piyesa a drawing covers is
       // obvious from color alone, at a glance, without reading the
       // parenthetical name text. No border for a blank/item-wide drawing
-      // that isn't scoped to any specific piyesa.
-      const accent = partsListAccentForName(item, d.childPart||'');
+      // that isn't scoped to any specific piyesa, and none either when a
+      // merged entry now covers more than one differently-accented piyesa
+      // (nothing single to tint the box with).
+      const accent = childParts.length===1 ? partsListAccentForName(item, childParts[0]) : null;
       const accentStyle = accent ? `border:2px solid ${accent.color};border-radius:6px;padding:4px 8px;` : '';
       return `<div style="margin-top:4px;${accentStyle}">📐 ${drawingLinksForEntry(d, g.meta.label)}${suffix}</div>`;
     }).join('');
@@ -1457,7 +1534,7 @@ function attachedDrawingsSummaryHtml(item){
     // darker border plus a light background tint makes the type-level
     // grouping boundary obvious even with several colored entry-boxes
     // sitting inside it.
-    return `<div style="margin-top:6px;border:2px solid var(--steel-600);border-radius:8px;padding:6px 8px;background:var(--steel-50);"><div style="font-weight:700;font-size:10.5px;color:var(--steel-700);">${escapeHtml(g.meta.label)} (${g.drawings.length})</div>${rows}</div>`;
+    return `<div style="margin-top:6px;border:2px solid var(--steel-600);border-radius:8px;padding:6px 8px;background:var(--steel-50);"><div style="font-weight:700;font-size:10.5px;color:var(--steel-700);">${escapeHtml(g.meta.label)} (${g.deduped.length})</div>${rows}</div>`;
   }).join('');
   // Stays open across re-renders — see ATTACHED_DRAWINGS_OPEN_KEYS above.
   // Only an explicit click on the summary toggles it now, same pattern as
@@ -1479,8 +1556,8 @@ function drawingRequirementHtml(item, stepProcessId){
     }
     return `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:5px 8px;border-radius:6px;margin-top:4px;">📐 Kulang sa Drawing — wala pang naka-attach na ${escapeHtml(req.meta.label)}</div>`;
   }
-  const links = req.drawings.map(d=>{
-    const suffix = d.childPart ? ` (${escapeHtml(d.childPart)})` : '';
+  const links = dedupeDrawingsForDisplay(req.drawings).map(({d, childParts})=>{
+    const suffix = childParts.length ? ` (${childParts.map(p=>escapeHtml(p)).join(', ')})` : '';
     return `📐 ${drawingLinksForEntry(d, req.meta.label)}${suffix}`;
   }).join('<br>');
   return `<div class="hint" style="color:var(--green);margin-top:4px;">${links}</div>`;
@@ -1668,22 +1745,51 @@ function drawingAttachFormHtml(item, processId, childPart){
     ${notRequiredHtml}
   </div>`;
 }
-// Fixed display order for the 6 "producing" drawing/program types shown
+// Fixed display order for the 5 "producing" drawing/program types shown
 // TOGETHER as their own distinct square/area on every Engineering task card
 // (Fabrication Drawing, Laser Cutting Program, Manual Cutting Scheme,
-// Bystronic Cutting Program, Turret Punch Program, Burring-Tapping-
-// Countersunk Drawing) — so whoever is handling ANY one of these steps for
-// an item can see and attach every type from that same card, not only the
-// single type matching this particular card's own process (useful when one
-// person/team ends up doing several of these steps for the same item).
-// Bending Flat Pattern is deliberately excluded — it stays attached per Sub
-// Assy/Child Part right next to the Parts List instead of here (see
-// partsListTableHtml), since it needs to be scoped to one specific piyesa,
-// not the whole item/SO like these 6.
+// Bystronic Cutting Program, Turret Punch Program) — so whoever is handling
+// ANY one of these steps for an item can still SEE every type from that
+// same card at a glance. Bending Flat Pattern and Burring-Tapping-
+// Countersunk Drawing are deliberately excluded — they stay attached per
+// Sub Assy/Child Part right next to the Parts List instead of here (see
+// partsListTableHtml), since they need to be scoped to one specific piyesa,
+// not the whole item/SO like these 5.
+//
+// Only the ONE box matching THIS card's own process is actually editable
+// (upload/replace/"Hindi Required") — per the reported concern, a person
+// handling, say, Laser Cutting Program shouldn't be able to upload or edit
+// Fabrication Drawing or Manual Cutting Scheme just because they happen to
+// share this card layout; that's not their process. Every other box here is
+// read-only (drawingViewOnlyBoxHtml) — links to open/download whatever's
+// already attached, but no attach form, no "Palitan", no "Hindi Required".
 const ENGINEERING_DRAWING_BOX_ORDER = ['drawing','laser_cutting_program','manual_cutting_scheme','bystronic_tube_cutting_program','turret_punch_program'];
 function isEngineeringDrawingProcess(processId){ return ENGINEERING_DRAWING_BOX_ORDER.includes(processId); }
-function engineeringDrawingBoxesHtml(item){
-  return ENGINEERING_DRAWING_BOX_ORDER.map(pid=>`<div style="margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:2px;">${drawingAttachFormHtml(item, pid)}</div>`).join('');
+function engineeringDrawingBoxesHtml(item, currentProcessId){
+  return ENGINEERING_DRAWING_BOX_ORDER.map(pid=>{
+    const inner = pid===currentProcessId ? drawingAttachFormHtml(item, pid) : drawingViewOnlyBoxHtml(item, pid);
+    return `<div style="margin-top:8px;border:1px solid var(--line);border-radius:8px;padding:2px;">${inner}</div>`;
+  }).join('');
+}
+// Read-only counterpart to drawingAttachFormHtml, for every OTHER
+// engineering box on a card that isn't this process's own (see
+// engineeringDrawingBoxesHtml above) — same visual box/label treatment, but
+// just the links to whatever's already attached (deduped, same as the
+// "Lahat ng Naka-attach" summary), no upload/edit controls at all.
+function drawingViewOnlyBoxHtml(item, processId){
+  const meta = DRAWING_PROCESS_MAP[processId];
+  if(!meta) return '';
+  const existing = drawingsForItemProcess(item, processId);
+  const rows = existing.length
+    ? dedupeDrawingsForDisplay(existing).map(({d, childParts})=>{
+        const suffix = childParts.length ? ` (${childParts.map(p=>escapeHtml(p)).join(', ')})` : '';
+        return `<div class="hint" style="margin-top:2px;">📐 ${drawingLinksForEntry(d, meta.label)}${suffix}</div>`;
+      }).join('')
+    : `<div class="hint" style="color:var(--gray);">Wala pang naka-attach.</div>`;
+  return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
+    <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 ${escapeHtml(meta.label)}${meta.scope==='so'?' (para sa buong SO)':''} <span style="font-weight:400;color:var(--gray);">— view only (hindi ito ang proseso mo)</span></div>
+    ${rows}
+  </div>`;
 }
 // Handles both a pasted link AND a picked file — if a file was chosen it's
 // uploaded to the shared 'drawings' Storage bucket first (async), so any
@@ -2285,7 +2391,12 @@ function partsListDrawingCellHtml(item, name, processId, canAttach){
   // Require a name first so a Sub Assy's own drawing never leaks down into
   // an unrelated Child Part (or vice versa).
   if(!name){
-    return `<span class="hint" style="color:var(--gray);">Pangalanan muna ang piyesa para maka-attach dito ng sarili nitong drawing.</span>`;
+    // Short compact notice instead of the full sentence — the full
+    // explanation is still there as a tooltip on hover/tap. The long
+    // unabbreviated version used to make this column (× 3, one per drawing
+    // type) balloon in width for every unnamed row, forcing horizontal
+    // scrolling just to see the columns further right (Natapos, etc.).
+    return `<span class="hint" style="color:var(--gray);" title="Pangalanan muna ang piyesa para maka-attach dito ng sarili nitong drawing.">⚠ Pangalanan muna</span>`;
   }
   const existing = drawingsForItemProcess(item, processId).filter(d=>(d.childPart||'')===name);
   const isNotRequired = drawingIsMarkedNotRequired(item, processId, name);
@@ -2298,7 +2409,7 @@ function partsListDrawingCellHtml(item, name, processId, canAttach){
             ? `<span style="${pillStyle}background:#fde3e3;color:var(--red);">❌ Kulang</span>`
             : `<span style="${pillStyle}background:var(--gray-bg);color:var(--gray);">—</span>`));
   let cell = statusPill;
-  if(existing.length) cell += existing.map(d=>`<div style="margin-top:2px;">${drawingLinksForEntry(d, meta.label)}</div>`).join('');
+  if(existing.length) cell += existing.map(d=>`<div style="margin-top:2px;">${drawingLinksForEntry(d, meta.label, true)}</div>`).join('');
   if(canAttach) cell += drawingAttachFormHtml(item, processId, name);
   // Colored left border matching this piyesa's own Sub Assy group accent
   // (same color as its row in the Parts List table) — a quick visual tie
@@ -2328,11 +2439,11 @@ const PARTS_COUNT_GATED_PROCESSES = ['laser_cutting','manual_cutting','bystronic
 // per process since each of the 3 gated steps cuts its own separate batch.
 function partsCountInputHtml(item, processId, name){
   if(!name){
-    return `<span class="hint" style="color:var(--gray);">Pangalanan muna ang piyesa sa Fabrication Drawing step para malagyan dito ng bilang.</span>`;
+    return `<span class="hint" style="color:var(--gray);" title="Pangalanan muna ang piyesa sa Fabrication Drawing step para malagyan dito ng bilang.">⚠ Pangalanan muna</span>`;
   }
   const val = (item.partsProgress && item.partsProgress[processId] && item.partsProgress[processId][name]!==undefined)
     ? item.partsProgress[processId][name] : '';
-  return `<input type="number" min="0" value="${val}" placeholder="0" style="font-size:12px;padding:2px 5px;width:65px;" onchange="updatePartsProgress('${item.id}','${processId}','${jsAttr(name)}',this.value)">`;
+  return `<input type="number" min="0" value="${val}" placeholder="0" style="font-size:12px;padding:2px 5px;width:100%;max-width:58px;box-sizing:border-box;" onchange="updatePartsProgress('${item.id}','${processId}','${jsAttr(name)}',this.value)">`;
 }
 function updatePartsProgress(itemId, processId, name, value){
   const item = ITEMS.find(i=>i.id===itemId);
@@ -2702,8 +2813,13 @@ function partsListTableHtml(item, processId){
   if(!hasList && !canEditPartsList) return '';
   const mainQty = Number(item.qty)||0;
   const colCount = showNatapos ? 7 : 6; // Piyesa, Qty/parent, Total Kailangan, Fabrication Drawing, Burring-Tapping-Countersunk Drawing, Bending Flat Pattern, + (Natapos, only mula Laser Cutting hanggang Delivery)
-  const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:2px 5px;width:130px;" onchange="${changeFn}">`;
-  const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:2px 5px;width:55px;" onchange="${changeFn}">`;
+  // Narrower than before (was 130px) — every extra pixel here is a pixel
+  // the 3 drawing columns + Natapos don't get, and this field only shows up
+  // at all on the one card that can actually edit the Parts List
+  // (canEditPartsList), where a slightly tighter box is a fair trade for
+  // not needing to scroll right to see the rest of the row.
+  const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:2px 5px;width:100%;max-width:110px;box-sizing:border-box;" onchange="${changeFn}">`;
+  const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:2px 5px;width:100%;max-width:50px;box-sizing:border-box;" onchange="${changeFn}">`;
   // Small formula caption under each total — spells out that the number
   // still traces back to the item's own qty (e.g. "4 × 20 pc"), so it's
   // visibly obvious a freshly-added row is computed off the real Main
@@ -2788,9 +2904,27 @@ function partsListTableHtml(item, processId){
   // screen. Natapos (Completed) is a 4th header, mula Laser Cutting
   // hanggang Delivery lang (showNatapos).
   const drawColHeaderStyle = 'font-size:9.5px;white-space:normal;';
-  const lastColsHeaderHtml = `<th style="${colDivider}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.drawing.label)}</th><th style="${colDivider}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.burring_tapping_countersunk_drawing.label)}</th><th style="${showNatapos?colDivider:''}${drawColHeaderStyle}">${escapeHtml(DRAWING_PROCESS_MAP.bending_flat_pattern.label)}</th>${showNatapos ? `<th>Natapos (Completed)</th>` : ''}`;
+  // Abbreviated header text (full name still available via title tooltip)
+  // — same reasoning as the compact drawing links above: 3 drawing columns
+  // repeating their full official names ("Burring-Tapping-Countersunk
+  // Drawing", etc.) as headers was itself forcing extra width nobody needed
+  // to actually see, since the cells underneath already say what they are.
+  const lastColsHeaderHtml = `<th style="${colDivider}${drawColHeaderStyle}" title="${escapeHtml(DRAWING_PROCESS_MAP.drawing.label)}">Fab. Drawing</th><th style="${colDivider}${drawColHeaderStyle}" title="${escapeHtml(DRAWING_PROCESS_MAP.burring_tapping_countersunk_drawing.label)}">B/T/C Drawing</th><th style="${showNatapos?colDivider:''}${drawColHeaderStyle}" title="${escapeHtml(DRAWING_PROCESS_MAP.bending_flat_pattern.label)}">Bending Pattern</th>${showNatapos ? `<th style="${drawColHeaderStyle}" title="Natapos (Completed)">Natapos</th>` : ''}`;
+  // Fixed % column widths (via colgroup + table-layout:fixed) instead of
+  // letting content dictate width — this is what actually guarantees the
+  // whole row fits within the card without horizontal scrolling, since a
+  // long filename or piyesa name can no longer silently stretch its column
+  // (and, in turn, the whole table) past the available space; it wraps or
+  // ellipsis-truncates inside its own fixed-width cell instead (see the
+  // compact drawingLinksForEntry() calls above). mini-table-wrap's
+  // overflow-x:auto stays on as a safety net only for genuinely tiny/zoomed
+  // screens where even these % widths can't all fit.
+  const colgroupHtml = showNatapos
+    ? `<colgroup><col style="width:18%;"><col style="width:8%;"><col style="width:9%;"><col style="width:16%;"><col style="width:16%;"><col style="width:16%;"><col style="width:17%;"></colgroup>`
+    : `<colgroup><col style="width:22%;"><col style="width:9%;"><col style="width:11%;"><col style="width:19%;"><col style="width:19%;"><col style="width:20%;"></colgroup>`;
   return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
-    <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table" style="border-collapse:separate;border-spacing:0;">
+    <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table" style="border-collapse:separate;border-spacing:0;table-layout:fixed;width:100%;">
+      ${colgroupHtml}
       <tr><th style="${colDivider}">Piyesa</th><th style="${colDivider}">Qty/parent</th><th style="${colDivider}">Total Kailangan</th>${lastColsHeaderHtml}</tr>
       ${rows}
     </table></div>
@@ -6416,14 +6550,28 @@ function renderPersonActionableTasksHtml(name){
     // ENGINEERING_DRAWING_BOX_ORDER), show ALL 5 drawing/program types as
     // their own square/area together instead of just the one matching this
     // card's own process — whoever's handling ANY of these steps for this
-    // item can then see and attach every type from the one card. Every
-    // other process (including the consuming steps, and Bending Flat
-    // Pattern + Burring-Tapping-Countersunk Drawing, which both stay tied
-    // to the Parts List instead — see partsListTableHtml) keeps the single
-    // matching-type form as before.
-    const drawingAttachHtml = isEngineeringDrawingProcess(t.processId) ? engineeringDrawingBoxesHtml(t.item) : drawingAttachFormHtml(t.item, t.processId);
+    // item can then see every type from the one card, but (per the reported
+    // concern) can only actually upload/edit the ONE box that's really
+    // theirs (t.processId) — every other box is read-only, see
+    // engineeringDrawingBoxesHtml/drawingViewOnlyBoxHtml. Every other
+    // process (including the consuming steps, and Bending Flat Pattern +
+    // Burring-Tapping-Countersunk Drawing, which both stay tied to the
+    // Parts List instead — see partsListTableHtml) keeps the single
+    // matching-type editable form as before.
+    const drawingAttachHtml = isEngineeringDrawingProcess(t.processId) ? engineeringDrawingBoxesHtml(t.item, t.processId) : drawingAttachFormHtml(t.item, t.processId);
     const drawingsHtml = drawingLinkHtml(t.item);
-    const allDrawingsHtml = attachedDrawingsSummaryHtml(t.item);
+    // The flat "Lahat ng Naka-attach na Drawing" cross-process summary is
+    // skipped on any drawing-PRODUCING Engineering card (Fabrication
+    // Drawing, Laser Cutting Program, Burring-Tapping-Countersunk Drawing,
+    // Bystronic Tube Cutting Program, Manual Cutting Scheme, Bending Flat
+    // Pattern, Turret Punch Program — i.e. anything in DRAWING_PROCESS_MAP)
+    // — those cards already show every attached drawing type via their own
+    // box(es) right above (drawingAttachFormHtml/engineeringDrawingBoxesHtml
+    // /Parts List columns), so repeating the same info again below the
+    // catch-up schedule was pure duplication with no upload capability of
+    // its own. Every other (consuming/production) card still gets it —
+    // that's their only place to see everything ever attached to the item.
+    const allDrawingsHtml = DRAWING_PROCESS_MAP[t.processId] ? '' : attachedDrawingsSummaryHtml(t.item);
     const partsListHtml = partsListTableHtml(t.item, t.processId);
     const rawPartsHtml = t.item.partsBreakdown ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(t.item.partsBreakdown)}</div></details>` : '';
     const inspectionChecklistWidgetHtml = inspectionChecklistHtml(t.item, t.processId);
