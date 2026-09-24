@@ -874,7 +874,7 @@
       <div id="itemRows"></div>
       <button class="btn secondary" onclick="addItemRow()" style="margin-bottom:16px;">+ Add item row</button>
       <br>
-      <button class="btn" onclick="submitSO()">Add to Production Board</button>
+      <button class="btn" id="submitSoBtn" onclick="submitSO()">Add to Production Board</button>
       <div class="hint" style="margin-top:10px;">Ang unang process sa route ay awtomatikong mapupunta sa taong naka-assign dito, sa status na Queue.</div>
 
       <details style="margin-top:18px;">
@@ -1451,7 +1451,13 @@ function attachedDrawingsSummaryHtml(item){
       const accentStyle = accent ? `border:2px solid ${accent.color};border-radius:6px;padding:4px 8px;` : '';
       return `<div style="margin-top:4px;${accentStyle}">📐 ${drawingLinksForEntry(d, g.meta.label)}${suffix}</div>`;
     }).join('');
-    return `<div style="margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;"><div style="font-weight:700;font-size:10.5px;color:var(--steel-700);">${escapeHtml(g.meta.label)} (${g.drawings.length})</div>${rows}</div>`;
+    // The outer per-TYPE box itself needs to read clearly as ONE box at a
+    // glance (a thin 1px neutral --line border got visually lost once each
+    // entry inside also got its own bold colored border) — a thicker,
+    // darker border plus a light background tint makes the type-level
+    // grouping boundary obvious even with several colored entry-boxes
+    // sitting inside it.
+    return `<div style="margin-top:6px;border:2px solid var(--steel-600);border-radius:8px;padding:6px 8px;background:var(--steel-50);"><div style="font-weight:700;font-size:10.5px;color:var(--steel-700);">${escapeHtml(g.meta.label)} (${g.drawings.length})</div>${rows}</div>`;
   }).join('');
   // Stays open across re-renders — see ATTACHED_DRAWINGS_OPEN_KEYS above.
   // Only an explicit click on the summary toggles it now, same pattern as
@@ -2898,9 +2904,18 @@ async function persistState(){
       const baseJSON = ITEM_BASE_SNAPSHOTS.get(it.id);
       return baseJSON===undefined || baseJSON!==JSON.stringify(it);
     });
-    for(const it of touchedItems){
-      const result = await persistItem(it);
-      if(!result.ok) return result; // bubble up capability_disabled / upstream_error as-is — save()'s own retry handles the transient case
+    // Each touched item is its own independent row upsert (no ordering
+    // dependency between them), so run them all in PARALLEL instead of one
+    // at a time. This used to be a sequential for-await loop — fine for the
+    // usual one-item save, but adding several new items at once (e.g. 9 line
+    // items from one PO, via submitSO) meant sitting through that many
+    // separate network round trips back-to-back before the save finished,
+    // which on a slower connection read as the whole "Add New SO" screen
+    // having hung rather than just being slow.
+    if(touchedItems.length){
+      const results = await Promise.all(touchedItems.map(it=>persistItem(it)));
+      const failed = results.find(r=>!r.ok);
+      if(failed) return failed; // bubble up capability_disabled / upstream_error as-is — save()'s own retry handles the transient case
     }
     if(PENDING_DELETE_IDS.length){
       const idsToDelete = PENDING_DELETE_IDS.slice();
@@ -5804,6 +5819,18 @@ function routeChipsHtml(scope, selected){
 }
 let rowRoutes = {};    // for Add New SO item rows
 let editItemRoute = []; // for the Edit Item modal
+// The SO Number this Add New SO form session has already successfully
+// added at least one item under (trimmed/lowercased), or null if none yet.
+// addSingleItem() lets someone add items from the SAME SO one at a time as
+// each row's route gets finished — the FIRST item added makes that SO
+// Number "existing on the board", which would otherwise make
+// checkSoNumberDuplicate() wrongly block every item after the first one.
+// Tracking this lets that same in-progress SO keep being added to, while
+// still catching a genuinely different, already-existing SO Number typed
+// into a fresh form. Reset to null whenever the form is fully cleared (see
+// submitSO()'s post-submit reset) — it only needs to survive for as long as
+// this one SO is actively being built up in the open form.
+let soAddSessionNumber = null;
 function toggleRouteChip(scope, processId){
   let arr;
   if(scope==='edit'){ arr = editItemRoute; }
@@ -8945,7 +8972,11 @@ function checkSoNumberDuplicate(){
   const warnEl = document.getElementById('soNumberDupWarning');
   if(!input || !warnEl) return false;
   const val = input.value.trim().toLowerCase();
-  const isDup = !!val && activeItems().some(it=>(it.soNumber||'').trim().toLowerCase()===val);
+  // Not a dup if it's the SAME SO this open form has already started adding
+  // items under (see soAddSessionNumber) — that's expected when adding one
+  // item at a time via addSingleItem, not a re-encode mistake.
+  const isContinuingThisSession = !!val && val===soAddSessionNumber;
+  const isDup = !isContinuingThisSession && !!val && activeItems().some(it=>(it.soNumber||'').trim().toLowerCase()===val);
   input.classList.toggle('input-dup-blink', isDup);
   if(isDup){
     warnEl.textContent = `⚠ Existing na sa board ang SO Number na "${input.value.trim()}" — hindi ito pwedeng idagdag ulit.`;
@@ -9322,6 +9353,11 @@ async function addSingleItem(rowId){
   // whatever order they happen to load from the database in.
   result.item.soLineNo = [...document.querySelectorAll('#itemRows .item-row-wrap')].indexOf(wrap);
   ITEMS.push(result.item);
+  // Remember this SO as "already started in this open form" so adding the
+  // NEXT item from the same SO (the whole point of addSingleItem — one row
+  // at a time as each one's route is ready) doesn't get wrongly flagged as
+  // a duplicate now that this SO Number is on the board.
+  soAddSessionNumber = ctx.soNumber.trim().toLowerCase();
   (result.drawingPoolEntries||[]).forEach(d=>{ DRAWINGS_POOL.push(d); saveDrawingEntry(d); });
   delete rowRoutes[rowId];
   delete partsListState[rowId];
@@ -9335,6 +9371,7 @@ async function addSingleItem(rowId){
   renderBoard(); renderOverview(); renderBrowseSo();
   showToast(`Naidagdag ang ${result.item.itemCode} sa Production Board.`);
   if(document.querySelectorAll('#itemRows .item-row-wrap').length===0) addItemRow();
+  checkSoNumberDuplicate(); // clear any stale dup warning now that this SO is the session's own
 }
 function parsePaste(){
   const raw = document.getElementById('pasteArea').value.trim();
@@ -9357,7 +9394,14 @@ function parsePaste(){
   if(added>0){ showToast(`Parsed ${added} row(s) — pumili pa rin ng route sa bawat isa`); }
   else{ showToast('Could not parse — try adding rows manually'); addItemRow(); }
 }
+// Guards against a double-click/double-tap firing submitSO() twice while
+// the first call's save is still in flight — with several items in one SO,
+// the save can take a few seconds (see the Promise.all note in
+// persistState), and a second overlapping call would have re-read the same
+// still-unsaved form rows and pushed duplicate items.
+let submitSOInFlight = false;
 async function submitSO(){
+  if(submitSOInFlight) return;
   const ctx = getSoContext();
   if(!ctx.soNumber || !ctx.client){ showToast('Enter both SO Number and Client'); return; }
   // Hard block: never let a SO Number that's already active on the board get
@@ -9398,35 +9442,57 @@ async function submitSO(){
     else{ showToast('Add at least one item row'); }
     return;
   }
-  ITEMS = ITEMS.concat(newItems);
-  newDrawingPoolEntries.forEach(d=>{ DRAWINGS_POOL.push(d); saveDrawingEntry(d); });
-  await save();
-  wraps.forEach(wrap=>{ if(!remainingWraps.includes(wrap)) wrap.remove(); });
-  let msg = `Added ${newItems.length} item(s) from ${ctx.soNumber} to the production board.`;
-  if(routeSkipped>0) msg += ` ${routeSkipped} item ang naiwan — kulang pa ang route nito.`;
-  showToast(msg);
-  if(remainingWraps.length===0){
-    document.getElementById('soNumber').value=''; document.getElementById('soClient').value='';
-    document.getElementById('soDateUploaded').value = new Date().toISOString().slice(0,10);
-    document.getElementById('soTargetDelivery').value='';
-    document.getElementById('pasteArea').value='';
-    checkSoNumberDuplicate();
-    itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; rowCurrency = {}; rowFxInfo = {}; DRAFT_ROWS = {}; saveDraftsLocal();
-    currentSoPdf = null;
-    // Reset the dropzone back to its empty/ready look too — otherwise it
-    // kept showing "<filename> uploaded" from the SO that was just added,
-    // even though the form underneath it had already been cleared for the
-    // next one, which made the screen look stuck/confusing on a 2nd upload.
-    const dzAfterSubmit = document.getElementById('dropzone'), dzTextAfterSubmit = document.getElementById('dzText');
-    if(dzAfterSubmit) dzAfterSubmit.className = 'dropzone';
-    if(dzTextAfterSubmit) dzTextAfterSubmit.innerHTML = `<b>Click to upload</b> the SO PDF — SO Number, Client, and items will be filled in automatically below.`;
-    document.getElementById('uploadStatus').textContent = '';
-    document.getElementById('autofillNote').style.display = 'none';
-    addItemRow();
-    renderBoard(); renderOverview(); renderBrowseSo();
-    document.querySelector('.tab[data-view="board"]').click();
-  }else{
-    renderBoard(); renderOverview(); renderBrowseSo();
+  // Visibly disable the button and say what's happening while the save is
+  // in flight — adding several items at once can genuinely take a few
+  // seconds (each one is its own upload), and with no feedback at all that
+  // reads as the screen having frozen/hung rather than just working.
+  submitSOInFlight = true;
+  const submitBtn = document.getElementById('submitSoBtn');
+  const submitBtnOrigText = submitBtn ? submitBtn.textContent : '';
+  if(submitBtn){ submitBtn.disabled = true; submitBtn.textContent = `Sinasave ang ${newItems.length} item(s)...`; }
+  try{
+    ITEMS = ITEMS.concat(newItems);
+    // Same as addSingleItem — some rows can stay behind (missing route), so
+    // remember this SO as this session's own in case the rest get added one
+    // at a time afterward via addSingleItem.
+    soAddSessionNumber = ctx.soNumber.trim().toLowerCase();
+    newDrawingPoolEntries.forEach(d=>{ DRAWINGS_POOL.push(d); saveDrawingEntry(d); });
+    await save();
+    wraps.forEach(wrap=>{ if(!remainingWraps.includes(wrap)) wrap.remove(); });
+    let msg = `Added ${newItems.length} item(s) from ${ctx.soNumber} to the production board.`;
+    if(routeSkipped>0) msg += ` ${routeSkipped} item ang naiwan — kulang pa ang route nito.`;
+    showToast(msg);
+    if(remainingWraps.length===0){
+      document.getElementById('soNumber').value=''; document.getElementById('soClient').value='';
+      document.getElementById('soDateUploaded').value = new Date().toISOString().slice(0,10);
+      document.getElementById('soTargetDelivery').value='';
+      document.getElementById('pasteArea').value='';
+      soAddSessionNumber = null; // this SO is fully done — a re-typed match should go back to being flagged as a real dup
+      checkSoNumberDuplicate();
+      itemRowCount = 0; rowRoutes = {}; partsListState = {}; drawingsState = {}; rowCurrency = {}; rowFxInfo = {}; DRAFT_ROWS = {}; saveDraftsLocal();
+      currentSoPdf = null;
+      // Reset the dropzone back to its empty/ready look too — otherwise it
+      // kept showing "<filename> uploaded" from the SO that was just added,
+      // even though the form underneath it had already been cleared for the
+      // next one, which made the screen look stuck/confusing on a 2nd upload.
+      const dzAfterSubmit = document.getElementById('dropzone'), dzTextAfterSubmit = document.getElementById('dzText');
+      if(dzAfterSubmit) dzAfterSubmit.className = 'dropzone';
+      if(dzTextAfterSubmit) dzTextAfterSubmit.innerHTML = `<b>Click to upload</b> the SO PDF — SO Number, Client, and items will be filled in automatically below.`;
+      document.getElementById('uploadStatus').textContent = '';
+      document.getElementById('autofillNote').style.display = 'none';
+      addItemRow();
+      renderBoard(); renderOverview(); renderBrowseSo();
+      document.querySelector('.tab[data-view="board"]').click();
+    }else{
+      renderBoard(); renderOverview(); renderBrowseSo();
+    }
+  } finally {
+    submitSOInFlight = false;
+    // remainingWraps.length===0 branch already rebuilt the form from
+    // scratch (addItemRow etc.) — the button referenced by submitBtn may no
+    // longer exist in that case, so this re-enable only matters when some
+    // rows were left behind and the old button element is still on screen.
+    if(submitBtn && submitBtn.isConnected){ submitBtn.disabled = false; submitBtn.textContent = submitBtnOrigText; }
   }
 }
 
