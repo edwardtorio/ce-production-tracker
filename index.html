@@ -1033,9 +1033,8 @@ const PROCESS_LIST = [
   {id:'burring',            label:'De-Burring', category:'production'},
   {id:'machining',          label:'Machining', category:'production'},
   {id:'engraving',          label:'Engraving', category:'production'},
-  {id:'burring_2',          label:'Burring', category:'production'},
-  {id:'tapping',            label:'Tapping', category:'production'},
-  {id:'countersunk',        label:'Countersunking', category:'production'},
+  {id:'force_fitting',      label:'Force Fitting', category:'production'},
+  {id:'burring_tapping_countersunk', label:'Burring/Tapping/Countersunking', category:'production'},
   {id:'grooving',           label:'Grooving', category:'production'},
   {id:'stud_welding',       label:'Stud Welding', category:'production'},
   {id:'bending',            label:'Bending', category:'production'},
@@ -1083,9 +1082,8 @@ const DEFAULT_OWNERS = {
   machining:         [],
   engraving:         [],
   burring:           ['Elmer Galangue'],
-  burring_2:         [],
-  tapping:           ['Elmer Galangue'],
-  countersunk:       ['Elmer Galangue'],
+  force_fitting:     [],
+  burring_tapping_countersunk: [],
   grooving:          [],
   bending:           ['Rodnie Flaviano'],
   stud_welding:      ['Angelica Mercado','Alfred Portugaliza','Myrna Garfin'],
@@ -1217,13 +1215,14 @@ let MATERIALS = [];
 // owner's actual workflow:
 //   drawing (Fabrication Drawing)               -> item-level    -> feeds welding (main/sub assy)
 //   laser_cutting_program (Nesting Layout)       -> SO-wide       -> feeds laser_cutting (many child parts share one sheet)
-//   burring_tapping_countersunk_drawing          -> item-level    -> feeds burring/tapping/countersunk/burring_2
+//   burring_tapping_countersunk_drawing          -> item-level    -> feeds burring/burring_tapping_countersunk
 //   bystronic_tube_cutting_program               -> SO-wide       -> feeds bystronic_cutting
 //   manual_cutting_scheme                        -> SO-wide       -> feeds manual_cutting
 //   bending_flat_pattern                         -> per child part-> feeds bending (each flat pattern is its own piece)
-// Boring/Tapping/Countersinking (tapping, countersunk, burring, burring_2) used
-// to be annotated directly on the Fabrication Drawing — now split out into
-// its own dedicated Burring-Tapping-Countersunk Drawing (own process, right
+// Boring/Tapping/Countersinking (now one combined step, 'burring_tapping_countersunk',
+// alongside the earlier, unrelated 'burring' / De-Burring step) used to be
+// annotated directly on the Fabrication Drawing — now split out into its
+// own dedicated Burring-Tapping-Countersunk Drawing (own process, right
 // after Laser Cutting Program in the route) per the owner, so it can be
 // tracked, gated, and attached separately from the main Fabrication Drawing.
 // Stored in its own table (drawings_pool), same nullable-itemId +
@@ -1251,7 +1250,7 @@ let ACTIVITY_LOG = [];
 const DRAWING_PROCESS_MAP = {
   drawing:                        { label:'Fabrication Drawing',        scope:'item',      consumedBy:['welding'] },
   laser_cutting_program:          { label:'Laser Cutting Nesting Layout', scope:'so',       consumedBy:['laser_cutting'] },
-  burring_tapping_countersunk_drawing: { label:'Burring-Tapping-Countersunk Drawing', scope:'item', consumedBy:['burring','tapping','countersunk','burring_2'] },
+  burring_tapping_countersunk_drawing: { label:'Burring-Tapping-Countersunk Drawing', scope:'item', consumedBy:['burring','burring_tapping_countersunk'] },
   bystronic_tube_cutting_program: { label:'Bystronic Tube Cutting Program', scope:'so',     consumedBy:['bystronic_cutting'] },
   manual_cutting_scheme:          { label:'Manual Cutting Scheme',      scope:'so',         consumedBy:['manual_cutting'] },
   bending_flat_pattern:           { label:'Bending Flat Pattern',       scope:'childpart',  consumedBy:['bending'] },
@@ -3195,6 +3194,109 @@ function migrateLegacyItem(it){
   return it;
 }
 
+// Burring, Tapping, and Countersunking used to be 3 separate route steps
+// (ids 'burring_2', 'tapping', 'countersunk' — distinct from the earlier,
+// unrelated 'burring' / De-Burring step) always assigned to the same
+// person and always worked together in practice, so they're now ONE
+// combined step ('burring_tapping_countersunk'). Any item whose route still
+// has the 3 old ids (saved before this change) gets folded down to the one
+// new id here, on load, before anything else touches it. Merge policy for
+// status (per explicit confirmation): all 3 done -> done; none started ->
+// queue; anything in between (partial progress) -> ongoing, so no existing
+// progress silently disappears. Per-process fields that make sense to sum
+// (routeActiveSeconds, i.e. total time already logged) are added together;
+// single-value fields (assignee, timestamps) are taken from whichever old
+// id is most relevant to the merged status; catch-up history is combined.
+function migrateBurringTappingCountersunkMerge(it){
+  const OLD_IDS = ['burring_2','tapping','countersunk'];
+  const NEW_ID = 'burring_tapping_countersunk';
+  if(!it.route || !OLD_IDS.some(id=>it.route.includes(id))) return false;
+  const statusOf = id => (it.routeStatus && it.routeStatus[id]) || 'queue';
+  const presentOldIds = OLD_IDS.filter(id=>it.route.includes(id));
+  const allDone = presentOldIds.every(id=>statusOf(id)==='done');
+  const anyProgress = presentOldIds.some(id=>statusOf(id)==='done' || statusOf(id)==='ongoing');
+  const mergedStatus = allDone ? 'done' : (anyProgress ? 'ongoing' : 'queue');
+  // The one old id (if any) that was actually running its timer right now —
+  // only relevant when the merged status itself is 'ongoing'.
+  const activeOldId = presentOldIds.find(id=>statusOf(id)==='ongoing');
+  const firstDefined = (obj, ids) => { for(const id of ids){ if(obj && obj[id]!==undefined && obj[id]!==null) return obj[id]; } return undefined; };
+
+  // route: collapse every old-id slot into one, at the position of the
+  // FIRST old id found, and drop the rest.
+  const firstIdx = it.route.findIndex(id=>OLD_IDS.includes(id));
+  it.route = it.route.filter(id=>!OLD_IDS.includes(id));
+  it.route.splice(firstIdx, 0, NEW_ID);
+
+  it.routeStatus = it.routeStatus || {};
+  it.routeStatus[NEW_ID] = mergedStatus;
+
+  it.routeCompletedAt = it.routeCompletedAt || {};
+  if(mergedStatus==='done'){
+    // Latest of the 3 completion times — the group only finishes once the
+    // last of the 3 actually did.
+    const completions = presentOldIds.map(id=>it.routeCompletedAt[id]).filter(Boolean).sort();
+    if(completions.length) it.routeCompletedAt[NEW_ID] = completions[completions.length-1];
+  }
+
+  it.routeStartedAt = it.routeStartedAt || {};
+  it.routePaused = it.routePaused || {};
+  it.routeStartTimestamp = it.routeStartTimestamp || {};
+  if(mergedStatus==='ongoing' && activeOldId){
+    // Genuinely running right now on one of the 3 — carry its live timer
+    // state over so nothing resets/loses elapsed time mid-task.
+    if(it.routeStartedAt[activeOldId]!==undefined) it.routeStartedAt[NEW_ID] = it.routeStartedAt[activeOldId];
+    if(it.routePaused[activeOldId]!==undefined) it.routePaused[NEW_ID] = it.routePaused[activeOldId];
+    if(it.routeStartTimestamp[activeOldId]!==undefined) it.routeStartTimestamp[NEW_ID] = it.routeStartTimestamp[activeOldId];
+  }else if(mergedStatus==='ongoing'){
+    // Progress exists (something already done) but nothing is actively
+    // ticking right now — leave routeStartedAt unset so the existing
+    // "stuck ongoing clock" self-heal (right after this runs) starts a
+    // fresh, correct timer rather than us guessing one.
+    const ts = firstDefined(it.routeStartTimestamp, presentOldIds);
+    if(ts!==undefined) it.routeStartTimestamp[NEW_ID] = ts;
+  }
+  // Total time already logged across the 3 carries forward regardless of
+  // merged status — it's real work already paid for/costed, not to be lost.
+  const totalActiveSeconds = presentOldIds.reduce((sum,id)=> sum + (Number(it.routeActiveSeconds && it.routeActiveSeconds[id]) || 0), 0);
+  if(totalActiveSeconds>0) it.routeActiveSeconds[NEW_ID] = totalActiveSeconds;
+
+  if(it.routeTargetDates && OLD_IDS.some(id=>it.routeTargetDates[id]!==undefined)){
+    const t = firstDefined(it.routeTargetDates, presentOldIds);
+    if(t!==undefined) it.routeTargetDates[NEW_ID] = t;
+  }
+  if(it.stepAssignee && OLD_IDS.some(id=>it.stepAssignee[id]!==undefined)){
+    const preferOrder = activeOldId ? [activeOldId, ...presentOldIds] : presentOldIds;
+    const a = firstDefined(it.stepAssignee, preferOrder);
+    if(a!==undefined) it.stepAssignee[NEW_ID] = a;
+  }
+  if(it.catchUpAttempt && OLD_IDS.some(id=>it.catchUpAttempt[id]!==undefined)){
+    const maxAttempt = Math.max(...presentOldIds.map(id=>Number(it.catchUpAttempt[id])||0));
+    if(maxAttempt>0) it.catchUpAttempt[NEW_ID] = maxAttempt;
+  }
+  if(it.catchUpDate && OLD_IDS.some(id=>it.catchUpDate[id]!==undefined)){
+    const d = firstDefined(it.catchUpDate, presentOldIds);
+    if(d!==undefined) it.catchUpDate[NEW_ID] = d;
+  }
+  if(it.catchUpCritical && OLD_IDS.some(id=>it.catchUpCritical[id])){
+    it.catchUpCritical[NEW_ID] = true;
+  }
+  if(it.catchUpHistory && OLD_IDS.some(id=>Array.isArray(it.catchUpHistory[id]))){
+    const combined = [];
+    presentOldIds.forEach(id=>{ if(Array.isArray(it.catchUpHistory[id])) combined.push(...it.catchUpHistory[id]); });
+    if(combined.length) it.catchUpHistory[NEW_ID] = combined;
+  }
+
+  // Clean up every old-id key so nothing stale lingers alongside the new one.
+  [it.routeStatus, it.routeCompletedAt, it.routeStartedAt, it.routePaused, it.routeStartTimestamp,
+   it.routeActiveSeconds, it.routeTargetDates, it.stepAssignee, it.catchUpAttempt, it.catchUpDate,
+   it.catchUpCritical, it.catchUpHistory].forEach(dict=>{
+    if(!dict) return;
+    OLD_IDS.forEach(id=>{ delete dict[id]; });
+  });
+  return true;
+}
+
+
 // Loads the working state from the shared Supabase database. The very first
 // time this site is ever opened (brand-new, empty database) there is
 // nothing there yet — in that one case only, seed it from the #seed-state
@@ -3271,6 +3373,7 @@ async function loadInitialState(){
   if(beforeItemSnapshots) ITEM_BASE_SNAPSHOTS = new Map(beforeItemSnapshots);
   ITEMS.forEach(it=>{
     if(!it.route){ migrateLegacyItem(it); changed = true; }
+    if(migrateBurringTappingCountersunkMerge(it)) changed = true;
     if(it.dateUploaded===undefined){ it.dateUploaded = it.dateAdded || ''; changed = true; }
     if(it.targetDelivery===undefined){ it.targetDelivery = ''; changed = true; }
     if(it.referenceFiles===undefined){ it.referenceFiles = ''; changed = true; }
@@ -3336,8 +3439,34 @@ async function loadInitialState(){
   // potentially appends a genuinely-new entry on top of it this same load.
   if(backfillCatchUpHistory(ITEMS)) changed = true;
   if(advanceCatchUpSchedules(ITEMS)) changed = true;
+  // Same Burring/Tapping/Countersunking merge as migrateBurringTappingCountersunkMerge
+  // above, but for the process-level (not per-item) settings: the owners
+  // list and the cost rate, both keyed by process id in shared meta state.
+  // Old ids' owners are unioned (nobody's assignment gets silently dropped)
+  // and old rates fall back in the same order.
+  let metaChangedBurring = false;
+  {
+    const OLD_IDS = ['burring_2','tapping','countersunk'];
+    const NEW_ID = 'burring_tapping_countersunk';
+    if(OLD_IDS.some(id=>PROCESS_OWNERS[id]!==undefined)){
+      const unioned = [];
+      OLD_IDS.forEach(id=>{
+        (PROCESS_OWNERS[id]||[]).forEach(name=>{ if(!unioned.includes(name)) unioned.push(name); });
+      });
+      if(unioned.length) PROCESS_OWNERS[NEW_ID] = unioned;
+      OLD_IDS.forEach(id=>{ delete PROCESS_OWNERS[id]; });
+      changed = true; metaChangedBurring = true;
+    }
+    if(OLD_IDS.some(id=>PROCESS_COST_RATES[id]!==undefined)){
+      const rateSource = OLD_IDS.find(id=>PROCESS_COST_RATES[id] && (PROCESS_COST_RATES[id].manpowerPerHour || PROCESS_COST_RATES[id].electricityPerHour))
+        || OLD_IDS.find(id=>PROCESS_COST_RATES[id]!==undefined);
+      if(rateSource) PROCESS_COST_RATES[NEW_ID] = PROCESS_COST_RATES[rateSource];
+      OLD_IDS.forEach(id=>{ delete PROCESS_COST_RATES[id]; });
+      changed = true; metaChangedBurring = true;
+    }
+  }
   // Merge in any processes that didn't exist yet when owners were last saved.
-  let metaChanged = false;
+  let metaChanged = metaChangedBurring;
   PROCESS_LIST.forEach(p=>{
     if(PROCESS_OWNERS[p.id]===undefined){
       PROCESS_OWNERS[p.id] = DEFAULT_OWNERS[p.id] ? DEFAULT_OWNERS[p.id].slice() : [];
@@ -5464,9 +5593,7 @@ const CUTTING_QUICK_RETURN_ENGINEERING = {
   bystronic_cutting: 'bystronic_tube_cutting_program',
   turret_punching: 'turret_punch_program',
   burring: 'burring_tapping_countersunk_drawing',
-  tapping: 'burring_tapping_countersunk_drawing',
-  countersunk: 'burring_tapping_countersunk_drawing',
-  burring_2: 'burring_tapping_countersunk_drawing',
+  burring_tapping_countersunk: 'burring_tapping_countersunk_drawing',
 };
 // Same idea, one level earlier in the pipeline: the 5 Engineering processes
 // that each produce their own cutting/bending "program" document (Laser
