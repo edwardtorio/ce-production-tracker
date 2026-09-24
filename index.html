@@ -1416,7 +1416,14 @@ function allAttachedDrawingsForItem(item){
 // need it. Collapsed by default (a <details>) to avoid cluttering every
 // card with the full list when the operator doesn't need it right now.
 function attachedDrawingsSummaryHtml(item){
-  const groups = allAttachedDrawingsForItem(item);
+  // Bending Flat Pattern and Burring-Tapping-Countersunk Drawing already
+  // get their own dedicated columns in the Parts List table (scoped per
+  // Sub Assy/Child Part, which this flat cross-process summary can't do as
+  // precisely) — showing them again here would just be a duplicate, so this
+  // summary excludes those two and only covers drawing types that AREN'T
+  // already broken out in the Parts List.
+  const EXCLUDED_FROM_SUMMARY = ['bending_flat_pattern','burring_tapping_countersunk_drawing'];
+  const groups = allAttachedDrawingsForItem(item).filter(g=>!EXCLUDED_FROM_SUMMARY.includes(g.processId));
   if(!groups.length) return '';
   const totalCount = groups.reduce((a,g)=>a+g.drawings.length,0);
   // Sorted out into its own bordered box PER drawing type (Fabrication
@@ -1433,15 +1440,16 @@ function attachedDrawingsSummaryHtml(item){
   const groupBoxes = groups.map(g=>{
     const rows = g.drawings.map(d=>{
       const suffix = d.childPart ? ` (${escapeHtml(d.childPart)})` : '';
-      // Colored left border matching the drawing's own Sub Assy/Child Part
-      // group accent — same color it gets in the Parts List table (see
+      // Colored border around the ENTIRE box (all 4 sides, not just a left
+      // edge) matching the drawing's own Sub Assy/Child Part group accent —
+      // same color it gets in the Parts List table (see
       // partsListAccentForName) — so which piyesa a drawing covers is
       // obvious from color alone, at a glance, without reading the
       // parenthetical name text. No border for a blank/item-wide drawing
       // that isn't scoped to any specific piyesa.
       const accent = partsListAccentForName(item, d.childPart||'');
-      const accentStyle = accent ? `border-left:3px solid ${accent.color};padding-left:6px;` : '';
-      return `<div style="margin-top:3px;${accentStyle}">📐 ${drawingLinksForEntry(d, g.meta.label)}${suffix}</div>`;
+      const accentStyle = accent ? `border:2px solid ${accent.color};border-radius:6px;padding:4px 8px;` : '';
+      return `<div style="margin-top:4px;${accentStyle}">📐 ${drawingLinksForEntry(d, g.meta.label)}${suffix}</div>`;
     }).join('');
     return `<div style="margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;"><div style="font-weight:700;font-size:10.5px;color:var(--steel-700);">${escapeHtml(g.meta.label)} (${g.drawings.length})</div>${rows}</div>`;
   }).join('');
