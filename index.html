@@ -6277,17 +6277,21 @@ function activityLogSectionHtml(name){
         </div>
       </div>`).join('');
   const formHtml = `
-      <div class="task-card" style="border-style:dashed;">
+      <div class="task-card" style="border:1.5px solid var(--blue);border-radius:10px;background:linear-gradient(180deg,#fff 0%,var(--blue-bg) 160%);box-shadow:0 2px 10px rgba(37,99,168,.08);">
         <div class="tinfo" style="width:100%;">
-          <div class="stagelbl" style="margin-bottom:6px;">📝 Magdagdag ng Activity Ngayong Araw (${escapeHtml(formatDateLong(todayDateStr()))})</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-            <div class="field" style="flex:1 1 220px;margin:0;"><label>Gagawin</label><input type="text" id="newActivityDesc-${safeName}" placeholder="Halimbawa: Pag-aayos ng stock room"></div>
-            <div class="field" style="width:110px;margin:0;"><label>Target pcs</label><input type="number" id="newActivityTarget-${safeName}" min="0" placeholder="0"></div>
+          <div class="stagelbl" style="margin-bottom:9px;color:var(--blue);font-weight:800;letter-spacing:.2px;">📝 Magdagdag ng Activity Ngayong Araw <span style="font-weight:600;color:var(--steel-700);">(${escapeHtml(formatDateLong(todayDateStr()))})</span></div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div class="field" style="flex:1 1 220px;margin:0;"><label>Gagawin</label><input type="text" id="newActivityDesc-${safeName}" placeholder="Halimbawa: Pag-aayos ng stock room" style="background:#fff;"></div>
+            <div class="field" style="width:110px;margin:0;"><label>Target pcs</label><input type="number" id="newActivityTarget-${safeName}" min="0" placeholder="0" style="background:#fff;"></div>
             <button class="btn btn-sm" onclick="addActivityLogEntry('${safeName}', document.getElementById('newActivityDesc-${safeName}').value, document.getElementById('newActivityTarget-${safeName}').value); document.getElementById('newActivityDesc-${safeName}').value=''; document.getElementById('newActivityTarget-${safeName}').value='';">+ Idagdag</button>
           </div>
         </div>
       </div>`;
-  return `<div class="empty-state"><div class="big">✅</div>Nothing waiting for you right now.</div>${rows}${formHtml}`;
+  // No empty-state message here anymore — that's shown (or not) by the
+  // caller (renderPersonActionableTasksHtml), since this section is now
+  // ALWAYS appended below whatever task cards/assign-warnings are showing,
+  // not just when the person has nothing else waiting on them.
+  return `${rows}${formHtml}`;
 }
 // All-time list of this person's Activity Log entries (not just today's),
 // shown on their scorecard profile so self-logged work counts toward their
@@ -6372,7 +6376,7 @@ function renderPersonActionableTasksHtml(name){
     `).join('');
   }
   if(tasks.length===0 && needsAssign.length===0){
-    html += activityLogSectionHtml(name);
+    html += `<div class="empty-state"><div class="big">✅</div>Nothing waiting for you right now.</div>`;
   }else{
   html += tasks.map((t, taskIdx)=>{
     const curIdx = t.item.route.indexOf(t.processId);
@@ -6498,6 +6502,12 @@ function renderPersonActionableTasksHtml(name){
     </div>`;
   }).join('');
   }
+  // Always give this person a way to log stand-alone activity for today —
+  // whether they still have real tasks (assigned or awaiting assignment)
+  // sitting above or not — instead of only offering it once their queue is
+  // completely empty. Their earlier today's-entries + the add form both
+  // live in activityLogSectionHtml, appended here unconditionally.
+  html += activityLogSectionHtml(name);
   return html;
 }
 // Kept so every existing call site that refreshes the team view after a
