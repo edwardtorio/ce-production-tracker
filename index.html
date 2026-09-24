@@ -6207,6 +6207,11 @@ async function cycleActivityStatus(activityId){
   a.status = newStatus;
   renderMyTasks();
   if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  // Also clickable from the "Sariling Activity Log — Performance" list
+  // inside a person's Scorecard Profile popup (see
+  // personActivityLogPerformanceHtml) — refresh that popup too when it's
+  // the one this click came from, same as other in-popup status changes.
+  refreshProfileModalIfOpen();
   await saveActivityLog();
 }
 async function pauseActivityLog(activityId){
@@ -6294,7 +6299,7 @@ function personActivityLogPerformanceHtml(name){
       <td>${escapeHtml(a.description)}</td>
       <td>${a.targetQty}</td>
       <td>${a.doneQty}</td>
-      <td><span class="pill ${a.status}" style="cursor:default;">${a.status}</span></td>
+      <td><span class="pill ${a.status}" onclick="cycleActivityStatus('${a.id}');">${a.status}</span></td>
     </tr>`).join('');
   return `<div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Sariling Activity Log — Performance</div>
     <div class="hint" style="margin-bottom:6px;">${entries.length} activity log ${entries.length===1?'entry':'entries'} · ${doneCount} tapos · ${totalDone.toLocaleString()} / ${totalTarget.toLocaleString()} pcs nagawa</div>
