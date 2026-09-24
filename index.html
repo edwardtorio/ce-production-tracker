@@ -6239,6 +6239,11 @@ async function updateActivityQty(activityId, field, value){
   const num = Math.max(0, Number(value)||0);
   if(field==='target') a.targetQty = num; else if(field==='done') a.doneQty = num;
   renderMyTasks();
+  // Also editable from the "Sariling Activity Log — Performance" list
+  // inside a person's Scorecard Profile popup (see
+  // personActivityLogPerformanceHtml) — refresh that popup too when it's
+  // the one this edit came from, same as cycleActivityStatus above.
+  refreshProfileModalIfOpen();
   await saveActivityLog();
 }
 async function removeActivityLogEntry(activityId){
@@ -6294,15 +6299,26 @@ function personActivityLogPerformanceHtml(name){
   const totalTarget = entries.reduce((a,e)=>a+(Number(e.targetQty)||0),0);
   const totalDone = entries.reduce((a,e)=>a+(Number(e.doneQty)||0),0);
   const doneCount = entries.filter(e=>e.status==='done').length;
-  const rows = entries.map(a=>`<tr>
+  const summaryHtml = `<div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Sariling Activity Log — Performance</div>
+    <div class="hint" style="margin-bottom:6px;">${entries.length} activity log ${entries.length===1?'entry':'entries'} · ${doneCount} tapos · ${totalDone.toLocaleString()} / ${totalTarget.toLocaleString()} pcs nagawa</div>`;
+  // Once an entry is marked 'done' it drops off this list — it already
+  // shows up below, merged into "Mga Task — Target vs. Actual na Natapos"
+  // (see personActivityDoneRows in renderScorecardProfile), so keeping it
+  // here too would just be a duplicate. This list is meant for what's still
+  // queued/ongoing and needs attention; the summary line above still counts
+  // every entry ever logged (including done ones) for the overall picture.
+  const pendingEntries = entries.filter(a=>a.status!=='done');
+  if(pendingEntries.length===0){
+    return `${summaryHtml}<div class="hint">Lahat ng naka-log na activity ay tapos na — makikita sa "Mga Task — Target vs. Actual na Natapos" sa ibaba.</div>`;
+  }
+  const rows = pendingEntries.map(a=>`<tr>
       <td>${formatDateLong(a.date)}</td>
       <td>${escapeHtml(a.description)}</td>
       <td>${a.targetQty}</td>
-      <td>${a.doneQty}</td>
+      <td><input type="number" min="0" value="${a.doneQty}" style="width:70px;font-size:12px;padding:2px 5px;" onchange="updateActivityQty('${a.id}','done',this.value)"></td>
       <td><span class="pill ${a.status}" onclick="cycleActivityStatus('${a.id}');">${a.status}</span></td>
     </tr>`).join('');
-  return `<div class="score-task-label" style="margin-top:14px;margin-bottom:8px;border-top:1px solid var(--line);padding-top:10px;">Sariling Activity Log — Performance</div>
-    <div class="hint" style="margin-bottom:6px;">${entries.length} activity log ${entries.length===1?'entry':'entries'} · ${doneCount} tapos · ${totalDone.toLocaleString()} / ${totalTarget.toLocaleString()} pcs nagawa</div>
+  return `${summaryHtml}
     <div class="mini-table-wrap"><table class="mini-table">
       <tr><th>Petsa</th><th>Activity</th><th>Target pcs</th><th>Nagawang pcs</th><th>Status</th></tr>
       ${rows}
