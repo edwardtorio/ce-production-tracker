@@ -1434,11 +1434,24 @@ function attachedDrawingsSummaryHtml(item){
   const groupBoxes = groups.map(g=>{
     const rows = g.drawings.map(d=>{
       const suffix = d.childPart ? ` (${escapeHtml(d.childPart)})` : '';
-      return `<div style="margin-top:3px;">📐 ${drawingLinksForEntry(d, g.meta.label)}${suffix}</div>`;
+      // Colored left border matching the drawing's own Sub Assy/Child Part
+      // group accent — same color it gets in the Parts List table (see
+      // partsListAccentForName) — so which piyesa a drawing covers is
+      // obvious from color alone, at a glance, without reading the
+      // parenthetical name text. No border for a blank/item-wide drawing
+      // that isn't scoped to any specific piyesa.
+      const accent = partsListAccentForName(item, d.childPart||'');
+      const accentStyle = accent ? `border-left:3px solid ${accent.color};padding-left:6px;` : '';
+      return `<div style="margin-top:3px;${accentStyle}">📐 ${drawingLinksForEntry(d, g.meta.label)}${suffix}</div>`;
     }).join('');
     return `<div style="margin-top:6px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;"><div style="font-weight:700;font-size:10.5px;color:var(--steel-700);">${escapeHtml(g.meta.label)} (${g.drawings.length})</div>${rows}</div>`;
   }).join('');
-  return `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Lahat ng Naka-attach na Drawing (${totalCount})</summary><div class="hint" style="margin-top:4px;">${groupBoxes}</div></details>`;
+  // Stays open across re-renders — see ATTACHED_DRAWINGS_OPEN_KEYS above.
+  // Only an explicit click on the summary toggles it now, same pattern as
+  // the Parts List section's own PARTS_LIST_OPEN_KEYS.
+  const openKey = item.id;
+  const isOpen = ATTACHED_DRAWINGS_OPEN_KEYS.has(openKey);
+  return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? ATTACHED_DRAWINGS_OPEN_KEYS.add('${openKey}') : ATTACHED_DRAWINGS_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Lahat ng Naka-attach na Drawing (${totalCount})</summary><div class="hint" style="margin-top:4px;">${groupBoxes}</div></details>`;
 }
 // Inline widget shown on a task card for a CONSUMING step (welding, laser
 // cutting, bending, ...): lists whatever's attached, or flags it missing so
@@ -2274,6 +2287,12 @@ function partsListDrawingCellHtml(item, name, processId, canAttach){
   let cell = statusPill;
   if(existing.length) cell += existing.map(d=>`<div style="margin-top:2px;">${drawingLinksForEntry(d, meta.label)}</div>`).join('');
   if(canAttach) cell += drawingAttachFormHtml(item, processId, name);
+  // Colored left border matching this piyesa's own Sub Assy group accent
+  // (same color as its row in the Parts List table) — a quick visual tie
+  // between the drawing and exactly which Sub Assy/Child Part it covers,
+  // without having to trace it back to the row itself.
+  const accent = partsListAccentForName(item, name);
+  if(accent) cell = `<div style="border-left:3px solid ${accent.color};padding-left:6px;">${cell}</div>`;
   return cell;
 }
 // The 3 first-stage cutting production steps (Laser Cutting, Manual
@@ -2530,6 +2549,15 @@ function recalcPartsListTotals(item){
 // your place while adding several Sub Assy/Child Part rows in a row or
 // trying to find one further down the list to remove.
 let PARTS_LIST_OPEN_KEYS = new Set();
+// Same stays-open-across-re-renders trick as PARTS_LIST_OPEN_KEYS above,
+// but for the "Lahat ng Naka-attach na Drawing" summary (see
+// attachedDrawingsSummaryHtml) — a task card re-renders on its own on
+// every realtime update from a teammate's concurrent edit, a save, a
+// periodic refresh, etc., and without persisting this <details>'s
+// open/closed state across those re-renders it would silently snap shut
+// while someone's still reading it, whether or not THEY clicked anything.
+// Only an explicit click on the summary should ever close it now.
+let ATTACHED_DRAWINGS_OPEN_KEYS = new Set();
 async function savePartsListChange(item){
   recalcPartsListTotals(item);
   // This edit — made directly on the Fabrication Drawing task card — is now
@@ -2605,6 +2633,25 @@ const PARTS_LIST_GROUP_ACCENTS = [
   {color:'var(--amber)',  bg:'var(--amber-bg)'},
   {color:'var(--accent-teal-dk)', bg:'var(--accent-teal-bg)'},
 ];
+// Same accent a piyesa's Sub Assy group gets in the Parts List table (see
+// PARTS_LIST_GROUP_ACCENTS usage in partsListTableHtml) — reused anywhere
+// ELSE a drawing needs to show, at a glance via a colored border, exactly
+// which Sub Assy/Child Part it covers, without reading the parenthetical
+// name text: both here in the per-piyesa Parts List drawing cells
+// (partsListDrawingCellHtml) and in the flat "Lahat ng Naka-attach na
+// Drawing" summary (attachedDrawingsSummaryHtml). Matches by exact name,
+// whether that name is a Sub Assy itself or one of its Child Parts — same
+// piyesa name, same color, in both places. Returns null (no color) for a
+// blank/item-wide/SO-wide drawing that isn't scoped to any specific piyesa.
+function partsListAccentForName(item, name){
+  if(!name || !item.partsList) return null;
+  for(let i=0;i<item.partsList.length;i++){
+    const s = item.partsList[i];
+    if(s.name===name) return PARTS_LIST_GROUP_ACCENTS[i % PARTS_LIST_GROUP_ACCENTS.length];
+    if((s.childParts||[]).some(c=>c.name===name)) return PARTS_LIST_GROUP_ACCENTS[i % PARTS_LIST_GROUP_ACCENTS.length];
+  }
+  return null;
+}
 function partsListTableHtml(item, processId){
   // Only the Fabrication Drawing step gets to rename/requantify rows or
   // add/remove Sub Assy/Child Part entries — every other card (including
@@ -6848,27 +6895,6 @@ function renderScorecardProfile(name){
   </div>`;
 
   const personTasks = getPersonTaskRows(name, granularity, profilePeriodState.dateFilter).filter(r=>r.done);
-  const taskListRowsHtml = personTasks.map(r=>{
-    let durationCell = '<span style="color:var(--gray);">—</span>';
-    if(r.target && r.actualAt){
-      const diffMs = new Date(r.target+'T23:59:59') - new Date(r.actualAt);
-      const abs = Math.abs(diffMs);
-      const days = Math.floor(abs/86400000);
-      const hours = Math.floor((abs%86400000)/3600000);
-      const label = diffMs>=0 ? 'maaga' : 'huli';
-      durationCell = `<span style="${diffMs>=0?'color:var(--green);':'color:var(--red);'}">${days} araw ${hours} oras ${label}</span>`;
-    }
-    return `<tr>
-      <td>
-        <div style="font-weight:700;">${escapeHtml(r.item.itemCode)}</div>
-        <div class="hint">${escapeHtml(r.item.soNumber)} · ${escapeHtml(r.item.client)} · ${processLabel(r.processId)}</div>
-      </td>
-      <td>${escapeHtml(String(r.item.qty!=null?r.item.qty:''))} ${escapeHtml(r.item.unit||'')}</td>
-      <td>${r.target?formatDateLong(r.target):'—'}</td>
-      <td>${r.actual ? formatDateLong(r.actual) : '—'}</td>
-      <td>${durationCell}</td>
-    </tr>`;
-  });
   // Finished Sariling Activity Log entries belong in this same Target vs.
   // Actual history — once someone marks one Done, it needs to show up right
   // here alongside their real SO task completions (per the request), but it
@@ -6882,24 +6908,95 @@ function renderScorecardProfile(name){
     }
     return true;
   });
-  const activityListRowsHtml = personActivityDoneRows.map(a=>{
+  // Both kinds of "natapos" entries (SO task completions AND Sariling
+  // Activity Log completions) now merge into ONE list, sorted by ACTUAL
+  // completion date ascending (day 1 -> 31 of the period) — whether or not
+  // a given entry is part of a PO/SO — instead of two separate blocks (all
+  // SO tasks first, then all Activity Log entries after) stitched together
+  // regardless of which actually happened first.
+  const combinedEntries = [];
+  personTasks.forEach(r=>{
+    let durationCell = '<span style="color:var(--gray);">—</span>';
+    if(r.target && r.actualAt){
+      const diffMs = new Date(r.target+'T23:59:59') - new Date(r.actualAt);
+      const abs = Math.abs(diffMs);
+      const days = Math.floor(abs/86400000);
+      const hours = Math.floor((abs%86400000)/3600000);
+      const label = diffMs>=0 ? 'maaga' : 'huli';
+      durationCell = `<span style="${diffMs>=0?'color:var(--green);':'color:var(--red);'}">${days} araw ${hours} oras ${label}</span>`;
+    }
+    combinedEntries.push({
+      sortDate: r.actual || '9999-12-31',
+      html: `<tr>
+        <td>
+          <div style="font-weight:700;">${escapeHtml(r.item.itemCode)}</div>
+          <div class="hint">${escapeHtml(r.item.soNumber)} · ${escapeHtml(r.item.client)} · ${processLabel(r.processId)}</div>
+        </td>
+        <td>${escapeHtml(String(r.item.qty!=null?r.item.qty:''))} ${escapeHtml(r.item.unit||'')}</td>
+        <td>${r.target?formatDateLong(r.target):'—'}</td>
+        <td>${r.actual ? formatDateLong(r.actual) : '—'}</td>
+        <td>${durationCell}</td>
+      </tr>`,
+    });
+  });
+  personActivityDoneRows.forEach(a=>{
     const completedDate = a.completedAt ? a.completedAt.slice(0,10) : '';
     const spentSecs = Number(a.activeSeconds)||0;
     const hrs = Math.floor(spentSecs/3600), mins = Math.floor((spentSecs%3600)/60);
     const durationCell = `<span style="color:var(--gray);">Oras ginugol: ${hrs}h ${mins}m</span>`;
-    return `<tr>
-      <td>
-        <div style="font-weight:700;">📝 ${escapeHtml(a.description||'(walang detalye)')}</div>
-        <div class="hint">Sariling Activity — hindi bahagi ng SO</div>
-      </td>
-      <td>${escapeHtml(String(a.doneQty!=null?a.doneQty:0))} / ${escapeHtml(String(a.targetQty!=null?a.targetQty:0))} pc</td>
-      <td>${a.date?formatDateLong(a.date):'—'}</td>
-      <td>${completedDate?formatDateLong(completedDate):'—'}</td>
-      <td>${durationCell}</td>
-    </tr>`;
+    combinedEntries.push({
+      sortDate: completedDate || '9999-12-31',
+      html: `<tr>
+        <td>
+          <div style="font-weight:700;">📝 ${escapeHtml(a.description||'(walang detalye)')}</div>
+          <div class="hint">Sariling Activity — hindi bahagi ng SO</div>
+        </td>
+        <td>${escapeHtml(String(a.doneQty!=null?a.doneQty:0))} / ${escapeHtml(String(a.targetQty!=null?a.targetQty:0))} pc</td>
+        <td>${a.date?formatDateLong(a.date):'—'}</td>
+        <td>${completedDate?formatDateLong(completedDate):'—'}</td>
+        <td>${durationCell}</td>
+      </tr>`,
+    });
   });
-  const taskListRows = (taskListRowsHtml.length || activityListRowsHtml.length)
-    ? taskListRowsHtml.join('') + activityListRowsHtml.join('')
+  // "Absent" placeholder rows: only meaningful for a specific MONTH period
+  // (granularity==='month' with an actual month picked, not "Lahat" and
+  // not day/week/year) — any Monday–Saturday date in that month with ZERO
+  // entries above, from day 1 up through today (or through the month's
+  // last day if the whole month is already in the past — a future month
+  // gets none, since nothing has happened yet), gets its own row so a
+  // no-record day doesn't just silently disappear instead of standing out
+  // as a gap that needs a look. Sunday is skipped — not a regular working
+  // day here.
+  if(granularity==='month' && profilePeriodState.dateFilter){
+    const [y, m] = profilePeriodState.dateFilter.split('-').map(Number);
+    const daysInMonth = new Date(y, m, 0).getDate();
+    const today = todayDateStr();
+    const todayMonthKey = periodKey(today, 'month');
+    const isFutureMonth = profilePeriodState.dateFilter > todayMonthKey;
+    if(!isFutureMonth){
+      const isCurrentMonth = profilePeriodState.dateFilter === todayMonthKey;
+      const lastDay = isCurrentMonth ? Number(today.slice(8,10)) : daysInMonth;
+      const datesWithEntries = new Set(combinedEntries.map(e=>e.sortDate));
+      for(let d=1; d<=lastDay; d++){
+        const dateStr = `${profilePeriodState.dateFilter}-${String(d).padStart(2,'0')}`;
+        const dow = new Date(dateStr+'T00:00:00').getDay(); // 0=Linggo
+        if(dow===0) continue;
+        if(datesWithEntries.has(dateStr)) continue;
+        const phHolidays = PH_HOLIDAYS_BY_YEAR[y];
+        const isHoliday = !!(phHolidays && phHolidays.includes(dateStr));
+        combinedEntries.push(isHoliday ? {
+          sortDate: dateStr,
+          html: `<tr style="background:var(--blue-bg);"><td colspan="5" style="text-align:center;color:var(--blue);font-weight:700;">${formatDateLong(dateStr)} — Holiday (walang ginalaw na activity)</td></tr>`,
+        } : {
+          sortDate: dateStr,
+          html: `<tr style="background:var(--red-bg);"><td colspan="5" style="text-align:center;color:var(--red);font-weight:700;">${formatDateLong(dateStr)} — Absent (walang naitalang trabaho)</td></tr>`,
+        });
+      }
+    }
+  }
+  combinedEntries.sort((a,b)=> a.sortDate<b.sortDate ? -1 : (a.sortDate>b.sortDate ? 1 : 0));
+  const taskListRows = combinedEntries.length
+    ? combinedEntries.map(e=>e.html).join('')
     : `<tr><td colspan="5" style="color:var(--gray);text-align:center;padding:14px;">Wala pang natapos na task.</td></tr>`;
 
   const taskRows = sc.tasks.map(t=>{
