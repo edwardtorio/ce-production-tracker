@@ -2903,7 +2903,20 @@ function partsListTableHtml(item, processId){
   // so all of them fit without wrapping the whole card wider than the
   // screen. Natapos (Completed) is a 4th header, mula Laser Cutting
   // hanggang Delivery lang (showNatapos).
-  const drawColHeaderStyle = 'font-size:9.5px;white-space:normal;';
+  //
+  // EVERY header in this table (not just the drawing ones) needs this same
+  // wrap-friendly + tighter-padding style — the table.mini-table CSS rule
+  // that applies everywhere else in the app sets white-space:nowrap and a
+  // roomy 7px/10px padding on <th>, which is fine for a normal-width table
+  // but, combined with this table's narrow fixed % column widths (see
+  // colgroupHtml below), forced "Qty/parent"/"Total Kailangan" to render on
+  // one unbroken line wider than their own column — visually overlapping
+  // right into the next column's text instead of wrapping onto a 2nd line.
+  // This inline override (which always beats the stylesheet rule) lets
+  // every header wrap onto multiple lines and shrinks the padding so the
+  // wrapped text actually stays inside its own column.
+  const drawColHeaderStyle = 'font-size:9.5px;white-space:normal;overflow-wrap:break-word;padding:6px 4px;line-height:1.25;';
+  const firstColsHeaderStyle = 'white-space:normal;overflow-wrap:break-word;padding:6px 4px;line-height:1.25;';
   // Abbreviated header text (full name still available via title tooltip)
   // — same reasoning as the compact drawing links above: 3 drawing columns
   // repeating their full official names ("Burring-Tapping-Countersunk
@@ -2925,7 +2938,7 @@ function partsListTableHtml(item, processId){
   return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table" style="border-collapse:separate;border-spacing:0;table-layout:fixed;width:100%;">
       ${colgroupHtml}
-      <tr><th style="${colDivider}">Piyesa</th><th style="${colDivider}">Qty/parent</th><th style="${colDivider}">Total Kailangan</th>${lastColsHeaderHtml}</tr>
+      <tr><th style="${colDivider}${firstColsHeaderStyle}">Piyesa</th><th style="${colDivider}${firstColsHeaderStyle}" title="Qty per parent">Qty/Pc</th><th style="${colDivider}${firstColsHeaderStyle}" title="Total Kailangan">Total</th>${lastColsHeaderHtml}</tr>
       ${rows}
     </table></div>
     ${addSubBtn}
@@ -6482,22 +6495,34 @@ function renderPersonActionableTasksHtml(name){
       if(needsAssignment(it, pid)){
         needsAssign.push({item:it, processId:pid});
       }else if(currentAssignee(it, pid)===name){
-        tasks.push({item:it, processId:pid, status: it.routeStatus[pid], overdue: isStepOverdueNow(it, pid), isSplit: isPartOfSplit(it)});
+        tasks.push({item:it, processId:pid, status: it.routeStatus[pid], overdue: isStepOverdueNow(it, pid), isSplit: isPartOfSplit(it), targetDate: (it.routeTargetDates && it.routeTargetDates[pid]) || null});
       }
     });
   });
+  // Ordered by nearest target date first (the same "target: <date>" shown
+  // on each card) — whichever task is due soonest sits on top, so the
+  // person always sees what to work on next at a glance instead of having
+  // to scan the whole list. A task with no target date at all (no
+  // routeTargetDates entry for this step) has nothing to compare, so it
+  // sorts to the bottom of the dated ones rather than arbitrarily first or
+  // getting mixed in among real dates. Note this naturally still surfaces
+  // OVERDUE tasks at the very top on its own — an overdue task's target
+  // date is, by definition, already in the past, i.e. the earliest dates
+  // in the list — without needing a separate overdue-first rule.
   tasks.sort((a,b)=>{
-    if(a.overdue && !b.overdue) return -1;
-    if(b.overdue && !a.overdue) return 1;
-    if(a.status==='ongoing' && b.status!=='ongoing') return -1;
-    if(b.status==='ongoing' && a.status!=='ongoing') return 1;
+    if(a.targetDate && b.targetDate) return a.targetDate.localeCompare(b.targetDate);
+    if(a.targetDate && !b.targetDate) return -1;
+    if(!a.targetDate && b.targetDate) return 1;
     return 0;
   });
 
   let html = '';
-  if(needsAssign.length){
-    html += `<div class="hint" style="margin-bottom:8px;font-weight:700;color:var(--amber);">⚠ Kailangan munang i-assign (maraming posibleng tao dito):</div>`;
-    html += needsAssign.map(t=>`
+  // "Kailangan i-assign" cards move to the very BOTTOM of the list now
+  // (rendered after every real, already-assigned task below) instead of at
+  // the top — nothing productive can be done on them yet besides assigning
+  // someone, so they shouldn't push down tasks this person can actually
+  // start working on right now.
+  const needsAssignHtml = needsAssign.length ? `<div class="hint" style="margin-top:10px;margin-bottom:8px;font-weight:700;color:var(--amber);">⚠ Kailangan munang i-assign (maraming posibleng tao dito):</div>${needsAssign.map(t=>`
       <div class="task-card" style="border-color:#f3d9a8;background:var(--amber-bg);">
         <div class="tinfo">
           <div class="so-tag">${escapeHtml(t.item.soNumber)} · ${escapeHtml(t.item.client)}</div>
@@ -6507,8 +6532,7 @@ function renderPersonActionableTasksHtml(name){
         </div>
         <button class="btn btn-sm" onclick="openAssignModal('${t.item.id}','${t.processId}')">Assign…</button>
       </div>
-    `).join('');
-  }
+    `).join('')}` : '';
   if(tasks.length===0 && needsAssign.length===0){
     html += `<div class="empty-state"><div class="big">✅</div>Nothing waiting for you right now.</div>`;
   }else{
@@ -6650,6 +6674,9 @@ function renderPersonActionableTasksHtml(name){
     </div>`;
   }).join('');
   }
+  // "Kailangan i-assign" cards go here — after every actual task, at the
+  // very bottom (see needsAssignHtml above).
+  html += needsAssignHtml;
   // Always give this person a way to log stand-alone activity for today —
   // whether they still have real tasks (assigned or awaiting assignment)
   // sitting above or not — instead of only offering it once their queue is
