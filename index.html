@@ -3027,10 +3027,61 @@ function updateSyncBadge(state){
   if(!el) return;
   if(state==='saved') el.innerHTML = '<span class="sync-dot saved"></span>All changes saved';
   else if(state==='saving') el.innerHTML = '<span class="sync-dot saving"></span>Saving…';
-  else if(state==='offline') el.innerHTML = '<span class="sync-dot offline"></span>No connection — will retry';
+  else if(state==='offline') el.innerHTML = `<span class="sync-dot offline"></span>Hindi na-save${pendingRetries.size>1 ? ' ('+pendingRetries.size+')' : ''} — susubukan ulit sa background`;
   else if(state==='readonly') el.innerHTML = '<span class="sync-dot offline"></span>Read-only — changes here won\'t be saved';
   else if(state==='unavailable') el.innerHTML = '<span class="sync-dot offline"></span>Saving unavailable in this view';
 }
+// ---------- Background save retry ----------
+// Every save*() wrapper below used to attempt once, retry ONE more time a
+// few hundred ms later, and — if that also failed — just show a toast and
+// give up silently. The badge even claimed "will retry", which wasn't true.
+// On a spotty factory-floor connection, that silently discarded the edit:
+// the LOCAL screen already showed the change (marking a step Done mutates
+// ITEMS in memory before the save call even starts), so nothing looked
+// wrong — but the server never received it. The next time anyone loaded a
+// fresh copy (a reload, or a teammate's realtime pull), the step was back
+// to whatever it was before. That's exactly the "na-done ko na, bumalik"
+// report from multiple process owners — nobody touched Ibalik/Detour, a
+// save just silently failed to ever go through.
+// This queue makes retrying actually happen: every failed save (item, meta,
+// material line, activity log, drawing entry, or a whole persistState()
+// pass) is remembered here and retried on a timer AND immediately the
+// moment the browser reports it's back online, until it genuinely succeeds
+// or the tab closes (in which case beforeunload warns instead of losing it
+// silently).
+const RETRY_INTERVAL_MS = 15000;
+let pendingRetries = new Map(); // key -> async fn returning {ok}
+let retryTimerHandle = null;
+function enqueueRetry(key, retryFn){
+  pendingRetries.set(key, retryFn);
+  if(!retryTimerHandle){
+    retryTimerHandle = setInterval(runPendingRetries, RETRY_INTERVAL_MS);
+  }
+}
+async function runPendingRetries(){
+  if(!pendingRetries.size) return;
+  for(const [key, fn] of [...pendingRetries.entries()]){
+    try{
+      const result = await fn();
+      if(result && result.ok) pendingRetries.delete(key);
+    }catch(e){ /* still pending — next tick (or the next online event) tries again */ }
+  }
+  if(pendingRetries.size===0){
+    clearInterval(retryTimerHandle);
+    retryTimerHandle = null;
+    updateSyncBadge('saved');
+  }else{
+    updateSyncBadge('offline');
+  }
+}
+window.addEventListener('online', ()=>{ runPendingRetries(); });
+window.addEventListener('beforeunload', (e)=>{
+  if(pendingRetries.size>0){
+    e.preventDefault();
+    e.returnValue = 'May mga pagbabagong hindi pa na-save — sigurado ka bang aalis?';
+    return e.returnValue;
+  }
+});
 // Pushes the current in-memory state to Supabase. Items are NOT
 // blind-upserted as a whole array — only the ones this browser actually
 // changed (per ITEM_BASE_SNAPSHOTS) get saved, each merged onto the
@@ -3059,10 +3110,22 @@ async function persistState(){
     // separate network round trips back-to-back before the save finished,
     // which on a slower connection read as the whole "Add New SO" screen
     // having hung rather than just being slow.
+    let firstFailure = null;
     if(touchedItems.length){
-      const results = await Promise.all(touchedItems.map(it=>persistItem(it)));
-      const failed = results.find(r=>!r.ok);
-      if(failed) return failed; // bubble up capability_disabled / upstream_error as-is — save()'s own retry handles the transient case
+      const outcomes = await Promise.all(touchedItems.map(async it=>({ id: it.id, result: await persistItem(it) })));
+      outcomes.filter(o=>!o.result.ok).forEach(o=>{
+        if(!firstFailure) firstFailure = o.result; // bubble up capability_disabled / upstream_error as-is — save()'s own immediate retry handles the transient case
+        if(o.result.code!=='capability_disabled'){
+          // Keep trying THIS specific item in the background — re-looked-up by
+          // id each attempt so it always retries with whatever the item's
+          // current local state is, not a possibly-stale closure over it.
+          enqueueRetry('item:'+o.id, async ()=>{
+            const it = ITEMS.find(i=>i.id===o.id);
+            if(!it) return {ok:true}; // deleted locally since — nothing left to retry
+            return await persistItem(it);
+          });
+        }
+      });
     }
     if(PENDING_DELETE_IDS.length){
       const idsToDelete = PENDING_DELETE_IDS.slice();
@@ -3080,9 +3143,15 @@ async function persistState(){
     ];
     const {error: metaError} = await sbClient.from('meta').upsert(metaRows, {onConflict:'key'});
     if(metaError) throw metaError;
-    return {ok:true};
+    return firstFailure || {ok:true};
   }catch(e){
-    return {ok:false, code: 'upstream_error', message: e && e.message};
+    const failure = {ok:false, code: 'upstream_error', message: e && e.message};
+    // Whatever failed here (the delete, or the meta upsert) — retry the
+    // whole persistState() pass in the background; it's idempotent (re-diffs
+    // ITEMS against ITEM_BASE_SNAPSHOTS itself each time), so re-running it
+    // is safe even if the per-item retries above already caught some of it.
+    enqueueRetry('state', async ()=>await persistState());
+    return firstFailure || failure;
   }
 }
 // Upserts just ONE item's row — used both by the hot, frequently-clicked
@@ -3136,8 +3205,13 @@ async function saveItem(item){
     showToast('Hindi available ang pag-save dito ngayon.');
     return;
   }
+  enqueueRetry('item:'+item.id, async ()=>{
+    const it = ITEMS.find(i=>i.id===item.id);
+    if(!it) return {ok:true};
+    return await persistItem(it);
+  });
   updateSyncBadge('offline');
-  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
+  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit sa background.');
 }
 // Lightweight save for the 4 meta rows only (owners, photos, cost rates,
 // period costs) — used by edits that only ever touch meta, like Process
@@ -3176,8 +3250,9 @@ async function saveMeta(){
     showToast('Hindi available ang pag-save dito ngayon.');
     return;
   }
+  enqueueRetry('meta', async ()=>await persistMeta());
   updateSyncBadge('offline');
-  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
+  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit sa background.');
 }
 // Materials/accessories/consumables pipeline — its own table
 // (materials_requests), same single-row upsert pattern as persistItem() so
@@ -3209,8 +3284,13 @@ async function saveMaterialLine(m){
     showToast('Hindi available ang pag-save dito ngayon.');
     return;
   }
+  enqueueRetry('material:'+m.id, async ()=>{
+    const mm = MATERIALS.find(x=>x.id===m.id);
+    if(!mm) return {ok:true};
+    return await persistMaterialLine(mm);
+  });
   updateSyncBadge('offline');
-  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
+  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit sa background.');
 }
 async function deleteMaterialLine(id){
   MATERIALS = MATERIALS.filter(m=>m.id!==id);
@@ -3247,8 +3327,9 @@ async function saveActivityLog(){
     showToast('Hindi available ang pag-save dito ngayon.');
     return;
   }
+  enqueueRetry('activityLog', async ()=>await persistActivityLog());
   updateSyncBadge('offline');
-  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
+  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit sa background.');
 }
 // Engineering drawings pipeline — its own table (drawings_pool), same
 // single-row upsert pattern as persistMaterialLine().
@@ -3278,8 +3359,13 @@ async function saveDrawingEntry(d){
     showToast('Hindi available ang pag-save dito ngayon.');
     return;
   }
+  enqueueRetry('drawing:'+d.id, async ()=>{
+    const dd = DRAWINGS_POOL.find(x=>x.id===d.id);
+    if(!dd) return {ok:true};
+    return await persistDrawingEntry(dd);
+  });
   updateSyncBadge('offline');
-  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit.');
+  showToast('Hindi na-save ang huling update: ' + (result.message || result.code || 'unknown error') + ' — susubukan ulit sa background.');
 }
 async function deleteDrawingEntry(id){
   const entry = DRAWINGS_POOL.find(d=>d.id===id);
