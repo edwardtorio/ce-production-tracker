@@ -5696,11 +5696,22 @@ function openReturnModal(itemId, processId){
   const idx = item.route.indexOf(cur);
   if(idx<=0){ showToast('Wala nang naunang proseso na babalikan.'); return; }
   const prevId = item.route[idx-1];
+  // The previous step is, by definition, already marked Done (that's the
+  // only way the item could have advanced to `cur` in the first place) — so
+  // this button ALWAYS reverts a finished step back to Queue and erases its
+  // completion timestamp. That's the exact "na-done ko na, bumalik" report
+  // from teammates who never touched this modal themselves — someone else
+  // (the person now working `cur`) used it, often without realizing how
+  // final it looks from the other side. A loud, explicit warning plus a
+  // REQUIRED reason (was optional) makes it much harder to fire off
+  // carelessly, and guarantees the note the previous owner sees (returnNote,
+  // see renderPersonActionableTasksHtml) always explains why.
   const box = document.getElementById('modalBox');
   box.innerHTML = `
     <h4>Ibalik sa Nakaraang Proseso</h4>
-    <p><b>${item.itemCode}</b> ay ibabalik mula sa <b>${processLabel(cur)}</b> pabalik sa <b>${processLabel(prevId)}</b> — makikita ito ulit sa taong may-ari niyon bilang Queue.</p>
-    <div class="field"><label>Dahilan (optional — halimbawa: may nakalimutang piyesa)</label>
+    <div class="hint" style="color:var(--red);font-weight:700;background:#fdeaea;border:1px solid #f0b8b8;border-radius:8px;padding:8px 10px;margin-bottom:8px;">⚠️ Ang <b>${processLabel(prevId)}</b> ay TAPOS NA (naka-mark Done na). Ang pagbabalik nito ay ire-reset ang status pabalik sa Queue at mabubura ang petsa ng pagkakatapos — makikita ulit ito bilang bagong task sa dating may-ari, kasama ang dahilan mo sa ibaba.</div>
+    <p><b>${item.itemCode}</b> ay ibabalik mula sa <b>${processLabel(cur)}</b> pabalik sa <b>${processLabel(prevId)}</b>.</p>
+    <div class="field"><label>Dahilan (kailangan — bakit ito babalikan)</label>
       <textarea id="returnReason" placeholder="I-describe kung ano ang nakalimutan o mali..."></textarea>
     </div>
     <div class="modal-actions">
@@ -5718,6 +5729,7 @@ async function confirmReturn(itemId, processId){
   if(idx<=0) return;
   const prevId = item.route[idx-1];
   const reason = (document.getElementById('returnReason').value || '').trim();
+  if(!reason){ showToast('Kailangan maglagay ng dahilan bago ibalik ang isang tapos na proseso.'); return; }
   item.routeStatus[prevId] = 'queue';
   if(item.routeCompletedAt) delete item.routeCompletedAt[prevId];
   ensureTimingFields(item);
@@ -5793,11 +5805,22 @@ function openQuickDetourModal(itemId, targetProcessId, targetLabel){
   const cur = currentStepId(item);
   if(!cur){ showToast('Tapos na ang item na ito.'); return; }
   if(targetProcessId===cur){ showToast('Nandito na sa prosesong ito.'); return; }
+  // These quick shortcuts only ever point BACKWARD to a step that must have
+  // already run before `cur` could be reached — so it's already marked Done
+  // essentially every time this modal opens. Same loud warning + required
+  // reason as the generic Detour picker below (see confirmDetour), so the
+  // person on the other end doesn't just see their finished work vanish
+  // with no explanation.
+  const targetAlreadyDone = item.route.includes(targetProcessId) && item.routeStatus[targetProcessId]==='done';
+  const warningHtml = targetAlreadyDone
+    ? `<div class="hint" style="color:var(--red);font-weight:700;background:#fdeaea;border:1px solid #f0b8b8;border-radius:8px;padding:8px 10px;margin-bottom:8px;">⚠️ Ang <b>${processLabel(targetProcessId)}</b> ay TAPOS NA (naka-mark Done na). Ang pagpapadala nito pabalik ay ire-reset ang status pabalik sa Queue at makikita itong bagong task ulit sa may-ari niyon.</div>`
+    : '';
   const box = document.getElementById('modalBox');
   box.innerHTML = `
     <h4>Ibalik sa ${escapeHtml(targetLabel)}</h4>
+    ${warningHtml}
     <p><b>${escapeHtml(item.itemCode)}</b> ay ipapadala pabalik sa <b>${processLabel(targetProcessId)}</b> — makikita agad ito doon bilang Queue, at kapag na-mark na Done, awtomatiko itong babalik dito sa <b>${processLabel(cur)}</b> para ituloy.</p>
-    <div class="field"><label>Dahilan (optional — halimbawa: mali ang nesting layout, kulang ang materyales)</label>
+    <div class="field"><label>Dahilan (${targetAlreadyDone ? 'kailangan' : 'optional'} — halimbawa: mali ang nesting layout, kulang ang materyales)</label>
       <textarea id="detourReason" placeholder="I-describe kung ano ang kulang o mali..."></textarea>
     </div>
     <div class="modal-actions">
@@ -5824,15 +5847,25 @@ function openDetourModal(itemId, processId){
   // pick gets safely re-spliced without colliding with its existing entry.
   const choices = PROCESS_LIST.filter(p=>p.id!==cur);
   if(!choices.length){ showToast('Wala nang ibang proseso na mapipili.'); return; }
-  const optionsHtml = choices.map(p=>`<option value="${p.id}">${escapeHtml(p.label)}${item.route.includes(p.id) ? ' (bahagi na ng route)' : ''}</option>`).join('');
+  // Tag each already-Done option clearly (not just "bahagi na ng route" —
+  // that alone doesn't say whether picking it will reset a FINISHED step or
+  // just re-order one still waiting its normal turn) so whoever's filling
+  // this out sees up front exactly what they're about to undo.
+  const optionsHtml = choices.map(p=>{
+    const inRoute = item.route.includes(p.id);
+    const isDone = inRoute && item.routeStatus[p.id]==='done';
+    const tag = isDone ? ' — ⚠️ TAPOS NA (ire-reset sa Queue)' : (inRoute ? ' (bahagi na ng route)' : '');
+    return `<option value="${p.id}" data-done="${isDone ? '1' : '0'}">${escapeHtml(p.label)}${tag}</option>`;
+  }).join('');
   const box = document.getElementById('modalBox');
   box.innerHTML = `
     <h4>Kailangan ng Ibang Proseso</h4>
     <p><b>${escapeHtml(item.itemCode)}</b> — piliin ang proseso na kailangan munang gawin, maging ito man ay bahagi na ng route ng item na ito (ire-request ulit) o hindi. Makikita agad ito sa taong may-ari ng napiling proseso bilang Queue, at kapag na-mark na Done doon, awtomatiko itong babalik dito sa <b>${processLabel(cur)}</b> para ituloy.</p>
     <div class="field"><label>Proseso na kailangan</label>
-      <select id="detourProcess">${optionsHtml}</select>
+      <select id="detourProcess" onchange="updateDetourDoneWarning()">${optionsHtml}</select>
     </div>
-    <div class="field"><label>Dahilan (optional — halimbawa: kailangan i-weld muna)</label>
+    <div id="detourDoneWarning" class="hint" style="display:none;color:var(--red);font-weight:700;background:#fdeaea;border:1px solid #f0b8b8;border-radius:8px;padding:8px 10px;margin:6px 0;">⚠️ Ang pinili ay TAPOS NA (naka-mark Done na). Ang pag-request nito ay ire-reset ang status pabalik sa Queue at makikita itong bagong task ulit sa dating may-ari niyon.</div>
+    <div class="field"><label id="detourReasonLabel">Dahilan (optional — halimbawa: kailangan i-weld muna)</label>
       <textarea id="detourReason" placeholder="I-describe kung bakit kailangan ang prosesong ito..."></textarea>
     </div>
     <div class="modal-actions">
@@ -5841,6 +5874,22 @@ function openDetourModal(itemId, processId){
     </div>
   `;
   document.getElementById('modalOverlay').classList.add('show');
+  updateDetourDoneWarning();
+}
+// Shows/hides the "already Done" warning on the generic Detour picker as the
+// selection changes, and flips the reason label between optional/required to
+// match — called once right after the modal renders (so picking an
+// already-done process by default, if it ever were, shows the warning
+// immediately) and again on every <select> change.
+function updateDetourDoneWarning(){
+  const sel = document.getElementById('detourProcess');
+  const warn = document.getElementById('detourDoneWarning');
+  const label = document.getElementById('detourReasonLabel');
+  if(!sel || !warn) return;
+  const opt = sel.options[sel.selectedIndex];
+  const isDone = !!(opt && opt.dataset.done==='1');
+  warn.style.display = isDone ? 'block' : 'none';
+  if(label) label.textContent = isDone ? 'Dahilan (kailangan — bakit kailangan ibalik ang tapos na proseso)' : 'Dahilan (optional — halimbawa: kailangan i-weld muna)';
 }
 async function confirmDetour(itemId, chosenOverride, processId){
   const item = ITEMS.find(i=>i.id===itemId);
@@ -5854,6 +5903,12 @@ async function confirmDetour(itemId, chosenOverride, processId){
   const chosen = chosenOverride || document.getElementById('detourProcess').value;
   if(!chosen || chosen===cur){ showToast('Pumili ng valid na proseso.'); return; }
   const reason = (document.getElementById('detourReason').value || '').trim();
+  // A reason is mandatory whenever the target is already Done — this is the
+  // exact action that makes a finished task quietly reappear for whoever did
+  // it, so require an explanation instead of letting it go through silently
+  // (see openDetourModal/openQuickDetourModal's matching warning UI).
+  const wasAlreadyDone = item.route.includes(chosen) && item.routeStatus[chosen]==='done';
+  if(wasAlreadyDone && !reason){ showToast('Kailangan maglagay ng dahilan bago i-reset ang isang tapos na proseso.'); return; }
   // If the chosen process is already somewhere else in this item's own route
   // (an earlier step already marked Done, or a later one still waiting its
   // normal turn), pull it out of that position first — a process id can only
