@@ -356,6 +356,7 @@
   .route-step.current{background:var(--amber-bg);color:var(--amber);border-color:#f3d9a8;}
   .route-step.current.overdue{background:var(--red-bg);color:var(--red);border-color:#f0c3c3;}
   .route-step.upcoming{background:var(--gray-bg);color:var(--gray);}
+  .route-step.for-review{background:#eee3fb;color:#7b3fd4;border-color:#d9c4f5;}
   .route-arrow{color:var(--line);align-self:center;font-size:13px;padding-top:8px;}
 
   .route-picker{background:var(--steel-50);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px;}
@@ -473,6 +474,7 @@
   .pill.queue{background:var(--gray-bg);color:var(--gray);border-color:var(--gray-bg);}
   .pill.ongoing{background:var(--amber-bg);color:var(--amber);border-color:#f3d9a8;}
   .pill.done{background:var(--green-bg);color:var(--green);border-color:#bfe6cd;}
+  .pill.for_review{background:#eee3fb;color:#7b3fd4;border-color:#d9c4f5;cursor:default;}
   .empty-state{text-align:center;padding:40px 20px;color:var(--gray);}
   .empty-state .big{font-size:34px;}
 
@@ -697,6 +699,7 @@
     <div class="tab active" data-view="team">My Tasks</div>
     <div class="tab" data-view="addso">+ Add New SO</div>
     <div class="tab" data-view="materials">🚚 Materials</div>
+    <div class="tab" data-view="jinreview">🔍 For Review (Jin)<span id="jinReviewTabBadge" style="display:none;margin-left:5px;background:var(--red);color:#fff;border-radius:10px;padding:1px 6px;font-size:11px;font-weight:700;"></span></div>
     <div class="tab" data-view="owners">Process Owners</div>
     <div class="tab" data-view="costrates">Cost Rates</div>
     <div class="tab" data-view="margin">Contribution Margin</div>
@@ -895,6 +898,15 @@
       <div class="hint" style="margin-bottom:10px;">Itala dito ang resulta ng BOM/stock-checking ng warehouse per SO (per materyales, puwede ring i-link sa specific na item). Kapag "Kulang" ang stock status, awtomatikong bibilangin ang araw mula sa PRF Date papuntang Material Procurement — mag-i-red flag ito kapag lumagpas na sa target (default 10 araw).</div>
       <div id="materialsTabBody"></div>
     </div>
+  </div>
+
+  <!-- FOR REVIEW (JIN) -->
+  <div class="view" id="view-jinreview">
+    <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);color:#fff;padding:24px 20px;">
+      <div style="font-family:var(--font-display);font-weight:700;font-size:22px;">🔍 For Review — Jennifer "Jin" Domingo</div>
+      <div class="hint" style="color:#f0d9e0;margin-top:8px;max-width:640px;">Lahat ng na-mark na "Done" (buo man o partial na qty) mula Fabrication Drawing hanggang Finish Good ay dumadaan muna dito bago mailista sa Target vs Actual na Natapos o bago maipasa sa susunod na proseso — kasama ang sariling activity log ng nagsumite, para ma-check, ma-inspect, at ma-confirm muna. Hindi kasama dito ang Material Procurement at Delivery.</div>
+    </div>
+    <div id="jinReviewWrap" style="margin-top:12px;"></div>
   </div>
 
   <!-- PROCESS OWNERS -->
@@ -1146,6 +1158,19 @@ const DEFAULT_OWNERS = {
 // tab — an unset process costs ₱0/hr until someone fills it in.
 const DEFAULT_COST_RATES = {};
 const STATUS_CYCLE = ['queue','ongoing','done'];
+// Every completed step (whole OR partial qty) from Fabrication Drawing all
+// the way through Finish Good must go through Jennifer "Jin" Domingo for
+// confirmation/inspection before it counts as truly Done — i.e. before the
+// item is allowed to move on to its next process, and before it can appear
+// in "Target vs Actual na Natapos". Only Material Procurement (work that
+// starts the moment an SO is uploaded, independent of the fabrication route)
+// and Delivery (the very last step, after the item has already left the
+// shop floor) are excluded. See cycleStep/confirmPartial/confirmBulkComplete
+// (submit into 'for_review' instead of 'done') and confirmJinReview/
+// rejectJinReview (Jin's own confirm/reject actions) below.
+const JIN_REVIEWER_NAME = 'Jennifer Domingo';
+const JIN_REVIEW_EXCLUDED_PROCESSES = ['material_purchasing','delivery'];
+function needsJinReview(processId){ return !JIN_REVIEW_EXCLUDED_PROCESSES.includes(processId); }
 // A running/paused segment longer than this without a pause is almost
 // certainly someone forgetting to pause (e.g. overnight) rather than 12
 // straight hours of real work — the clock stops here and a warning is shown
@@ -2029,12 +2054,15 @@ async function confirmBulkComplete(){
         prevStatus = it.routeStatus[processId];
         await cycleStep(id, processId);
       }
-      if(it.routeStatus[processId]==='done') doneCount++;
+      if(it.routeStatus[processId]==='done' || it.routeStatus[processId]==='for_review') doneCount++;
     }
   } finally {
     showToast = origToast;
   }
-  showToast(`${doneCount} item ang na-mark done sa ${processLabel(processId)}.`);
+  const msg = needsJinReview(processId)
+    ? `${doneCount} item ang naipasa kay ${JIN_REVIEWER_NAME} para sa confirmation sa ${processLabel(processId)}.`
+    : `${doneCount} item ang na-mark done sa ${processLabel(processId)}.`;
+  showToast(msg);
 }
 function itemPctDone(item){
   if(!item.route || !item.route.length) return 0;
@@ -3824,6 +3852,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
     if(tab.dataset.view==='costrates') renderCostRatesEditor();
     if(tab.dataset.view==='margin') renderMarginTab();
     if(tab.dataset.view==='materials') renderMaterialsTab();
+    if(tab.dataset.view==='jinreview') renderJinReview();
     if(tab.dataset.view==='tvmode') startTvMode();
   });
 });
@@ -5211,6 +5240,7 @@ function renderStageProgressBars(){
   `;
 }
 function renderBoard(){
+  updateJinReviewBadge();
   renderStageProgressBars();
   const groups = {};
   activeItems().forEach(it=>{
@@ -5298,7 +5328,7 @@ function renderBoard(){
         const isDownstream = !isCurrent && status!=='done' && curIdx>=0 && i>curIdx;
         const overdue = isCurrent && isStepOverdueNow(it, pid);
         const unassigned = isCurrent && needsAssignment(it, pid);
-        const cls = status==='done' ? 'done' : (isCurrent ? 'current'+(overdue?' overdue':'') : 'upcoming');
+        const cls = status==='done' ? 'done' : (status==='for_review' ? 'for-review' : (isCurrent ? 'current'+(overdue?' overdue':'') : 'upcoming'));
         // Numbered catch-up schedule for THIS step specifically (see
         // advanceCatchUpSchedules) — a stable, persisted commitment
         // (1st/2nd/3rd) rather than computeCatchUpSchedule()'s
@@ -5359,7 +5389,7 @@ function renderBoard(){
         // that can also change the status.
         trackHtml += `<div class="route-step ${cls}">
           <div>${processLabel(pid)}</div>
-          ${unassigned ? `<div class="step-date">👤 pumili ng tao</div>` : (assignee ? `<div class="step-date">${assignee}</div>` : '')}
+          ${status==='for_review' ? `<div class="step-date">⏳ Kay ${escapeHtml(JIN_REVIEWER_NAME)}</div>` : (unassigned ? `<div class="step-date">👤 pumili ng tao</div>` : (assignee ? `<div class="step-date">${assignee}</div>` : ''))}
           ${dateLbl?`<div class="step-date">${dateLbl}</div>`:''}
           ${doneStartedHtml}
           ${doneCompletedHtml}
@@ -5433,10 +5463,39 @@ function lineageQtyDoneAtStep(item, processId, excludeItemId){
     .reduce((a,it)=>a+Number(it.qty||0),0);
 }
 
+// Actually finalizes a step as Done — routeCompletedAt, handing a detour
+// back to whoever requested it, clearing catch-up flags, and stamping the
+// item's actual delivery date if this was its last step. Shared by cycleStep
+// (processes excluded from Jin's review — see JIN_REVIEW_EXCLUDED_PROCESSES)
+// and confirmJinReview (every other process, only once Jin actually confirms
+// it — see needsJinReview). Caller is responsible for banking the active
+// timer segment (finalizeActiveSegment) beforehand; this only sets the
+// bookkeeping fields that mean "this step is genuinely, permanently done".
+function finalizeStepDone(item, processId, isLastStep){
+  item.routeStatus[processId] = 'done';
+  if(!item.routeCompletedAt) item.routeCompletedAt = {};
+  item.routeCompletedAt[processId] = new Date().toISOString();
+  if(item.lastReturn && item.lastReturn.toProcess===processId) delete item.lastReturn;
+  if(item.detourFrom && item.detourFrom[processId]){
+    const backTo = item.detourFrom[processId];
+    const detourReason = (item.detourReason && item.detourReason[processId]) || '';
+    item.lastReturn = { fromProcess: processId, toProcess: backTo, reason: detourReason ? `Natapos na sa ${processLabel(processId)}: "${detourReason}"` : `Natapos na sa ${processLabel(processId)}`, timestamp: new Date().toISOString() };
+    delete item.detourFrom[processId];
+    if(item.detourReason) delete item.detourReason[processId];
+  }
+  if(item.catchUpAttempt) delete item.catchUpAttempt[processId];
+  if(item.catchUpDate) delete item.catchUpDate[processId];
+  if(item.catchUpCritical) delete item.catchUpCritical[processId];
+  if(item.catchUpHistory) delete item.catchUpHistory[processId];
+  if(isLastStep && !item.actualDeliveryDate){
+    item.actualDeliveryDate = new Date().toISOString().slice(0,10);
+  }
+}
 async function cycleStep(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
   if(!activeStepIds(item).includes(processId)){ showToast('Kailangan munang tapusin ang naunang proseso.'); return; }
+  if(item.routeStatus[processId]==='for_review'){ showToast(`Naipasa na ito kay ${JIN_REVIEWER_NAME} — hinihintay pa ang kanyang confirmation.`); return; }
   if(ownersFor(processId).length>1 && !(item.stepAssignee && item.stepAssignee[processId])){
     openAssignModal(itemId, processId);
     return;
@@ -5489,40 +5548,38 @@ async function cycleStep(itemId, processId){
   if(newStatus==='ongoing'){
     startActiveSegment(item, processId); // first tap into ongoing starts the clock
     if(!item.routeStartTimestamp[processId]) item.routeStartTimestamp[processId] = new Date().toISOString();
+    item.routeStatus[processId] = newStatus;
+    if(!item.routeCompletedAt) item.routeCompletedAt = {};
+    delete item.routeCompletedAt[processId];
+  }else if(newStatus==='done' && needsJinReview(processId)){
+    // Gated process: the worker's own part is genuinely finished (bank the
+    // timer same as a real Done), but it does NOT become 'done' yet — it
+    // goes into 'for_review' and waits for Jennifer "Jin" Domingo to check,
+    // inspect, and confirm it. Only her confirmJinReview() call below
+    // actually runs the completion finalization (routeCompletedAt, handing
+    // a detour back to its requester, clearing catch-up flags, unlocking the
+    // next process, counting in Target vs Actual). See JIN_REVIEW_EXCLUDED_PROCESSES.
+    cappedWarning = finalizeActiveSegment(item, processId);
+    delete item.routePaused[processId];
+    item.routeStatus[processId] = 'for_review';
+    if(!item.routeCompletedAt) item.routeCompletedAt = {};
+    delete item.routeCompletedAt[processId];
+    if(!item.reviewSubmittedAt) item.reviewSubmittedAt = {};
+    if(!item.reviewSubmittedBy) item.reviewSubmittedBy = {};
+    item.reviewSubmittedAt[processId] = new Date().toISOString();
+    item.reviewSubmittedBy[processId] = currentAssignee(item, processId) || (ownersFor(processId)[0] || '');
+    if(item.jinRejection) delete item.jinRejection[processId]; // clear any earlier rejection note now that it's been redone and resubmitted
+    renderBoard(); renderOverview(); renderMyTasks();
+    if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+    await saveItem(item);
+    let msg = `${item.itemCode} · ${processLabel(processId)} naipasa kay ${JIN_REVIEWER_NAME} para sa confirmation`;
+    if(cappedWarning) msg += ` (⚠ ${MAX_SEGMENT_HOURS}+ oras nang walang pause — na-cap ang oras, paki-verify)`;
+    showToast(msg);
+    return;
   }else if(newStatus==='done'){
     cappedWarning = finalizeActiveSegment(item, processId); // bank whatever was running
     delete item.routePaused[processId];
-  }
-  item.routeStatus[processId] = newStatus;
-  if(!item.routeCompletedAt) item.routeCompletedAt = {};
-  if(newStatus==='done'){
-    item.routeCompletedAt[processId] = new Date().toISOString();
-    if(item.lastReturn && item.lastReturn.toProcess===processId) delete item.lastReturn;
-    // If this step was a borrowed/ad-hoc process requested mid-route by
-    // another step that isn't normally part of this item's fabrication route
-    // (see openDetourModal/confirmDetour), hand the item straight back to
-    // whoever asked for it — currentStepId() already lands there naturally
-    // since it was spliced in right before that step, this just adds the
-    // confirmation note so the requester sees it came back.
-    if(item.detourFrom && item.detourFrom[processId]){
-      const backTo = item.detourFrom[processId];
-      const detourReason = (item.detourReason && item.detourReason[processId]) || '';
-      item.lastReturn = { fromProcess: processId, toProcess: backTo, reason: detourReason ? `Natapos na sa ${processLabel(processId)}: "${detourReason}"` : `Natapos na sa ${processLabel(processId)}`, timestamp: new Date().toISOString() };
-      delete item.detourFrom[processId];
-      if(item.detourReason) delete item.detourReason[processId];
-    }
-    // The step is genuinely finished now — whatever catch-up schedule
-    // (1st/2nd/3rd) or critical flag it had accumulated no longer applies;
-    // a fresh one only starts if the item falls behind again at its NEXT step.
-    if(item.catchUpAttempt) delete item.catchUpAttempt[processId];
-    if(item.catchUpDate) delete item.catchUpDate[processId];
-    if(item.catchUpCritical) delete item.catchUpCritical[processId];
-    if(item.catchUpHistory) delete item.catchUpHistory[processId];
-    if(isLastStep && !item.actualDeliveryDate){
-      item.actualDeliveryDate = new Date().toISOString().slice(0,10);
-    }
-  }else{
-    delete item.routeCompletedAt[processId];
+    finalizeStepDone(item, processId, isLastStep);
   }
   renderBoard();
   renderOverview();
@@ -5551,6 +5608,125 @@ async function cycleStep(itemId, processId){
     : `${item.itemCode} · ${processLabel(processId)} → ${newStatus}`;
   if(cappedWarning) msg += ` (⚠ ${MAX_SEGMENT_HOURS}+ oras nang walang pause — na-cap ang oras, paki-verify)`;
   showToast(msg);
+}
+
+/* ---------- Jin's Review Queue — every step (whole or partial qty) from
+   Fabrication Drawing through Finish Good sits in 'for_review' here until
+   Jennifer "Jin" Domingo checks/inspects/confirms it. Only then does it
+   actually advance to the next process or count in Target vs Actual na
+   Natapos. See needsJinReview/cycleStep/confirmPartial for how a step gets
+   INTO this state. ---------- */
+// Every {item, processId} pair anywhere on the board currently sitting in
+// 'for_review' — a partial-completion clone (see confirmPartial) is just
+// another ITEMS row, so this naturally picks those up too with no special
+// casing. Sorted oldest-submitted-first so the queue reads top-to-bottom in
+// the order Jin should actually get to them.
+function jinReviewQueue(){
+  const rows = [];
+  activeItems().forEach(it=>{
+    (it.route||[]).forEach(pid=>{
+      if(it.routeStatus[pid]==='for_review') rows.push({ item: it, processId: pid });
+    });
+  });
+  rows.sort((a,b)=> (a.item.reviewSubmittedAt&&a.item.reviewSubmittedAt[a.processId]||'').localeCompare(b.item.reviewSubmittedAt&&b.item.reviewSubmittedAt[b.processId]||''));
+  return rows;
+}
+function updateJinReviewBadge(){
+  const el = document.getElementById('jinReviewTabBadge');
+  if(!el) return;
+  const n = jinReviewQueue().length;
+  el.textContent = n ? String(n) : '';
+  el.style.display = n ? 'inline-block' : 'none';
+}
+function renderJinReview(){
+  updateJinReviewBadge();
+  const wrap = document.getElementById('jinReviewWrap');
+  if(!wrap) return;
+  const rows = jinReviewQueue();
+  if(!rows.length){
+    wrap.innerHTML = `<div class="panel" style="text-align:center;padding:36px 20px;"><div class="hint" style="font-size:14px;">Walang naghihintay ng review ngayon. ✅</div></div>`;
+    return;
+  }
+  wrap.innerHTML = rows.map(({item, processId})=>{
+    const submittedBy = (item.reviewSubmittedBy && item.reviewSubmittedBy[processId]) || '(hindi malinaw kung sino)';
+    const submittedAt = (item.reviewSubmittedAt && item.reviewSubmittedAt[processId]) || null;
+    const submittedAtLbl = submittedAt ? formatDateLong(submittedAt.slice(0,10)) + ' ' + new Date(submittedAt).toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit'}) : '';
+    // "Kasama ang mga sariling activity log" — the submitting worker's OWN
+    // self-logged activity entries for the day they submitted this, so Jin
+    // can cross-check what else they say they worked on that same day.
+    const logDate = submittedAt ? submittedAt.slice(0,10) : todayDateStr();
+    const ownActivity = ACTIVITY_LOG.filter(a=>a.person===submittedBy && a.date===logDate);
+    const activityHtml = ownActivity.length
+      ? ownActivity.map(a=>`<div style="font-size:12px;padding:4px 0;border-bottom:1px dashed var(--border);">
+          <b>${escapeHtml(a.description)}</b> — ${a.status==='done'?'✅ tapos':(a.status==='ongoing'?'🔵 ongoing':'⏳ queue')}${a.targetQty?` (target ${a.targetQty})`:''}
+        </div>`).join('')
+      : `<div class="hint">Walang sariling activity log entry para sa ${formatDateLong(logDate)}.</div>`;
+    return `<div class="panel" style="margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+        <div>
+          <div style="font-weight:700;font-size:14.5px;">${escapeHtml(item.itemCode)} <span style="font-weight:400;color:var(--gray);">· ${escapeHtml(item.soNumber)} — ${escapeHtml(item.client)}</span></div>
+          <div class="hint">${escapeHtml(item.description||'')} · ${item.qty} ${item.unit}</div>
+          <div style="margin-top:6px;font-weight:700;color:var(--amber);">⏳ ${processLabel(processId)}</div>
+          <div class="hint">Isinumite ni <b>${escapeHtml(submittedBy)}</b>${submittedAtLbl?` — ${submittedAtLbl}`:''}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-shrink:0;">
+          <button class="btn btn-sm" onclick="confirmJinReview('${item.id}','${processId}')">✅ Confirm</button>
+          <button class="btn secondary btn-sm" style="color:var(--red);" onclick="openRejectJinReviewModal('${item.id}','${processId}')">✕ Hindi pa tapos</button>
+        </div>
+      </div>
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--gray);">Sariling Activity Log ni ${escapeHtml(submittedBy)} — ${formatDateLong(logDate)}</summary>
+        <div style="margin-top:6px;">${activityHtml}</div>
+      </details>
+    </div>`;
+  }).join('');
+}
+// Jin's confirm — this is the ONLY place (besides the excluded processes'
+// normal cycleStep path) that ever actually runs finalizeStepDone for a
+// gated process. Unlocks the next process and lets it count in Target vs
+// Actual na Natapos.
+async function confirmJinReview(itemId, processId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item || item.routeStatus[processId]!=='for_review') return;
+  const isLastStep = item.route.indexOf(processId) === item.route.length-1;
+  finalizeStepDone(item, processId, isLastStep);
+  if(item.jinRejection) delete item.jinRejection[processId];
+  renderJinReview();
+  renderBoard(); renderOverview(); renderMyTasks();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  await saveItem(item);
+  const nextId = currentStepId(item);
+  showToast(`✅ Confirmed ni ${JIN_REVIEWER_NAME}: ${item.itemCode} · ${processLabel(processId)}${nextId?` → moved to ${processLabel(nextId)}`:' — fully finished! 🎉'}`);
+}
+function openRejectJinReviewModal(itemId, processId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `
+    <h4>Hindi pa Ma-confirm — ${processLabel(processId)}</h4>
+    <p><b>${escapeHtml(item.itemCode)}</b> — babalik ito sa <b>Ongoing</b> ng ${processLabel(processId)} para ayusin/tapusin muna nang tama.</p>
+    <div class="field"><label>Dahilan (kailangan — ano ang kulang o mali)</label><textarea id="jinRejectReason" placeholder="hal. hindi pantay ang bending, kulang ang qty na na-report..."></textarea></div>
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn" style="background:var(--red);" onclick="rejectJinReviewConfirm('${itemId}','${processId}')">Ibalik sa Ongoing</button>
+    </div>`;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+async function rejectJinReviewConfirm(itemId, processId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item || item.routeStatus[processId]!=='for_review') { closeModal(); return; }
+  const reason = (document.getElementById('jinRejectReason').value||'').trim();
+  if(!reason){ showToast('Kailangan maglagay ng dahilan bago ibalik.'); return; }
+  item.routeStatus[processId] = 'ongoing';
+  startActiveSegment(item, processId); // worker resumes — restart the clock on this step
+  if(!item.jinRejection) item.jinRejection = {};
+  item.jinRejection[processId] = { reason, by: JIN_REVIEWER_NAME, timestamp: new Date().toISOString() };
+  closeModal();
+  renderJinReview();
+  renderBoard(); renderOverview(); renderMyTasks();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  await saveItem(item);
+  showToast(`↩ Ibinalik ni ${JIN_REVIEWER_NAME} sa Ongoing: ${item.itemCode} · ${processLabel(processId)}`);
 }
 
 /* ---------- Partial completion: split a line into a finished lot + a
@@ -5603,18 +5779,31 @@ async function confirmPartial(itemId, processId){
   const clone = JSON.parse(JSON.stringify(item));
   clone.id = uid();
   clone.qty = doneQty;
-  clone.routeStatus[processId] = 'done';
   delete clone.routePaused[processId];
   if(!clone.routeCompletedAt) clone.routeCompletedAt = {};
-  clone.routeCompletedAt[processId] = new Date().toISOString();
-  // If the process being partially completed is the LAST step of the route,
-  // this split-off portion has now finished its entire fabrication route —
-  // so it's genuinely delivered, not just "done at this step". Without this,
-  // a partial delivery would sit as a fully-done line item that never shows
-  // up as delivered anywhere (Actual Delivered count, Team Performance,
-  // etc.), since actualDeliveryDate is otherwise only ever set by hand.
-  if(processId === item.route[item.route.length-1] && !clone.actualDeliveryDate){
-    clone.actualDeliveryDate = new Date().toISOString().slice(0,10);
+  // Same Jin-confirmation gate as a full Done (see cycleStep) — a partial
+  // qty is just as much "natapos" as a whole one per the user's own
+  // instruction, so it goes into 'for_review' too: it does NOT advance to
+  // the next process or count toward actualDeliveryDate until Jin confirms
+  // it (see confirmJinReview).
+  const goesToReview = needsJinReview(processId);
+  clone.routeStatus[processId] = goesToReview ? 'for_review' : 'done';
+  if(goesToReview){
+    if(!clone.reviewSubmittedAt) clone.reviewSubmittedAt = {};
+    if(!clone.reviewSubmittedBy) clone.reviewSubmittedBy = {};
+    clone.reviewSubmittedAt[processId] = new Date().toISOString();
+    clone.reviewSubmittedBy[processId] = currentAssignee(item, processId) || (ownersFor(processId)[0] || '');
+  }else{
+    clone.routeCompletedAt[processId] = new Date().toISOString();
+    // If the process being partially completed is the LAST step of the route,
+    // this split-off portion has now finished its entire fabrication route —
+    // so it's genuinely delivered, not just "done at this step". Without this,
+    // a partial delivery would sit as a fully-done line item that never shows
+    // up as delivered anywhere (Actual Delivered count, Team Performance,
+    // etc.), since actualDeliveryDate is otherwise only ever set by hand.
+    if(processId === item.route[item.route.length-1] && !clone.actualDeliveryDate){
+      clone.actualDeliveryDate = new Date().toISOString().slice(0,10);
+    }
   }
   clone.splitNote = `${doneQty} ${item.unit} na-split mula sa orihinal na ${totalQty} ${item.unit} noong ${formatDateLong(new Date().toISOString().slice(0,10))}`;
   item.qty = totalQty - doneQty;
@@ -5666,7 +5855,9 @@ async function confirmPartial(itemId, processId){
   renderMyTasks(); // cheap no-op unless a profile popup happens to be open right now
   await save();
   const nextId = currentStepId(clone);
-  let msg = `${doneQty} ${item.unit} ng ${item.itemCode} → moved to ${nextId?processLabel(nextId):'Finished Goods'}. ${item.qty} ${item.unit} pa ang natitira sa ${processLabel(processId)}.`;
+  let msg = goesToReview
+    ? `${doneQty} ${item.unit} ng ${item.itemCode} · ${processLabel(processId)} naipasa kay ${JIN_REVIEWER_NAME} para sa confirmation. ${item.qty} ${item.unit} pa ang natitira sa ${processLabel(processId)}.`
+    : `${doneQty} ${item.unit} ng ${item.itemCode} → moved to ${nextId?processLabel(nextId):'Finished Goods'}. ${item.qty} ${item.unit} pa ang natitira sa ${processLabel(processId)}.`;
   if(cappedAtSplit) msg += ` (⚠ ${MAX_SEGMENT_HOURS}+ oras nang walang pause bago i-split — na-cap ang oras)`;
   showToast(msg);
 }
@@ -6737,6 +6928,9 @@ function renderPersonActionableTasksHtml(name){
     const detourPendingNote = (t.item.detourFrom && t.item.detourFrom[t.processId])
       ? `<div class="hint" style="color:#6a5acd;margin-top:4px;">🔧 Kinakailangan ito ni ${processLabel(t.item.detourFrom[t.processId])} bago magpatuloy${(t.item.detourReason && t.item.detourReason[t.processId]) ? ': "'+t.item.detourReason[t.processId]+'"' : ''} — babalik doon pagkatapos dito.</div>`
       : '';
+    const jinRejectionNote = (t.item.jinRejection && t.item.jinRejection[t.processId])
+      ? `<div class="hint" style="color:var(--red);margin-top:4px;font-weight:700;">✕ Hindi pa na-confirm ni ${escapeHtml(t.item.jinRejection[t.processId].by)}: "${escapeHtml(t.item.jinRejection[t.processId].reason)}"</div>`
+      : '';
     const splitBadge = t.isSplit ? `<div class="hint" style="color:#6a5acd;font-weight:700;margin-top:4px;">🔗 May kasamang piraso sa ibang proseso (split)${t.item.splitNote ? ' — '+t.item.splitNote : ''}</div>` : '';
     const materialsBadge = materialBadgeHtml(t.item);
     const drawingReqHtml = drawingRequirementHtml(t.item, t.processId);
@@ -6826,6 +7020,7 @@ function renderPersonActionableTasksHtml(name){
         ${criticalNote}
         ${returnNote}
         ${detourPendingNote}
+        ${jinRejectionNote}
         ${splitBadge}
         ${materialsBadge}
         ${drawingReqHtml}
@@ -6843,7 +7038,7 @@ function renderPersonActionableTasksHtml(name){
           ${partialBtn}
           ${quickReturnBtns}
           ${bulkBtn}
-          <div class="pill ${t.status}" onclick="cycleStep('${t.item.id}','${t.processId}');">${t.status}</div>
+          <div class="pill ${t.status}" onclick="cycleStep('${t.item.id}','${t.processId}');">${t.status==='for_review' ? `⏳ kay ${JIN_REVIEWER_NAME}` : t.status}</div>
         </div>
         ${startStampHtml}
         ${doneStampHtml}
