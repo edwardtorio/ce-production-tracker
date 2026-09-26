@@ -7353,6 +7353,7 @@ function renderScorecardProfile(name){
       html: `<tr>
         <td>
           <div style="font-weight:700;">${escapeHtml(r.item.itemCode)}</div>
+          ${r.item.description ? `<div style="font-size:11.5px;color:var(--steel-700);">${escapeHtml(r.item.description)}</div>` : ''}
           <div class="hint">${escapeHtml(r.item.soNumber)} · ${escapeHtml(r.item.client)} · ${processLabel(r.processId)}</div>
         </td>
         <td>${escapeHtml(String(r.item.qty!=null?r.item.qty:''))} ${escapeHtml(r.item.unit||'')}</td>
