@@ -997,8 +997,41 @@
   const sbClient = (typeof supabase !== 'undefined')
     ? supabase.createClient("https://fkjsryyyhiusmyvzgmgy.supabase.co", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZranNyeXl5aGl1c215dnpnbWd5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgzOTk4MjIsImV4cCI6MjEwMzk3NTgyMn0.-clyEYHIbOSxjQOXRjA2d_t46x8oahz6m8fQV-B4yPU")
     : null;
+  // A PWA service worker caches the app shell for offline use — but if it
+  // isn't told to check for a newer version and take over right away, a
+  // tablet/browser that already has it registered can keep running an OLD
+  // cached build INDEFINITELY, even after a new version is deployed and
+  // even after a normal refresh — a new service worker install only
+  // activates once every open tab of the OLD one closes, by default. That
+  // silently explains fixes that "un-fix themselves": the person is simply
+  // still running yesterday's code, with no error or visible sign of it.
+  // This forces an update check on every load, and — if the installed
+  // service worker's own script listens for a 'skipWaiting' message (a
+  // common, standard pattern; harmless no-op if it doesn't) — tells it to
+  // activate immediately instead of waiting, then reloads this tab once the
+  // new one actually takes control so the fix is live right away.
   if('serviceWorker' in navigator){
-    window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js').catch(()=>{}); });
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').then(reg => {
+        reg.update().catch(()=>{});
+        if(reg.waiting) reg.waiting.postMessage('skipWaiting');
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing;
+          if(!newWorker) return;
+          newWorker.addEventListener('statechange', () => {
+            if(newWorker.state==='installed' && navigator.serviceWorker.controller){
+              newWorker.postMessage('skipWaiting');
+            }
+          });
+        });
+      }).catch(()=>{});
+      let reloadedForNewSW = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if(reloadedForNewSW) return;
+        reloadedForNewSW = true;
+        window.location.reload();
+      });
+    });
   }
 </script>
 <script>
@@ -5338,7 +5371,11 @@ function renderBoard(){
       const returnBtn = curIdx>0 ? `<button class="irc-edit" title="Ibalik sa nakaraang proseso" onclick="openReturnModal('${it.id}','${cur}')">↩ Ibalik sa nakaraan</button>` : '';
       const partialBtn = (cur && Number(it.qty)>1) ? `<button class="irc-edit" title="Partial na natapos" onclick="openPartialModal('${it.id}','${cur}')">➗ Partial</button>` : '';
       const quickReturnBtns = cur ? quickReturnButtonsHtml(it.id, cur) : '';
-      const returnNote = it.lastReturn ? `<div class="hint" style="color:var(--red);margin-top:6px;">↩ Ibinalik mula sa ${processLabel(it.lastReturn.fromProcess)}${it.lastReturn.reason ? ': "'+it.lastReturn.reason+'"' : ''}</div>` : '';
+      // Only render when fromProcess is actually a real, known process id —
+      // stale/malformed lastReturn data (e.g. from before some earlier fix,
+      // or a process id that no longer exists) used to render literally as
+      // "Ibinalik mula sa undefined" instead of just not showing at all.
+      const returnNote = (it.lastReturn && it.lastReturn.fromProcess) ? `<div class="hint" style="color:var(--red);margin-top:6px;">↩ Ibinalik mula sa ${processLabel(it.lastReturn.fromProcess)}${it.lastReturn.reason ? ': "'+it.lastReturn.reason+'"' : ''}</div>` : '';
       const detourPendingNote = (cur && it.detourFrom && it.detourFrom[cur]) ? `<div class="hint" style="color:#6a5acd;margin-top:6px;">🔧 Kinakailangan ito ni ${processLabel(it.detourFrom[cur])} bago magpatuloy${(it.detourReason && it.detourReason[cur]) ? ': "'+it.detourReason[cur]+'"' : ''} — babalik doon pagkatapos dito.</div>` : '';
       // Names whichever active step(s) actually hit critical — during the
       // Material Procurement / Fabrication Drawing parallel window it could
@@ -6694,7 +6731,7 @@ function renderPersonActionableTasksHtml(name){
     const stripeCls = taskIdx%2===0 ? 'stripe-a' : 'stripe-b';
     const cardClass = (t.overdue || t.isSplit) ? '' : stripeCls;
     const cardStyle = t.overdue ? 'border-color:#f0c3c3;background:var(--red-bg);' : (t.isSplit ? 'border-color:#c9b8e8;background:#f4f0fb;border-left:4px solid #6a5acd;' : '');
-    const returnNote = (t.item.lastReturn && t.item.lastReturn.toProcess===t.processId)
+    const returnNote = (t.item.lastReturn && t.item.lastReturn.toProcess===t.processId && t.item.lastReturn.fromProcess)
       ? `<div class="hint" style="color:var(--red);margin-top:4px;">↩ Ibinalik mula sa ${processLabel(t.item.lastReturn.fromProcess)}${t.item.lastReturn.reason ? ': "'+t.item.lastReturn.reason+'"' : ' (walang dahilan na nilagay)'}</div>`
       : '';
     const detourPendingNote = (t.item.detourFrom && t.item.detourFrom[t.processId])
