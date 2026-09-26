@@ -9371,6 +9371,30 @@ function checkSoNumberDuplicate(){
   }
   return isDup;
 }
+// Hard-block check above (checkSoNumberDuplicate) only looks at ITEMS in
+// memory on THIS page load. That's the gap behind a real recurring bug:
+// kapag na-resubmit ang parehong SO Number (either because a save silently
+// never finished, or the person just isn't sure it went through), and this
+// tab's ITEMS snapshot happens to be stale/incomplete (still loading, or an
+// earlier successful add from another tab/device/session hasn't been
+// re-fetched here yet), the in-memory check has nothing to compare against
+// and lets the duplicate through — this is exactly how the SO-CEMPC-019855 /
+// WP-100-19043615-CEC case (and ~30 other groups, 98 rows) ended up
+// duplicated on the live board. This does one more check straight against
+// the shared database right before committing, so a duplicate that this
+// tab's local ITEMS doesn't know about yet still gets caught. Fails OPEN
+// (returns false = "not a duplicate") on any network/query error so a
+// legitimate add is never blocked just because this extra check couldn't
+// run — the local check + submitSOInFlight/addSingleItemInFlight guards
+// still stand either way.
+async function checkSoNumberDuplicateOnServer(soNumber){
+  if(!soNumber || typeof sbClient==='undefined' || !sbClient) return false;
+  try{
+    const { data, error } = await sbClient.from('items').select('id').ilike('so_number', soNumber.trim()).limit(1);
+    if(error) return false;
+    return !!(data && data.length);
+  }catch(e){ return false; }
+}
 let soContextSaveTimer = null;
 function scheduleSaveSoContext(){
   clearTimeout(soContextSaveTimer);
@@ -9719,7 +9743,13 @@ function buildItemFromRow(wrap, ctx){
 }
 // Adds just ONE item row to the board immediately — so an item whose route
 // is already set doesn't have to wait for every other row to be finished too.
+let addSingleItemInFlight = false;
 async function addSingleItem(rowId){
+  // Same double-submit guard as submitSO — without this, a double-click/
+  // double-tap on "Add Item" while the previous call's save() is still in
+  // flight could push the same row's item twice before the first call gets
+  // a chance to remove it from the form.
+  if(addSingleItemInFlight) return;
   const ctx = getSoContext();
   if(!ctx.soNumber || !ctx.client){ showToast('Lagyan muna ng SO Number at Client Name sa taas bago mag-add ng item.'); return; }
   if(checkSoNumberDuplicate()){
@@ -9727,36 +9757,51 @@ async function addSingleItem(rowId){
     showToast(`⚠ Existing na sa board ang SO Number na "${ctx.soNumber}" — hindi ito na-add.`);
     return;
   }
+  // Only worth asking the server when this is the FIRST item being added for
+  // this SO in this open form (soAddSessionNumber not yet set to it) — once
+  // this session already started the SO, every later single-item add for
+  // the same SO is expected and the local check above already handles it.
+  const soKeyNow = ctx.soNumber.trim().toLowerCase();
+  if(soKeyNow !== soAddSessionNumber && await checkSoNumberDuplicateOnServer(ctx.soNumber)){
+    document.getElementById('soNumber').focus();
+    showToast(`⚠ May existing na items na sa database para sa SO Number na "${ctx.soNumber}" — hindi ito na-add. I-refresh ang page para makita.`);
+    return;
+  }
   const wrap = document.getElementById('wrap_'+rowId);
   if(!wrap) return;
   const result = buildItemFromRow(wrap, ctx);
   if(result.error==='empty'){ showToast('Lagyan muna ng Item Code o Description.'); return; }
   if(result.error==='route'){ showToast('Pumili ng hindi bababa sa 2 fabrication process para sa item na ito.'); return; }
-  // Remembers this row's position in the Add SO form (which mirrors the
-  // order items appear in the uploaded SO document/PDF) so the Browse SO
-  // detail view can later show items in that same order instead of
-  // whatever order they happen to load from the database in.
-  result.item.soLineNo = [...document.querySelectorAll('#itemRows .item-row-wrap')].indexOf(wrap);
-  ITEMS.push(result.item);
-  // Remember this SO as "already started in this open form" so adding the
-  // NEXT item from the same SO (the whole point of addSingleItem — one row
-  // at a time as each one's route is ready) doesn't get wrongly flagged as
-  // a duplicate now that this SO Number is on the board.
-  soAddSessionNumber = ctx.soNumber.trim().toLowerCase();
-  (result.drawingPoolEntries||[]).forEach(d=>{ DRAWINGS_POOL.push(d); saveDrawingEntry(d); });
-  delete rowRoutes[rowId];
-  delete partsListState[rowId];
-  delete rowCurrency[rowId];
-  delete rowFxInfo[rowId];
-  delete DRAFT_ROWS[rowId];
-  delete PENDING_DRAWING_POOL_COPIES[rowId];
-  saveDraftsLocal();
-  wrap.remove();
-  await save();
-  renderBoard(); renderOverview(); renderBrowseSo();
-  showToast(`Naidagdag ang ${result.item.itemCode} sa Production Board.`);
-  if(document.querySelectorAll('#itemRows .item-row-wrap').length===0) addItemRow();
-  checkSoNumberDuplicate(); // clear any stale dup warning now that this SO is the session's own
+  addSingleItemInFlight = true;
+  try{
+    // Remembers this row's position in the Add SO form (which mirrors the
+    // order items appear in the uploaded SO document/PDF) so the Browse SO
+    // detail view can later show items in that same order instead of
+    // whatever order they happen to load from the database in.
+    result.item.soLineNo = [...document.querySelectorAll('#itemRows .item-row-wrap')].indexOf(wrap);
+    ITEMS.push(result.item);
+    // Remember this SO as "already started in this open form" so adding the
+    // NEXT item from the same SO (the whole point of addSingleItem — one row
+    // at a time as each one's route is ready) doesn't get wrongly flagged as
+    // a duplicate now that this SO Number is on the board.
+    soAddSessionNumber = ctx.soNumber.trim().toLowerCase();
+    (result.drawingPoolEntries||[]).forEach(d=>{ DRAWINGS_POOL.push(d); saveDrawingEntry(d); });
+    delete rowRoutes[rowId];
+    delete partsListState[rowId];
+    delete rowCurrency[rowId];
+    delete rowFxInfo[rowId];
+    delete DRAFT_ROWS[rowId];
+    delete PENDING_DRAWING_POOL_COPIES[rowId];
+    saveDraftsLocal();
+    wrap.remove();
+    await save();
+    renderBoard(); renderOverview(); renderBrowseSo();
+    showToast(`Naidagdag ang ${result.item.itemCode} sa Production Board.`);
+    if(document.querySelectorAll('#itemRows .item-row-wrap').length===0) addItemRow();
+    checkSoNumberDuplicate(); // clear any stale dup warning now that this SO is the session's own
+  } finally {
+    addSingleItemInFlight = false;
+  }
 }
 function parsePaste(){
   const raw = document.getElementById('pasteArea').value.trim();
@@ -9795,6 +9840,13 @@ async function submitSO(){
   if(checkSoNumberDuplicate()){
     document.getElementById('soNumber').focus();
     showToast(`⚠ Existing na sa board ang SO Number na "${ctx.soNumber}" — hindi ito na-add.`);
+    return;
+  }
+  // Same reasoning as addSingleItem's server check above — only worth doing
+  // when this SO hasn't already been started in this open form.
+  if(ctx.soNumber.trim().toLowerCase()!==soAddSessionNumber && await checkSoNumberDuplicateOnServer(ctx.soNumber)){
+    document.getElementById('soNumber').focus();
+    showToast(`⚠ May existing na items na sa database para sa SO Number na "${ctx.soNumber}" — hindi ito na-add. I-refresh ang page para makita.`);
     return;
   }
   const wraps = [...document.querySelectorAll('#itemRows .item-row-wrap')];
