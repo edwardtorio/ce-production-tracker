@@ -1041,7 +1041,27 @@
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if(reloadedForNewSW) return;
         reloadedForNewSW = true;
-        window.location.reload();
+        // Reloading right now would wipe pendingRetries (in-memory only) —
+        // see its declaration further down for the full story, but in short:
+        // this exact reload, firing the instant a new build goes live on
+        // whatever tablet happens to be open, was the main real-world way a
+        // worker's "Done" tap silently never made it to the server and the
+        // step showed back where it started for the next person to look.
+        // If there's nothing pending, reload immediately as before. If there
+        // IS something pending, try to flush it right now, and only reload
+        // once runPendingRetries() itself confirms pendingRetries is empty
+        // (it calls pendingReloadForNewSW() for us when that happens — see
+        // its declaration). Genuinely offline tablets just keep running the
+        // old (but still fully working) version until they're back online
+        // and everything's actually saved — the new build isn't going
+        // anywhere, and a delayed update beats a lost completion.
+        const doReload = () => window.location.reload();
+        if(typeof pendingRetries==='undefined' || pendingRetries.size===0){
+          doReload();
+        }else{
+          pendingReloadForNewSW = doReload;
+          if(typeof runPendingRetries==='function') runPendingRetries();
+        }
       });
     });
   }
@@ -3113,24 +3133,92 @@ function updateSyncBadge(state){
 const RETRY_INTERVAL_MS = 15000;
 let pendingRetries = new Map(); // key -> async fn returning {ok}
 let retryTimerHandle = null;
+// pendingRetries above lives ONLY in this tab's memory — so ANY reload before
+// a queued retry finally succeeds used to drop the edit with zero trace:
+// beforeunload's confirm dialog is the only thing standing between "still
+// pending" and "gone", and it doesn't fire (or isn't honored) for every kind
+// of reload — most notably the forced service-worker-update reload further
+// down this file, which fires the instant a new build goes live on WHATEVER
+// tablet happens to be open at that moment, and plenty of factory-floor
+// tablets/PWA shells simply don't show (or auto-dismiss) that dialog at all.
+// The tab's own local screen already shows the step as Done (optimistic UI
+// updates ITEMS before the save call even starts) — so nothing looks wrong
+// until the NEXT load reads the server's still-old copy and the step is back
+// where it started. That's exactly the repeated "na-done ko na, bumalik"
+// reports. Mirroring every pending item/material/drawing retry into
+// localStorage — refreshed on every tick with whatever's currently in memory
+// — means a fresh load (even after a hard reload or crash that wiped
+// pendingRetries itself) can find it and re-attempt it, instead of quietly
+// losing it. See recoverPendingSaveBackups(), called from loadInitialState().
+const PENDING_SAVE_LS_KEY = 'cempc_pending_saves_v1';
+function readPendingSaveBackup(){
+  try{ return JSON.parse(localStorage.getItem(PENDING_SAVE_LS_KEY) || '{}') || {}; }catch(e){ return {}; }
+}
+function writePendingSaveBackup(obj){
+  try{ localStorage.setItem(PENDING_SAVE_LS_KEY, JSON.stringify(obj)); }catch(e){ /* private mode / quota — best effort only, the in-memory retry still runs this session */ }
+}
+function pendingRetryPayloadFor(key){
+  // Only item/material/drawing rows carry an id + a snapshot that's safe to
+  // blindly replay on its own; 'state'/'meta'/'activityLog' retries just
+  // re-run their own persist function against whatever's in memory at the
+  // moment they fire, so there's no separate payload worth snapshotting.
+  if(key.indexOf('item:')===0){
+    const it = ITEMS.find(i=>i.id===key.slice(5));
+    return it ? {type:'item', data: it} : null;
+  }
+  if(key.indexOf('material:')===0){
+    const m = MATERIALS.find(x=>x.id===key.slice(9));
+    return m ? {type:'material', data: m} : null;
+  }
+  if(key.indexOf('drawing:')===0){
+    const d = DRAWINGS_POOL.find(x=>x.id===key.slice(8));
+    return d ? {type:'drawing', data: d} : null;
+  }
+  return null;
+}
+function refreshPendingSaveBackups(){
+  if(!pendingRetries.size) return;
+  const backup = readPendingSaveBackup();
+  let changed = false;
+  pendingRetries.forEach((fn, key)=>{
+    const payload = pendingRetryPayloadFor(key);
+    if(payload){ backup[key] = {type: payload.type, data: payload.data, ts: new Date().toISOString()}; changed = true; }
+  });
+  if(changed) writePendingSaveBackup(backup);
+}
+function clearPendingSaveBackup(key){
+  const backup = readPendingSaveBackup();
+  if(backup[key]){ delete backup[key]; writePendingSaveBackup(backup); }
+}
+// Set by the service-worker updater below when a new version is ready but
+// reloading onto it right now would risk dropping an unsaved edit — holds
+// the reload function to run once runPendingRetries() below confirms
+// everything's actually saved.
+let pendingReloadForNewSW = null;
 function enqueueRetry(key, retryFn){
   pendingRetries.set(key, retryFn);
+  refreshPendingSaveBackups();
   if(!retryTimerHandle){
     retryTimerHandle = setInterval(runPendingRetries, RETRY_INTERVAL_MS);
   }
 }
 async function runPendingRetries(){
   if(!pendingRetries.size) return;
+  refreshPendingSaveBackups(); // catch any further in-memory edits since the last tick before we attempt them
   for(const [key, fn] of [...pendingRetries.entries()]){
     try{
       const result = await fn();
-      if(result && result.ok) pendingRetries.delete(key);
+      if(result && result.ok){ pendingRetries.delete(key); clearPendingSaveBackup(key); }
     }catch(e){ /* still pending — next tick (or the next online event) tries again */ }
   }
   if(pendingRetries.size===0){
     clearInterval(retryTimerHandle);
     retryTimerHandle = null;
     updateSyncBadge('saved');
+    // A service-worker update was waiting for exactly this moment (see
+    // pendingReloadForNewSW below) — now safe to reload onto the new version
+    // without dropping anything.
+    if(pendingReloadForNewSW){ const doReload = pendingReloadForNewSW; pendingReloadForNewSW = null; doReload(); }
   }else{
     updateSyncBadge('offline');
   }
@@ -3143,6 +3231,45 @@ window.addEventListener('beforeunload', (e)=>{
     return e.returnValue;
   }
 });
+// Re-attempts anything this browser knows it tried to save but never
+// confirmed BEFORE this load even started (see PENDING_SAVE_LS_KEY above) —
+// covers a hard reload, a crash, or the tab/app being killed outright, none
+// of which give beforeunload a chance to warn anyone, let alone let
+// pendingRetries itself survive to retry on its own. Called from
+// loadInitialState() once ITEMS/MATERIALS/DRAWINGS_POOL are loaded from the
+// server, so a recovered row is merged on top of (never blindly replacing
+// anything else) whatever this load just read.
+function recoverPendingSaveBackups(){
+  const backup = readPendingSaveBackup();
+  const keys = Object.keys(backup);
+  if(!keys.length) return;
+  let recoveredCount = 0;
+  keys.forEach(key=>{
+    const entry = backup[key];
+    if(!entry || !entry.data || !entry.data.id){ return; }
+    if(entry.type==='item'){
+      const idx = ITEMS.findIndex(i=>i.id===entry.data.id);
+      if(idx>=0) ITEMS[idx] = entry.data; else ITEMS.push(entry.data);
+      enqueueRetry(key, async ()=>{ const it = ITEMS.find(i=>i.id===entry.data.id); return it ? await persistItem(it) : {ok:true}; });
+      recoveredCount++;
+    }else if(entry.type==='material'){
+      const idx = MATERIALS.findIndex(m=>m.id===entry.data.id);
+      if(idx>=0) MATERIALS[idx] = entry.data; else MATERIALS.push(entry.data);
+      enqueueRetry(key, async ()=>{ const m = MATERIALS.find(x=>x.id===entry.data.id); return m ? await persistMaterialLine(m) : {ok:true}; });
+      recoveredCount++;
+    }else if(entry.type==='drawing'){
+      const idx = DRAWINGS_POOL.findIndex(d=>d.id===entry.data.id);
+      if(idx>=0) DRAWINGS_POOL[idx] = entry.data; else DRAWINGS_POOL.push(entry.data);
+      enqueueRetry(key, async ()=>{ const d = DRAWINGS_POOL.find(x=>x.id===entry.data.id); return d ? await persistDrawingEntry(d) : {ok:true}; });
+      recoveredCount++;
+    }
+  });
+  if(recoveredCount){
+    updateSyncBadge('offline');
+    showToast(`Na-recover ang ${recoveredCount} pagbabagong hindi pa na-confirm na-save noong huling session — sina-save ulit sa background.`);
+    runPendingRetries();
+  }
+}
 // Pushes the current in-memory state to Supabase. Items are NOT
 // blind-upserted as a whole array — only the ones this browser actually
 // changed (per ITEM_BASE_SNAPSHOTS) get saved, each merged onto the
@@ -3688,6 +3815,14 @@ async function loadInitialState(){
   // self-heal below actually changes get their snapshot refreshed again
   // after their own persistItem() call succeeds further down.
   if(beforeItemSnapshots) ITEM_BASE_SNAPSHOTS = new Map(beforeItemSnapshots);
+  // Recover anything this browser tried to save last session but never got
+  // to confirm (see recoverPendingSaveBackups()/PENDING_SAVE_LS_KEY) BEFORE
+  // the self-heal loop below runs, so it operates on the recovered (truly
+  // latest) copy of each item rather than the server's possibly-stale one —
+  // and, only when at least one row was actually recovered, skip firstRun's
+  // brand-new-database seeding entirely (a real crash-recovery load is by
+  // definition not a brand-new database).
+  if(!firstRun && typeof sbClient!=='undefined' && sbClient) recoverPendingSaveBackups();
   ITEMS.forEach(it=>{
     if(!it.route){ migrateLegacyItem(it); changed = true; }
     if(migrateBurringTappingCountersunkMerge(it)) changed = true;
