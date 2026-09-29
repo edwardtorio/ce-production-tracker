@@ -699,7 +699,7 @@
     <div class="tab active" data-view="team">My Tasks</div>
     <div class="tab" data-view="addso">+ Add New SO</div>
     <div class="tab" data-view="materials">🚚 Materials</div>
-    <div class="tab" data-view="jinreview">🔍 For Review (Jin)<span id="jinReviewTabBadge" style="display:none;margin-left:5px;background:var(--red);color:#fff;border-radius:10px;padding:1px 6px;font-size:11px;font-weight:700;"></span></div>
+    <div class="tab" data-view="jinreview">🔍 For Review (Edward)<span id="jinReviewTabBadge" style="display:none;margin-left:5px;background:var(--red);color:#fff;border-radius:10px;padding:1px 6px;font-size:11px;font-weight:700;"></span></div>
     <div class="tab" data-view="owners">Process Owners</div>
     <div class="tab" data-view="costrates">Cost Rates</div>
     <div class="tab" data-view="margin">Contribution Margin</div>
@@ -903,7 +903,7 @@
   <!-- FOR REVIEW (JIN) -->
   <div class="view" id="view-jinreview">
     <div class="panel" style="background:linear-gradient(120deg,var(--accent-teal-dk) 0%, var(--accent-teal) 100%);color:#fff;padding:24px 20px;">
-      <div style="font-family:var(--font-display);font-weight:700;font-size:22px;">🔍 For Review — Jennifer "Jin" Domingo</div>
+      <div style="font-family:var(--font-display);font-weight:700;font-size:22px;">🔍 For Review — Edward Torio</div>
       <div class="hint" style="color:#f0d9e0;margin-top:8px;max-width:640px;">Lahat ng na-mark na "Done" (buo man o partial na qty) mula Fabrication Drawing hanggang Finish Good ay dumadaan muna dito bago mailista sa Target vs Actual na Natapos o bago maipasa sa susunod na proseso — kasama ang sariling activity log ng nagsumite, para ma-check, ma-inspect, at ma-confirm muna. Hindi kasama dito ang Material Procurement at Delivery.</div>
     </div>
     <div id="jinReviewWrap" style="margin-top:12px;"></div>
@@ -1188,7 +1188,12 @@ const STATUS_CYCLE = ['queue','ongoing','done'];
 // shop floor) are excluded. See cycleStep/confirmPartial/confirmBulkComplete
 // (submit into 'for_review' instead of 'done') and confirmJinReview/
 // rejectJinReview (Jin's own confirm/reject actions) below.
-const JIN_REVIEWER_NAME = 'Jennifer Domingo';
+// Per Edward's own instruction, the confirmation/review authority is Edward
+// Torio himself, not Jennifer "Jin" Domingo — the constant name (and every
+// internal function/variable named after "Jin") stays as-is since it's just
+// an internal label at this point, but every user-facing mention of who
+// actually does the reviewing now reads Edward Torio.
+const JIN_REVIEWER_NAME = 'Edward Torio';
 const JIN_REVIEW_EXCLUDED_PROCESSES = ['material_purchasing','delivery'];
 function needsJinReview(processId){ return !JIN_REVIEW_EXCLUDED_PROCESSES.includes(processId); }
 // A running/paused segment longer than this without a pause is almost
@@ -4356,6 +4361,19 @@ function renderTeamWorkload(){
         if(status==='ongoing') personMap[name].o++;
         else if(status==='queue') personMap[name].q++;
       });
+    });
+  });
+  // Edward Torio's confirmation/review work (see JIN_REVIEWER_NAME) isn't a
+  // PROCESS_LIST route step, so the loop above never picks him up on its
+  // own — add him here so he shows up in Team like everyone else, with his
+  // own card, role, and a clickable profile (which is what actually lets
+  // him open his own Sariling Activity Log — see renderScorecardProfile).
+  if(!personMap[JIN_REVIEWER_NAME]) personMap[JIN_REVIEWER_NAME] = {roles:new Set(), q:0,o:0,d:0,na:0,critical:false};
+  personMap[JIN_REVIEWER_NAME].roles.add('🔍 For Review / Confirmation');
+  personMap[JIN_REVIEWER_NAME].o += jinReviewQueue().length; // currently waiting for his confirmation
+  ITEMS_VIEW.forEach(it=>{
+    (it.route||[]).forEach(pid=>{
+      if(needsJinReview(pid) && it.routeStatus[pid]==='done') personMap[JIN_REVIEWER_NAME].d++;
     });
   });
   let wHtml = '';
@@ -7745,9 +7763,18 @@ function renderScorecardProfile(name){
   // every process they own, regardless of the period filter below — only
   // pulled from the unfiltered scorecard so it never goes blank just because
   // a period with no activity happens to be selected.
-  const allTimeSc = computeScorecards()[name];
-  if(!allTimeSc){ return; }
-  const roles = allTimeSc.tasks.map(t=>t.stageLabel).join(', ');
+  // A person with no owned PROCESS_LIST step (e.g. Edward Torio, whose
+  // confirmation/review role isn't a route step at all — see
+  // JIN_REVIEWER_NAME/renderTeamWorkload) used to make this whole profile
+  // silently refuse to open at all. That's exactly backwards for someone who
+  // should still be able to open their own profile and use the Sariling
+  // Activity Log section below (that section exists precisely for logging
+  // work that isn't tied to any SO/route task) — so fall back to an empty-
+  // but-valid scorecard instead of bailing out.
+  const allTimeSc = computeScorecards()[name] || { name, tasks: [] };
+  const roles = allTimeSc.tasks.length
+    ? allTimeSc.tasks.map(t=>t.stageLabel).join(', ')
+    : (name===JIN_REVIEWER_NAME ? '🔍 For Review / Confirmation' : '');
 
   // "Natapos na Items" — how many items (and which ones) this person finished
   // per day/week/month/year, replacing the old peso-value breakdown.
