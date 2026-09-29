@@ -1689,10 +1689,15 @@ function drawingStepMissingDetails(item, processId){
       (s.childParts||[]).forEach(c=>{ if(c.name) names.push(c.name); });
     });
     if(!names.length){
-      // No Sub Assy / Child Part breakdown entered at all yet — still needs
-      // either a plain item-wide drawing attached, or the whole breakdown
-      // explicitly marked "Hindi Required" (see the Parts List section).
-      return drawingSatisfiedOrNotRequired(item, 'drawing', '') ? [] : ['(wala pang Sub Assy/Child Part na nailagay sa Parts List)'];
+      // No Sub Assy / Child Part breakdown entered at all yet. Standard
+      // rule, no exceptions: EVERY item must have a Parts List — there is no
+      // such thing as an item that doesn't need one. So unlike a single
+      // already-listed piyesa's own drawing (which CAN legitimately be
+      // marked "Hindi Required" below), a completely missing Parts List has
+      // no "Hindi Required" escape hatch at all — Fabrication Drawing simply
+      // cannot be marked Tapos, and can't be submitted for Jin's review,
+      // until at least one Sub Assy/Child Part row actually exists.
+      return ['(wala pang Parts List na nailagay — kailangan munang gumawa ng Parts List bago matapos ang Fabrication Drawing)'];
     }
     return names.filter(n=>!drawingSatisfiedOrNotRequired(item, 'drawing', n));
   }
@@ -1715,8 +1720,11 @@ function openDrawingMissingAlert(item, processId, missing){
   const box = document.getElementById('modalBox');
   let bodyHtml;
   if(processId==='drawing'){
+    const noPartsListYet = !itemHasNamedParts(item);
     const listHtml = missing.map(n=>`<li>${escapeHtml(n)}</li>`).join('');
-    bodyHtml = `
+    bodyHtml = noPartsListYet ? `
+      <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>Fabrication Drawing</b> ng <b>${escapeHtml(item.itemCode)}</b> — <b>wala pang Parts List na nailagay.</b></p>
+      <p class="hint">Standard: dapat lagi may Parts List ang bawat item — walang "Hindi Required" na option dito. Buksan ang "🧩 Parts List" sa task card na ito at maglagay ng kahit isang Sub Assy/Child Part bago ito matapos.</p>` : `
       <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>Fabrication Drawing</b> ng <b>${escapeHtml(item.itemCode)}</b> — kulang pa ng naka-attach na drawing (o "Hindi Required" na marka) ang mga sumusunod:</p>
       <ul style="margin:8px 0;padding-left:22px;font-weight:700;">${listHtml}</ul>
       <p class="hint">Buksan ang "🧩 Parts List" sa task card na ito para mag-attach ng drawing sa bawat isa, o pindutin ang "🚫 Hindi Required" doon kung hindi naman kailangan ang drawing para dito.</p>`;
@@ -5796,6 +5804,15 @@ function renderJinReview(){
           <b>${escapeHtml(a.description)}</b> — ${a.status==='done'?'✅ tapos':(a.status==='ongoing'?'🔵 ongoing':'⏳ queue')}${a.targetQty?` (target ${a.targetQty})`:''}
         </div>`).join('')
       : `<div class="hint">Walang sariling activity log entry para sa ${formatDateLong(logDate)}.</div>`;
+    // Jin needs to actually SEE the Parts List and every attached drawing
+    // right here to check/inspect against — not just the activity log — per
+    // the user's explicit instruction. Reuses the exact same widgets every
+    // other task card uses (partsListTableHtml/attachedDrawingsSummaryHtml),
+    // so it's always in sync with whatever Engineering has actually attached,
+    // and (same as those other cards) shows every drawing type, not just the
+    // one for the process currently under review.
+    const partsListHtml = partsListTableHtml(item, processId);
+    const allDrawingsHtml = DRAWING_PROCESS_MAP[processId] ? '' : attachedDrawingsSummaryHtml(item);
     return `<div class="panel" style="margin-bottom:12px;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
         <div>
@@ -5809,6 +5826,8 @@ function renderJinReview(){
           <button class="btn secondary btn-sm" style="color:var(--red);" onclick="openRejectJinReviewModal('${item.id}','${processId}')">✕ Hindi pa tapos</button>
         </div>
       </div>
+      ${partsListHtml}
+      ${allDrawingsHtml}
       <details style="margin-top:10px;">
         <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--gray);">Sariling Activity Log ni ${escapeHtml(submittedBy)} — ${formatDateLong(logDate)}</summary>
         <div style="margin-top:6px;">${activityHtml}</div>
@@ -5894,6 +5913,16 @@ async function confirmPartial(itemId, processId){
     // Entire remaining quantity is done — same as a normal full completion.
     closeModal();
     await cycleStep(itemId, processId);
+    return;
+  }
+  // Same drawing-producing-step gate as a full Done (see cycleStep) — a
+  // partial completion of Fabrication Drawing (or any other drawing-
+  // producing step) must not be able to skip past this just because it went
+  // through the Partial flow instead of a plain tap; this was a real gap
+  // before (confirmPartial never checked it at all).
+  const missingDrawings = drawingStepMissingDetails(item, processId);
+  if(missingDrawings.length){
+    openDrawingMissingAlert(item, processId, missingDrawings);
     return;
   }
   // Same "must have logged enough Sub Assy/Child Part count" gate as a full
