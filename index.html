@@ -7248,6 +7248,22 @@ function renderMyTasks(){
   refreshProfileModalIfOpen();
 }
 
+// Every {item, processId} pair, across every active item, for a process
+// that's gated behind Edward's review/confirmation (see needsJinReview) —
+// the shared basis for treating "For Review / Confirmation" as its own
+// pseudo-process for Edward Torio (JIN_REVIEWER_NAME) below, exactly the way
+// computeScorecards/getPersonTaskRows/computePersonScorecardForPeriod treat
+// every REAL PROCESS_LIST step for everyone else. It's not a route step
+// itself (there's no single "processId" for it — it spans Fabrication
+// Drawing all the way through Finish Good), so it needs this one dedicated
+// helper instead of just another ownersFor() lookup.
+function reviewGatedRouteEntries(){
+  const rows = [];
+  activeItems().forEach(it=>{
+    (it.route||[]).forEach(pid=>{ if(needsJinReview(pid)) rows.push({item: it, processId: pid}); });
+  });
+  return rows;
+}
 /* ---------- Team Scorecards ---------- */
 function computeScorecards(){
   const items = activeItems();
@@ -7279,6 +7295,26 @@ function computeScorecards(){
       scorecards[name].tasks.push({ stageLabel: ownerDisplayLabel(p.id,name)!==name ? ownerDisplayLabel(p.id,name) : p.label, assigned: relevant.length, completed, onTime, late, notTracked });
     });
   });
+  // Edward's own "For Review / Confirmation" pseudo-process (see
+  // reviewGatedRouteEntries above) — same Assigned/Completed/On-time/Late
+  // shape as every real process's row, so his profile's summary cards and
+  // "Performance per Process" section work exactly like everyone else's.
+  {
+    const rows = reviewGatedRouteEntries();
+    let completed=0, onTime=0, late=0, notTracked=0;
+    rows.forEach(({item:it, processId:pid})=>{
+      if(it.routeStatus[pid]==='done'){
+        completed++;
+        const completedAt = it.routeCompletedAt && it.routeCompletedAt[pid];
+        const target = it.routeTargetDates && it.routeTargetDates[pid];
+        if(target && completedAt){
+          if(new Date(completedAt) <= new Date(target+'T23:59:59')) onTime++; else late++;
+        }else{ notTracked++; }
+      }
+    });
+    if(!scorecards[JIN_REVIEWER_NAME]) scorecards[JIN_REVIEWER_NAME] = { name: JIN_REVIEWER_NAME, tasks: [] };
+    scorecards[JIN_REVIEWER_NAME].tasks.push({ stageLabel: '🔍 For Review / Confirmation', assigned: rows.length, completed, onTime, late, notTracked });
+  }
   return scorecards;
 }
 // Same per-process Assigned/Done/On-time/Late breakdown as computeScorecards()
@@ -7295,6 +7331,33 @@ function computeScorecards(){
 function computePersonScorecardForPeriod(name, granularity, selectedKey){
   const items = activeItems();
   const tasks = [];
+  // Edward's "For Review / Confirmation" pseudo-process (see
+  // reviewGatedRouteEntries/computeScorecards) — same period-filtering logic
+  // as every real process below, just sourced from every gated route entry
+  // instead of one PROCESS_LIST step, since his role spans all of them.
+  if(name===JIN_REVIEWER_NAME){
+    const rows = reviewGatedRouteEntries();
+    const assignedSet = selectedKey ? rows.filter(({item:it, processId:pid})=>{
+      const target = it.routeTargetDates && it.routeTargetDates[pid];
+      if(!target) return false;
+      const itemPeriod = periodKey(target, granularity);
+      if(itemPeriod===selectedKey) return true;
+      return it.routeStatus[pid]!=='done' && itemPeriod<selectedKey;
+    }) : rows;
+    let completed=0, onTime=0, late=0, notTracked=0;
+    assignedSet.forEach(({item:it, processId:pid})=>{
+      if(it.routeStatus[pid]==='done'){
+        completed++;
+        const completedAt = it.routeCompletedAt && it.routeCompletedAt[pid];
+        const target = it.routeTargetDates && it.routeTargetDates[pid];
+        if(target && completedAt){
+          if(new Date(completedAt) <= new Date(target+'T23:59:59')) onTime++; else late++;
+        }else{ notTracked++; }
+      }
+    });
+    tasks.push({ stageLabel: '🔍 For Review / Confirmation', assigned: assignedSet.length, completed, onTime, late, notTracked });
+    return { name, tasks };
+  }
   PROCESS_LIST.forEach(p=>{
     if(!ownersFor(p.id).includes(name)) return;
     const multiOwner = ownersFor(p.id).length>1;
@@ -7704,6 +7767,46 @@ function setProfileDateFilter(name, val){
 function getPersonTaskRows(name, granularity, selectedKey){
   const items = activeItems();
   const rows = [];
+  // Edward's confirmed reviews (see reviewGatedRouteEntries/JIN_REVIEWER_NAME
+  // above) need to show up in his own "Target vs Actual na Natapos" list
+  // exactly like everyone else's task rows — same {item, processId, target,
+  // actual, actualAt, done} shape, just sourced from every gated route entry
+  // instead of one owned PROCESS_LIST step. "Pending" here is specifically
+  // 'for_review' (i.e. actually waiting on HIS confirmation right now), not
+  // the generic "currently active + assigned to me" check the loop below
+  // uses for everyone else — Edward isn't the one doing the underlying
+  // fabrication work, so that check doesn't apply to him.
+  if(name===JIN_REVIEWER_NAME){
+    items.forEach(it=>{
+      (it.route||[]).forEach(pid=>{
+        if(!needsJinReview(pid)) return;
+        const status = it.routeStatus[pid];
+        if(status==='done'){
+          const target = it.routeTargetDates && it.routeTargetDates[pid];
+          const completedAt = it.routeCompletedAt && it.routeCompletedAt[pid];
+          if(selectedKey){
+            if(!target) return;
+            if(periodKey(target, granularity)!==selectedKey) return;
+          }
+          rows.push({ item: it, processId: pid, target, actual: completedAt ? completedAt.slice(0,10) : '', actualAt: completedAt, done: true });
+        }else if(status==='for_review'){
+          const target = it.routeTargetDates && it.routeTargetDates[pid];
+          if(selectedKey){
+            if(!target) return;
+            const itemPeriod = periodKey(target, granularity);
+            if(!(itemPeriod===selectedKey || itemPeriod<selectedKey)) return;
+          }
+          rows.push({ item: it, processId: pid, target, actual: '', actualAt: '', done: false });
+        }
+      });
+    });
+    rows.sort((a,b)=>{
+      if(a.done !== b.done) return a.done ? 1 : -1;
+      const ta = a.target || '9999-12-31', tb = b.target || '9999-12-31';
+      return ta<tb ? -1 : (ta>tb ? 1 : 0);
+    });
+    return rows;
+  }
   PROCESS_LIST.forEach(p=>{
     if(!ownersFor(p.id).includes(name)) return;
     const multiOwner = ownersFor(p.id).length>1;
