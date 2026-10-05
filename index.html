@@ -6748,7 +6748,22 @@ async function saveEditItem(itemId){
   if(orderedRoute.length<2){ showToast('Pumili ng hindi bababa sa 2 process para sa route.'); return; }
   it.itemCode = document.getElementById('editItemCode').value.trim() || it.itemCode;
   it.description = document.getElementById('editItemDesc').value.trim() || it.description;
+  const prevQtyNum = Number(it.qty) || 0;
   it.qty = Number(document.getElementById('editItemQty').value) || 0;
+  if(it.qty !== prevQtyNum){
+    // A deliberate quantity edit — stamp it so the database lets it through
+    // (see guard_split_qty: a split lineage's qty can't otherwise go UP), and
+    // keep the lineage's true ordered quantity (originalQty) in step so the
+    // pieces of a split order still add up to what the SO says.
+    it.allowQtyChange = new Date().toISOString();
+    const delta = it.qty - prevQtyNum;
+    const lid = lineageIdOf(it);
+    ITEMS.forEach(sib=>{
+      if(lineageIdOf(sib)===lid && sib.originalQty!==undefined){
+        sib.originalQty = Math.max(0, (Number(sib.originalQty)||0) + delta);
+      }
+    });
+  }
   it.unit = document.getElementById('editItemUnit').value.trim() || 'pc';
   it.rate = Number(document.getElementById('rate_edit').value) || 0;
   if(rowFxInfo['edit']) it.rateFx = rowFxInfo['edit']; // audit trail if this Rate was just converted from Dollars
