@@ -1298,10 +1298,10 @@ let MATERIALS = [];
 // process ids that already exist in PROCESS_LIST, verified against the
 // owner's actual workflow:
 //   drawing (Fabrication Drawing)               -> item-level    -> feeds welding (main/sub assy)
-//   laser_cutting_program (Nesting Layout)       -> SO-wide       -> feeds laser_cutting (many child parts share one sheet)
+//   laser_cutting_program (Nesting Layout)       -> item-level (was SO-wide)       -> feeds laser_cutting (many child parts share one sheet)
 //   burring_tapping_countersunk_drawing          -> item-level    -> feeds burring/burring_tapping_countersunk
-//   bystronic_tube_cutting_program               -> SO-wide       -> feeds bystronic_cutting
-//   manual_cutting_scheme                        -> SO-wide       -> feeds manual_cutting
+//   bystronic_tube_cutting_program               -> item-level (was SO-wide)       -> feeds bystronic_cutting
+//   manual_cutting_scheme                        -> item-level (was SO-wide)       -> feeds manual_cutting
 //   bending_flat_pattern                         -> per child part-> feeds bending (each flat pattern is its own piece)
 // Boring/Tapping/Countersinking (now one combined step, 'burring_tapping_countersunk',
 // alongside the earlier, unrelated 'burring' / De-Burring step) used to be
@@ -1333,12 +1333,12 @@ let DRAWINGS_POOL = [];
 let ACTIVITY_LOG = [];
 const DRAWING_PROCESS_MAP = {
   drawing:                        { label:'Fabrication Drawing',        scope:'item',      consumedBy:['welding'] },
-  laser_cutting_program:          { label:'Laser Cutting Nesting Layout', scope:'so',       consumedBy:['laser_cutting'] },
+  laser_cutting_program:          { label:'Laser Cutting Nesting Layout', scope:'item',       consumedBy:['laser_cutting'] },
   burring_tapping_countersunk_drawing: { label:'Burring-Tapping-Countersunk Drawing', scope:'item', consumedBy:['burring','burring_tapping_countersunk'] },
-  bystronic_tube_cutting_program: { label:'Bystronic Tube Cutting Program', scope:'so',     consumedBy:['bystronic_cutting'] },
-  manual_cutting_scheme:          { label:'Manual Cutting Scheme',      scope:'so',         consumedBy:['manual_cutting'] },
+  bystronic_tube_cutting_program: { label:'Bystronic Tube Cutting Program', scope:'item',     consumedBy:['bystronic_cutting'] },
+  manual_cutting_scheme:          { label:'Manual Cutting Scheme',      scope:'item',         consumedBy:['manual_cutting'] },
   bending_flat_pattern:           { label:'Bending Flat Pattern',       scope:'childpart',  consumedBy:['bending'] },
-  turret_punch_program:           { label:'Turret Punch Program',       scope:'so',         consumedBy:['turret_punching'] },
+  turret_punch_program:           { label:'Turret Punch Program',       scope:'item',         consumedBy:['turret_punching'] },
 };
 
 function activeItems(){ return ITEMS.filter(i=>!i.archived); }
@@ -1482,13 +1482,22 @@ function drawingLinksForEntry(d, fallbackLabel, compact){
 // anything for the same SO regardless of item, 'childpart' also matches by
 // itemId (the flat patterns for the OTHER child parts of the same item are
 // filtered out separately, see drawingsForChildPart below).
+const LEGACY_SO_WIDE_PROCESSES = ['laser_cutting_program','bystronic_tube_cutting_program','manual_cutting_scheme','turret_punch_program'];
 function drawingsForItemProcess(item, processId){
   const scope = (DRAWING_PROCESS_MAP[processId]||{}).scope;
-  return DRAWINGS_POOL.filter(d=>{
+  const own = DRAWINGS_POOL.filter(d=>{
     if(d.processId!==processId) return false;
     if(scope==='so') return d.soNumber===item.soNumber && d.client===item.client;
     return d.itemId===item.id;
   });
+  // Engineering programs/layouts are now attached PER ITEM. Entries attached
+  // before that change were SO-wide (blank itemId) — keep showing those only
+  // for an item that has none of its own yet, so nothing already attached is
+  // lost, while any item with its own drawing shows just its own.
+  if(!own.length && scope==='item' && LEGACY_SO_WIDE_PROCESSES.includes(processId)){
+    return DRAWINGS_POOL.filter(d=>d.processId===processId && !d.itemId && d.soNumber===item.soNumber && d.client===item.client);
+  }
+  return own;
 }
 // A production step's own required drawings — resolved from whichever
 // pre-production process(es) feed it, per DRAWING_PROCESS_MAP's consumedBy.
@@ -1824,7 +1833,7 @@ function drawingAttachFormHtml(item, processId, childPart){
       : `<div style="margin-top:4px;"><button type="button" class="irc-edit" onclick="toggleDrawingNotRequired('${item.id}','${processId}','${jsAttr(notRequiredKey)}')">🚫 Hindi Required (walang drawing dito)</button></div>`
   ) : '';
   return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
-    <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}${meta.scope==='so'?' (para sa buong SO)':''}</div>
+    <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}</div>
     ${existingHtml}
     ${pendingFileHtml}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;align-items:center;">
@@ -1879,7 +1888,7 @@ function drawingViewOnlyBoxHtml(item, processId){
       }).join('')
     : `<div class="hint" style="color:var(--gray);">Wala pang naka-attach.</div>`;
   return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
-    <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 ${escapeHtml(meta.label)}${meta.scope==='so'?' (para sa buong SO)':''} <span style="font-weight:400;color:var(--gray);">— view only (hindi ito ang proseso mo)</span></div>
+    <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 ${escapeHtml(meta.label)} <span style="font-weight:400;color:var(--gray);">— view only (hindi ito ang proseso mo)</span></div>
     ${rows}
   </div>`;
 }
