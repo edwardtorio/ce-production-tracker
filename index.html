@@ -1265,10 +1265,11 @@ function buildPartsListForCode(code, qty){
   }));
 }
 
-// A small (160x160, compressed) starter photo for Jennifer "Jin" Domingo —
-// uploaded via chat. Everyone else defaults to an initials avatar until a
-// photo is uploaded for them in the Process Owners tab.
+// A small (160x160, compressed) starter photo for Jennifer "Jin" Domingo and
+// Edward Torio — uploaded via chat. Everyone else defaults to an initials
+// avatar until a photo is uploaded for them in the Process Owners tab.
 const DEFAULT_PHOTOS = {
+  'Edward Torio': 'data:image/jpeg;base64,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',
   'Jennifer Domingo': 'data:image/jpeg;base64,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'
 };
 let TEAM_PHOTOS = JSON.parse(JSON.stringify(DEFAULT_PHOTOS));
@@ -2523,10 +2524,16 @@ function partsListDrawingCellHtml(item, name, processId, canAttach){
 // completed COUNT logged here (not a drawing) before this step can be
 // marked done or partially forwarded — and however many pieces are being
 // forwarded (full qty, or a Partial split) has to be something the logged
-// counts can actually cover, so a claimed "5 pcs done" can't sail through
-// on only enough Post Assy pieces logged for 3. See cycleStep/confirmPartial
-// for where this is actually enforced.
-const PARTS_COUNT_GATED_PROCESSES = ['laser_cutting','manual_cutting','bystronic_cutting'];
+// counts EXACTLY match (not under, not over) — see cycleStep/confirmPartial
+// for where this is actually enforced. Originally only the 3 first-stage
+// cutting steps; per explicit instruction this now covers every production
+// step from Laser Cutting all the way through Delivery (i.e. every
+// PROCESS_LIST entry that isn't 'pre' — pre-production/planning steps have
+// no physical piece count to log yet), so a piece can never be marked
+// done/partial anywhere downstream without an accurate Natapos count logged
+// for every named Sub Assy/Child Part first — this is what stops items from
+// silently bouncing back to their process owners over a bad/incomplete count.
+const PARTS_COUNT_GATED_PROCESSES = PROCESS_LIST.filter(p=>p.category!=='pre').map(p=>p.id);
 // item.partsProgress[processId][pieceName] = how many of that Sub
 // Assy/Child Part this process has logged as physically completed so far —
 // entered directly on the task card (see partsCountInputHtml), independent
@@ -2561,20 +2568,30 @@ function partsCountEntries(item){
   });
   return entries;
 }
-// Returns null when this process/item combo isn't gated at all (not one of
-// the 3 cutting processes, or the item has no Parts List breakdown to check
-// against — same as the drawing gate, nothing forces a Parts List to
-// exist). Otherwise: {missing: [names with NO count logged at all],
-// insufficient: [{name, logged, needed}] whose logged count can't cover
-// claimedQty, maxSupportableQty: the largest qty the logged counts can
-// actually support right now}.
-function partsCountCheck(item, processId, claimedQty){
+// Returns null when this process/item combo isn't gated at all (see
+// PARTS_COUNT_GATED_PROCESSES — every non-'pre' process now), or the item
+// has no Parts List breakdown to check against — same as the drawing gate,
+// nothing forces a Parts List to exist. Otherwise: {missing: [names with NO
+// count logged at all], insufficient: [{name, logged, needed}] whose logged
+// count can't cover claimedQty (the portion actually being marked
+// done/forwarded right now), excess: [{name, logged, maxAllowed}] whose
+// logged count is MORE than this row can legitimately account for —
+// maxAllowed is based on rowQty (the row's own current qty, i.e. claimedQty
+// plus whatever stays behind as the remainder on a Partial) so a partial
+// split can still log ahead for the leftover portion, it just can never log
+// more pieces than this row's own qty could ever need, and a full Done
+// (where claimedQty===rowQty) can't sail through over-logged either,
+// maxSupportableQty: the largest qty the logged counts can actually support
+// right now}.
+function partsCountCheck(item, processId, claimedQty, rowQty){
   if(!PARTS_COUNT_GATED_PROCESSES.includes(processId)) return null;
+  if(rowQty===undefined || rowQty===null) rowQty = claimedQty;
   const entries = partsCountEntries(item);
   if(!entries.length) return null;
   const progress = (item.partsProgress && item.partsProgress[processId]) || {};
   const missing = [];
   const insufficient = [];
+  const excess = [];
   let maxSupportableQty = Infinity;
   entries.forEach(e=>{
     const logged = progress[e.name];
@@ -2588,16 +2605,20 @@ function partsCountCheck(item, processId, claimedQty){
       if(supportable < maxSupportableQty) maxSupportableQty = supportable;
       const needed = e.qtyPerUnit * claimedQty;
       if(logged < needed) insufficient.push({name:e.name, logged, needed});
+      const maxAllowed = e.qtyPerUnit * rowQty;
+      if(logged > maxAllowed) excess.push({name:e.name, logged, maxAllowed});
     }
   });
   if(maxSupportableQty===Infinity) maxSupportableQty = claimedQty; // no qtyPerUnit>0 entries at all — nothing to compute against
-  return { missing, insufficient, maxSupportableQty };
+  return { missing, insufficient, excess, maxSupportableQty };
 }
 // The blocking alert shown when cycleStep()/confirmPartial() refuse to mark
-// one of the 3 gated cutting steps done/partial — a real modal, same
-// treatment as openDrawingMissingAlert, naming every specific piece that's
-// either missing a count entirely or under-logged for the quantity being
-// claimed, plus what the logged counts can actually support right now.
+// a gated process (see PARTS_COUNT_GATED_PROCESSES — Laser Cutting through
+// Delivery) done/partial — a real modal, same treatment as
+// openDrawingMissingAlert, naming every specific piece that's either missing
+// a count entirely, under-logged for the quantity being claimed, or
+// OVER-logged beyond what this row could ever need, plus what the logged
+// counts can actually support right now.
 function openPartsCountMissingAlert(item, processId, check, claimedQty){
   const box = document.getElementById('modalBox');
   const missingHtml = check.missing.length
@@ -2606,13 +2627,19 @@ function openPartsCountMissingAlert(item, processId, check, claimedQty){
   const insufficientHtml = check.insufficient.length
     ? `<p>Kulang pa ang nailagay na bilang para masuporta ang <b>${claimedQty} ${escapeHtml(item.unit)}</b> na ipapasa:</p><ul style="margin:8px 0;padding-left:22px;">${check.insufficient.map(x=>`<li><b>${escapeHtml(x.name)}</b> — nailagay: ${x.logged}, kailangan: ${x.needed}</li>`).join('')}</ul>`
     : '';
+  const excessHtml = (check.excess && check.excess.length)
+    ? `<p>Sobra ang nailagay na bilang — lampas sa maaaring kailanganin ng item na ito:</p><ul style="margin:8px 0;padding-left:22px;color:var(--red);">${check.excess.map(x=>`<li><b>${escapeHtml(x.name)}</b> — nailagay: ${x.logged}, pinakamataas na dapat: ${x.maxAllowed}</li>`).join('')}</ul>`
+    : '';
   const supportNote = isFinite(check.maxSupportableQty)
     ? `<p class="hint">Batay sa mga bilang na nailagay mo ngayon, <b>${check.maxSupportableQty} ${escapeHtml(item.unit)}</b> lang ang kayang i-suporta.</p>`
     : '';
-  box.innerHTML = `<h4>⚠️ Kulang pa ang bilang ng nagawang piyesa</h4>
+  const title = (check.excess && check.excess.length && !check.missing.length && !check.insufficient.length)
+    ? '⚠️ Sobra ang bilang ng nagawang piyesa'
+    : '⚠️ Kulang pa ang bilang ng nagawang piyesa';
+  box.innerHTML = `<h4>${title}</h4>
     <p>Hindi pa pwedeng i-mark na Tapos/Partial ang <b>${escapeHtml(item.itemCode)}</b> sa <b>${escapeHtml(processLabel(processId))}</b>:</p>
-    ${missingHtml}${insufficientHtml}${supportNote}
-    <p class="hint">Buksan ang "🧩 Parts List" sa task card na ito at ilagay ang tamang bilang ng nagawang Sub Assy/Child Part bago mag-Tapos o Partial.</p>
+    ${missingHtml}${insufficientHtml}${excessHtml}${supportNote}
+    <p class="hint">Buksan ang "🧩 Parts List" sa task card na ito at itama ang bilang ng nagawang Sub Assy/Child Part bago mag-Tapos o Partial.</p>
     <div class="modal-actions"><button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
   document.getElementById('modalOverlay').classList.add('show');
 }
@@ -3087,6 +3114,15 @@ let PENDING_DELETE_IDS = []; // item ids removed locally (permanent delete) sinc
 let ITEM_BASE_SNAPSHOTS = new Map();
 function rememberItemBase(it){ if(it && it.id!==undefined && it.id!==null) ITEM_BASE_SNAPSHOTS.set(it.id, JSON.stringify(it)); }
 function rememberItemsBase(items){ (items||[]).forEach(rememberItemBase); }
+// The database refuses to let a step that is already 'done' go back to
+// queue/ongoing unless the write carries a fresh, explicit marker for that
+// exact step (see the guard_done_regression trigger). Every deliberate
+// "ibalik / i-reset / ibalik sa ongoing" action stamps this; an accidental
+// stale-copy overwrite never does, so it can't un-do anyone's Done.
+function markAllowRegress(item, processId){
+  if(!item.allowRegress) item.allowRegress = {};
+  item.allowRegress[processId] = new Date().toISOString();
+}
 // Recursively merges OUR local edit onto THEIRS (the freshest server copy),
 // using BASE (what we started from before we made our edit) to tell what we
 // actually changed apart from what just happens to differ because someone
@@ -3195,7 +3231,19 @@ function refreshPendingSaveBackups(){
   let changed = false;
   pendingRetries.forEach((fn, key)=>{
     const payload = pendingRetryPayloadFor(key);
-    if(payload){ backup[key] = {type: payload.type, data: payload.data, ts: new Date().toISOString()}; changed = true; }
+    if(payload){
+      // Remember the server state this edit STARTED from (its "base") and keep
+      // it for the life of the backup — recovery later 3-way-merges only the
+      // fields the user actually changed onto whatever the server holds by then,
+      // instead of replaying the whole (possibly days-old) copy over it, which
+      // is what used to revert teammates' newer Done taps.
+      const prev = backup[key];
+      let base = (prev && prev.base!==undefined) ? prev.base : null;
+      if(base===null && payload.type==='item'){ const b = ITEM_BASE_SNAPSHOTS.get(payload.data.id); if(b!==undefined) base = b; }
+      const nowIso = new Date().toISOString();
+      backup[key] = {type: payload.type, data: payload.data, base, ts: (prev && prev.ts) ? prev.ts : nowIso, updatedAt: nowIso};
+      changed = true;
+    }
   });
   if(changed) writePendingSaveBackup(backup);
 }
@@ -3257,14 +3305,39 @@ function recoverPendingSaveBackups(){
   const keys = Object.keys(backup);
   if(!keys.length) return;
   let recoveredCount = 0;
+  const nowMs = Date.now();
+  let dropped = false;
   keys.forEach(key=>{
     const entry = backup[key];
-    if(!entry || !entry.data || !entry.data.id){ return; }
+    if(!entry || !entry.data || !entry.data.id){ delete backup[key]; dropped = true; return; }
+    const ageMs = nowMs - (Date.parse(entry.ts) || 0);
     if(entry.type==='item'){
       const idx = ITEMS.findIndex(i=>i.id===entry.data.id);
-      if(idx>=0) ITEMS[idx] = entry.data; else ITEMS.push(entry.data);
+      if(idx>=0){
+        // SAFE recovery: re-apply only what this device's user actually changed
+        // (entry.data vs the base it started from) onto the fresh server copy
+        // that was just loaded. Without a recorded base (old-format backup) we
+        // can't tell the user's edit apart from days of teammates' progress, so
+        // anything older than 10 minutes is discarded rather than risk
+        // overwriting newer Done steps with a stale copy.
+        if(typeof entry.base==='string' && entry.base){
+          try{
+            ITEMS[idx] = threeWayMergeItem(JSON.parse(entry.base), entry.data, ITEMS[idx]);
+          }catch(e){ delete backup[key]; dropped = true; return; }
+        }else if(ageMs > 10*60*1000){
+          delete backup[key]; dropped = true; return;
+        }else{
+          ITEMS[idx] = entry.data;
+        }
+      }else{
+        // The row no longer exists on the server (deleted by someone) — never resurrect it.
+        delete backup[key]; dropped = true; return;
+      }
       enqueueRetry(key, async ()=>{ const it = ITEMS.find(i=>i.id===entry.data.id); return it ? await persistItem(it) : {ok:true}; });
       recoveredCount++;
+    }else if(ageMs > 60*60*1000){
+      // materials / drawings: nothing merges these, so never replay a stale copy.
+      delete backup[key]; dropped = true; return;
     }else if(entry.type==='material'){
       const idx = MATERIALS.findIndex(m=>m.id===entry.data.id);
       if(idx>=0) MATERIALS[idx] = entry.data; else MATERIALS.push(entry.data);
@@ -3277,6 +3350,7 @@ function recoverPendingSaveBackups(){
       recoveredCount++;
     }
   });
+  if(dropped) writePendingSaveBackup(backup); // stale/unsafe entries removed for good
   if(recoveredCount){
     updateSyncBadge('offline');
     showToast(`Na-recover ang ${recoveredCount} pagbabagong hindi pa na-confirm na-save noong huling session — sina-save ulit sa background.`);
@@ -3375,12 +3449,25 @@ async function persistItem(item){
     if(baseJSON!==undefined){
       try{
         const {data: freshRow, error: fetchErr} = await sbClient.from('items').select('data').eq('id', item.id).maybeSingle();
-        if(!fetchErr && freshRow && freshRow.data){
-          toSave = threeWayMergeItem(JSON.parse(baseJSON), item, freshRow.data);
-          const idx = ITEMS.findIndex(it=>it.id===item.id);
-          if(idx>=0) ITEMS[idx] = toSave;
+        if(fetchErr){
+          // Can't see the freshest server copy — NEVER fall back to uploading
+          // our own (possibly stale) copy blind; that is exactly how an old Done
+          // used to get overwritten. Report failure so it's retried with a merge.
+          return {ok:false, code:'upstream_error', message: fetchErr.message || 'fetch failed'};
         }
-      }catch(mergeErr){ /* best effort — fall back to saving our own local copy as-is below */ }
+        if(!freshRow || !freshRow.data){
+          // The row was deleted by someone else since we loaded it — don't
+          // resurrect it with an old copy.
+          ITEMS = ITEMS.filter(it=>it.id!==item.id);
+          ITEM_BASE_SNAPSHOTS.delete(item.id);
+          return {ok:true};
+        }
+        toSave = threeWayMergeItem(JSON.parse(baseJSON), item, freshRow.data);
+        const idx = ITEMS.findIndex(it=>it.id===item.id);
+        if(idx>=0) ITEMS[idx] = toSave;
+      }catch(mergeErr){
+        return {ok:false, code:'upstream_error', message: (mergeErr && mergeErr.message) || 'merge failed'};
+      }
     }
     const row = { id: toSave.id, item_code: toSave.itemCode||'', so_number: toSave.soNumber||'', client: toSave.client||'', data: toSave };
     const {error} = await sbClient.from('items').upsert([row], {onConflict:'id'});
@@ -4889,6 +4976,7 @@ async function confirmRevertFinished(itemId){
   const lastId = item.route[item.route.length-1];
   if(item.routeStatus[lastId]!=='done'){ closeModal(); return; }
   ensureTimingFields(item);
+  markAllowRegress(item, lastId);
   item.routeStatus[lastId] = 'ongoing';
   if(item.routeCompletedAt) delete item.routeCompletedAt[lastId];
   startActiveSegment(item, lastId); // work isn't actually finished — resume the clock
@@ -5676,14 +5764,16 @@ async function cycleStep(itemId, processId){
     openDrawingMissingAlert(item, processId, missingDrawings);
     return;
   }
-  // Same idea for the 3 first-stage cutting steps (Laser Cutting, Manual
-  // Cutting, Bystronic Pipe Laser Cutting) — can't be marked done without
-  // having logged an actual completed COUNT for every Sub Assy/Child Part,
-  // and that count has to be enough to cover the full qty being claimed
-  // done here. See partsCountCheck/openPartsCountMissingAlert.
+  // Same idea for every gated production step, Laser Cutting all the way
+  // through Delivery (see PARTS_COUNT_GATED_PROCESSES) — can't be marked
+  // done without having logged an actual completed COUNT for every Sub
+  // Assy/Child Part, that count has to be enough to cover the full qty
+  // being claimed done here, AND it can't be MORE than this item could ever
+  // need either (over-logged counts block too, same as under-logged — see
+  // partsCountCheck/openPartsCountMissingAlert).
   if(newStatus==='done'){
     const countCheck = partsCountCheck(item, processId, Number(item.qty)||0);
-    if(countCheck && (countCheck.missing.length || countCheck.insufficient.length)){
+    if(countCheck && (countCheck.missing.length || countCheck.insufficient.length || countCheck.excess.length)){
       openPartsCountMissingAlert(item, processId, countCheck, Number(item.qty)||0);
       return;
     }
@@ -5944,11 +6034,15 @@ async function confirmPartial(itemId, processId){
     return;
   }
   // Same "must have logged enough Sub Assy/Child Part count" gate as a full
-  // Done (see cycleStep) — but checked against the PARTIAL qty being
-  // forwarded here, not the full remaining qty, since that's what's actually
-  // being claimed as finished right now.
-  const countCheck = partsCountCheck(item, processId, doneQty);
-  if(countCheck && (countCheck.missing.length || countCheck.insufficient.length)){
+  // Done (see cycleStep) — the lower bound is checked against the PARTIAL
+  // qty being forwarded here (doneQty), not the full remaining qty, since
+  // that's what's actually being claimed as finished right now; the upper
+  // (excess) bound is checked against totalQty instead (this row's own qty
+  // before the split) so logging ahead for the piece(s) that stay behind as
+  // the remainder is still allowed — it just can never log more than this
+  // row could ever legitimately need, full stop.
+  const countCheck = partsCountCheck(item, processId, doneQty, totalQty);
+  if(countCheck && (countCheck.missing.length || countCheck.insufficient.length || countCheck.excess.length)){
     openPartsCountMissingAlert(item, processId, countCheck, doneQty);
     return;
   }
@@ -6226,6 +6320,7 @@ async function confirmReturn(itemId, processId){
   const prevId = item.route[idx-1];
   const reason = (document.getElementById('returnReason').value || '').trim();
   if(!reason){ showToast('Kailangan maglagay ng dahilan bago ibalik ang isang tapos na proseso.'); return; }
+  markAllowRegress(item, prevId);
   item.routeStatus[prevId] = 'queue';
   if(item.routeCompletedAt) delete item.routeCompletedAt[prevId];
   ensureTimingFields(item);
@@ -6416,6 +6511,7 @@ async function confirmDetour(itemId, chosenOverride, processId){
   }
   const idx = item.route.indexOf(cur);
   item.route.splice(idx, 0, chosen); // inserted right before `cur` — becomes the new current step
+  if(wasAlreadyDone) markAllowRegress(item, chosen);
   item.routeStatus[chosen] = 'queue';
   ensureTimingFields(item);
   delete item.routeStartedAt[chosen];
@@ -10433,6 +10529,18 @@ function handleRemoteItemChange(payload){
     const newData = payload.new && payload.new.data;
     if(!newData || !newData.id) return;
     const idx = ITEMS.findIndex(it=>it.id===newData.id);
+    // If THIS device has an unsaved edit of this same item waiting to retry,
+    // don't let the incoming copy wipe it from memory — fold the teammate's
+    // change in under our pending edit instead (and keep our base as-is so the
+    // retry still knows exactly what we changed).
+    const pendingBase = ITEM_BASE_SNAPSHOTS.get(newData.id);
+    if(idx>=0 && pendingRetries.has('item:'+newData.id) && pendingBase!==undefined){
+      try{
+        ITEMS[idx] = threeWayMergeItem(JSON.parse(pendingBase), ITEMS[idx], newData);
+        rerenderCurrentView();
+        return;
+      }catch(e){ /* fall through to the normal replace */ }
+    }
     if(idx>=0) ITEMS[idx] = newData; else ITEMS.push(newData);
     // A teammate's own change just arrived and IS now the authoritative
     // server state for this item — remember it as our new base too, so our
