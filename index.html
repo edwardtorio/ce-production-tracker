@@ -1751,6 +1751,40 @@ function openDrawingMissingAlert(item, processId, missing){
   box.innerHTML = `<h4>⚠️ Kulang pa bago matapos</h4>${bodyHtml}<div class="modal-actions"><button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
   document.getElementById('modalOverlay').classList.add('show');
 }
+// Material Withdrawal is the control point between planning and the shop
+// floor: nothing may be withdrawn (and therefore nothing may start Laser
+// Cutting ... Delivery) until BOTH inputs it depends on are really in —
+// (1) Material Procurement has finished (materials are in), and (2) every
+// Engineering drawing/program this item's route calls for is finished AND
+// actually attached (or explicitly marked "Hindi Required"). This stops
+// fabrication from starting on an item that is still missing either side and
+// then having to redo it. Returns a list of {kind, text}; empty = clear.
+// checkAttachments is only true when STARTING withdrawal (queue -> ongoing),
+// so an item already mid-withdrawal can still be finished.
+function withdrawalBlockers(item, checkAttachments){
+  const out = [];
+  const route = item.route || [];
+  if(route.includes('material_purchasing') && item.routeStatus['material_purchasing']!=='done'){
+    out.push({kind:'procurement', text:'Material Procurement — hindi pa tapos / wala pa ang materyales'});
+  }
+  route.filter(pid=>DRAWING_CHAIN.includes(pid)).forEach(pid=>{
+    if(item.routeStatus[pid]!=='done'){
+      out.push({kind:'engineering', text:`${processLabel(pid)} (Engineering) — hindi pa tapos`});
+    }else if(checkAttachments){
+      const miss = drawingStepMissingDetails(item, pid);
+      if(miss.length) out.push({kind:'attach', text:`${processLabel(pid)} — walang naka-attach na drawing/program (o "Hindi Required" na marka)${pid==='drawing'?': '+miss.join(', '):''}`});
+    }
+  });
+  return out;
+}
+function openWithdrawalBlockedAlert(item, blockers){
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `<h4>⛔ Hindi pa pwedeng mag-Withdraw ng Materyales</h4>
+    <p><b>${escapeHtml(item.itemCode)}</b> — kailangan munang kumpleto ang galing sa Material Procurement at sa Engineering bago magsimula ang Material Withdrawal at ang buong production (Laser Cutting hanggang Delivery), para hindi maulit ang trabaho ng fabrication:</p>
+    <ul style="margin:8px 0;padding-left:22px;font-weight:700;">${blockers.map(b=>`<li>${escapeHtml(b.text)}</li>`).join('')}</ul>
+    <div class="modal-actions"><button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
+  document.getElementById('modalOverlay').classList.add('show');
+}
 // Stable DOM-id suffix for one attach-form instance — item + process, plus
 // child part when this form is scoped to one specific piyesa (either the
 // free-text child part field on bending_flat_pattern, or a Parts List row
@@ -5759,6 +5793,11 @@ async function cycleStep(itemId, processId){
     return;
   }
   const newStatus = nextStatus(item.routeStatus[processId]);
+  // Material Withdrawal gate — see withdrawalBlockers.
+  if(processId==='material_withdrawal' && (newStatus==='ongoing' || newStatus==='done')){
+    const wb = withdrawalBlockers(item, newStatus==='ongoing');
+    if(wb.length){ openWithdrawalBlockedAlert(item, wb); return; }
+  }
   // A drawing-PRODUCING step (Fabrication Drawing, Laser Cutting Program,
   // Burring-Tapping-Countersunk Drawing, Bystronic Tube Cutting Program,
   // Manual Cutting Scheme, Bending Flat Pattern, Turret Punch Program) can't
