@@ -895,7 +895,7 @@
   <div class="view" id="view-materials">
     <div class="panel">
       <h3>🚚 Materials, Accessories &amp; Consumables — BOM hanggang Procurement</h3>
-      <div class="hint" style="margin-bottom:10px;">Itala dito ang resulta ng BOM/stock-checking ng warehouse per SO (per materyales, puwede ring i-link sa specific na item). Kapag "Kulang" ang stock status, awtomatikong bibilangin ang araw mula sa PRF Date papuntang Material Procurement — mag-i-red flag ito kapag lumagpas na sa target (default 10 araw).</div>
+      <div class="hint" style="margin-bottom:10px;">Piliin ang SO at i-upload ang BOM nito (📤). Nasa taas ang mga SO na WALANG BOM pa. Itala rin dito ang resulta ng BOM/stock-checking ng warehouse per SO. Ito ang basehan ng Material Procurement, Withdrawal at Return ng inventario per SO. Kapag "Kulang" ang stock status, awtomatikong bibilangin ang araw mula sa PRF Date papuntang Material Procurement — mag-i-red flag ito kapag lumagpas na sa target (default 10 araw).</div>
       <div id="materialsTabBody"></div>
     </div>
   </div>
@@ -8412,98 +8412,209 @@ function materialsSoOptionsList(){
   });
   return [...seen.values()].sort((a,b)=> (a.soNumber+a.client).localeCompare(b.soNumber+b.client));
 }
-let materialsSoFilter = ''; // '' = all SOs, else 'soNumber||client'
-let materialsFormSo = ''; // currently selected SO in the "Add Material" form
+// ---- BOM per SO: files live in DRAWINGS_POOL (processId 'bom', no itemId) +
+// the same 'drawings' storage bucket, so they sync like every other attachment.
+let materialsSearch = '';
+let materialsView = 'nobom'; // 'nobom' | 'hasbom' | 'all'
+let materialsOpenSo = '';    // 'soNumber||client' currently expanded
+function bomFilesForSo(soNumber, client){
+  return DRAWINGS_POOL.filter(d=>d.processId==='bom' && d.soNumber===soNumber && d.client===client);
+}
+function soBomInfo(s){
+  const files = bomFilesForSo(s.soNumber, s.client);
+  const lines = materialsForSo(s.soNumber, s.client);
+  const short = lines.filter(m=>m.stockStatus==='short' && !m.receivedDate);
+  const unchecked = lines.filter(m=>m.stockStatus==='not_checked');
+  const delayed = lines.filter(materialIsDelayed);
+  const itemCount = activeItems().filter(it=>it.soNumber===s.soNumber && it.client===s.client).length;
+  return { files, lines, short, unchecked, delayed, itemCount, hasBom: files.length>0 || lines.length>0 };
+}
+function matKeyEnc(k){ return encodeURIComponent(k).replace(/'/g,'%27'); }
+function toggleMaterialsSo(enc){
+  const k = decodeURIComponent(enc);
+  materialsOpenSo = materialsOpenSo===k ? '' : k;
+  renderMaterialsTab();
+}
+function setMaterialsView(v){ materialsView = v; renderMaterialsTab(); }
+function setMaterialsSearch(v){
+  materialsSearch = v;
+  renderMaterialsTab();
+  const el = document.getElementById('matSearch');
+  if(el){ el.focus(); const n = el.value.length; try{ el.setSelectionRange(n,n); }catch(e){} }
+}
+async function uploadBomFiles(enc, files){
+  const [soNum, client] = decodeURIComponent(enc).split('||');
+  files = Array.from(files||[]);
+  if(!files.length) return;
+  if(isReadOnly){ showToast('Read-only ang view na ito.'); return; }
+  let ok = 0, failed = 0;
+  showToast(`Ina-upload ang ${files.length} BOM file…`);
+  for(const f of files){
+    const up = await uploadDrawingFile(f, soNum, '', 'bom', '');
+    if(!up.ok){ failed++; continue; }
+    const d = blankDrawingEntry(soNum, client, '', 'bom');
+    d.url = up.url; d.storagePath = up.storagePath; d.name = up.fileName || f.name;
+    d.uploadedBy = (typeof currentUserName!=='undefined' && currentUserName) ? currentUserName : '';
+    DRAWINGS_POOL.push(d);
+    saveDrawingEntry(d);
+    ok++;
+  }
+  materialsOpenSo = soNum+'||'+client;
+  renderMaterialsTab();
+  renderOverview();
+  showToast(failed ? `${ok} na-upload, ${failed} nabigo — subukan ulit.` : `✅ Na-upload ang ${ok} BOM file.`);
+}
+function removeBomFile(id){
+  if(!confirm('Tanggalin ang BOM file na ito?')) return;
+  deleteDrawingEntry(id).then(()=>{ renderMaterialsTab(); renderOverview(); });
+}
+function addMaterialLinesBulk(enc){
+  const [soNum, client] = decodeURIComponent(enc).split('||');
+  const ta = document.getElementById('matBulk');
+  if(!ta) return;
+  const lines = ta.value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  if(!lines.length){ showToast('Maglagay muna ng materyales (isang linya bawat isa).'); return; }
+  let n = 0;
+  lines.forEach(l=>{
+    // "Name <tab|comma|2+ spaces> qty <tab|comma|space> unit" — qty/unit optional
+    const parts = l.split(/\t|,|\s{2,}/).map(s=>s.trim()).filter(Boolean);
+    let name = parts[0], qty = 1, unit = 'pc';
+    if(parts.length>=2){
+      const mm = parts[1].match(/^(\d+(?:\.\d+)?)\s*(\S*)$/);
+      if(mm){ qty = Number(mm[1]); if(mm[2]) unit = mm[2]; }
+      if(parts[2]) unit = parts[2];
+    }
+    if(!name) return;
+    const m = blankMaterialLine(soNum, client, '');
+    m.name = name; m.qty = qty; m.unit = unit;
+    MATERIALS.push(m); saveMaterialLine(m); n++;
+  });
+  ta.value = '';
+  renderMaterialsTab(); renderOverview();
+  showToast(`Naidagdag ang ${n} materyales.`);
+}
 function renderMaterialsTab(){
   const wrap = document.getElementById('materialsTabBody');
   if(!wrap) return;
-  const soList = materialsSoOptionsList();
-  if(!materialsFormSo && soList.length) materialsFormSo = soList[0].soNumber+'||'+soList[0].client;
-
-  const soOptionsHtml = (current) => soList.map(s=>{
-    const key = s.soNumber+'||'+s.client;
-    return `<option value="${escapeHtml(key)}" ${key===current?'selected':''}>${escapeHtml(s.soNumber)} · ${escapeHtml(s.client)}</option>`;
-  }).join('');
-
-  const [formSoNum, formClient] = materialsFormSo.split('||');
-  const formItems = activeItems().filter(it=>it.soNumber===formSoNum && it.client===formClient);
-  const itemOptionsHtml = `<option value="">(General para sa buong SO)</option>` + formItems.map(it=>
-    `<option value="${escapeHtml(it.id)}">${escapeHtml(it.itemCode)} — ${escapeHtml((it.description||'').slice(0,50))}</option>`
-  ).join('');
-
-  let list = MATERIALS.slice();
-  if(materialsSoFilter) list = list.filter(m=>(m.soNumber+'||'+m.client)===materialsSoFilter);
-  list.sort((a,b)=> (b.createdAt||'').localeCompare(a.createdAt||''));
+  const soList = materialsSoOptionsList().map(s=>Object.assign({}, s, {info: soBomInfo(s)}));
+  const noBomCount = soList.filter(s=>!s.info.hasBom).length;
+  const hasBomCount = soList.length - noBomCount;
+  const q = materialsSearch.trim().toLowerCase();
+  let shown = soList.filter(s=>{
+    if(materialsView==='nobom' && s.info.hasBom) return false;
+    if(materialsView==='hasbom' && !s.info.hasBom) return false;
+    if(q && !(s.soNumber+' '+s.client).toLowerCase().includes(q)) return false;
+    return true;
+  });
+  // Walang BOM muna, tapos pinakamatagal/pinakamataas na SO number sa taas
+  shown.sort((a,b)=> (a.info.hasBom-b.info.hasBom) || b.soNumber.localeCompare(a.soNumber));
 
   const statusLabel = {not_checked:'Hindi pa Nachecheck', in_stock:'May Stock', short:'Kulang'};
-  const rows = list.map(m=>{
-    const linkedItem = m.itemId ? ITEMS.find(i=>i.id===m.itemId) : null;
-    const days = materialDaysWaiting(m);
-    const delayed = materialIsDelayed(m);
-    const statusOptionsHtml = Object.keys(statusLabel).map(k=>`<option value="${k}" ${m.stockStatus===k?'selected':''}>${statusLabel[k]}</option>`).join('');
-    const shortFieldsHtml = m.stockStatus==='short' ? `
-      <div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap;">
-        <label style="font-size:10.5px;color:var(--gray);">PRF Date: <input type="date" value="${escapeHtml(m.prfDate||'')}" style="font-size:11px;padding:2px 4px;" onchange="updateMaterialPrfDate('${m.id}', this.value)"></label>
-        <label style="font-size:10.5px;color:var(--gray);">Target (araw): <input type="number" min="1" value="${m.targetDays||10}" style="width:48px;font-size:11px;padding:2px 4px;" onchange="updateMaterialTargetDays('${m.id}', this.value)"></label>
-        ${m.receivedDate ? `<span style="color:var(--green);font-size:11px;font-weight:700;">✅ Natanggap: ${formatDateLong(m.receivedDate)}</span>` : `<button class="btn secondary btn-sm" onclick="markMaterialReceived('${m.id}')">Markahan Natanggap</button>`}
-        ${!m.receivedDate && days!==null ? `<span style="font-size:11px;font-weight:700;color:${delayed?'var(--red)':'var(--gray)'};">${delayed?'🔴 LAGPAS NA':''} Day ${days}</span>` : ''}
-      </div>` : '';
-    return `<tr>
-      <td class="so-num">${escapeHtml(m.soNumber)}</td>
-      <td class="client-name">${escapeHtml(m.client)}</td>
-      <td><b>${escapeHtml(m.name)}</b><br><span style="color:var(--gray);font-size:11px;">${escapeHtml(String(m.qty))} ${escapeHtml(m.unit||'')}</span></td>
-      <td>${linkedItem ? escapeHtml(linkedItem.itemCode) : '<span style="color:var(--gray);">(general)</span>'}</td>
-      <td>
-        <select onchange="updateMaterialStockStatus('${m.id}', this.value)">${statusOptionsHtml}</select>
-        ${shortFieldsHtml}
+  const chip = (id,label,count,color)=>`<button class="btn ${materialsView===id?'':'secondary'} btn-sm" style="${materialsView===id?'':''}" onclick="setMaterialsView('${id}')">${label} <b style="margin-left:4px;${color?`color:${materialsView===id?'#fff':color};`:''}">${count}</b></button>`;
+
+  const detailHtml = (s)=>{
+    const enc = matKeyEnc(s.soNumber+'||'+s.client);
+    const info = s.info;
+    const filesHtml = info.files.length ? info.files.map(f=>`
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 0;">
+        <span>${drawingLinksForEntry(f,'BOM')}</span>
+        <span style="color:var(--gray);font-size:11px;">${escapeHtml(f.uploadedAt||'')}${f.uploadedBy?' · '+escapeHtml(f.uploadedBy):''}</span>
+        <button class="btn ghost btn-sm" onclick="removeBomFile('${f.id}')">✕</button>
+      </div>`).join('') : `<div style="color:var(--gray);font-size:12px;">Wala pang na-upload na BOM file.</div>`;
+    const itemOpts = `<option value="">(General para sa buong SO)</option>` + activeItems().filter(it=>it.soNumber===s.soNumber&&it.client===s.client).map(it=>
+      `<option value="${escapeHtml(it.id)}">${escapeHtml(it.itemCode)} — ${escapeHtml((it.description||'').slice(0,50))}</option>`).join('');
+    const rows = info.lines.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(m=>{
+      const linkedItem = m.itemId ? ITEMS.find(i=>i.id===m.itemId) : null;
+      const days = materialDaysWaiting(m), delayed = materialIsDelayed(m);
+      const statusOptionsHtml = Object.keys(statusLabel).map(k=>`<option value="${k}" ${m.stockStatus===k?'selected':''}>${statusLabel[k]}</option>`).join('');
+      const shortFieldsHtml = m.stockStatus==='short' ? `
+        <div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap;">
+          <label style="font-size:10.5px;color:var(--gray);">PRF Date: <input type="date" value="${escapeHtml(m.prfDate||'')}" style="font-size:11px;padding:2px 4px;" onchange="updateMaterialPrfDate('${m.id}', this.value)"></label>
+          <label style="font-size:10.5px;color:var(--gray);">Target (araw): <input type="number" min="1" value="${m.targetDays||10}" style="width:48px;font-size:11px;padding:2px 4px;" onchange="updateMaterialTargetDays('${m.id}', this.value)"></label>
+          ${m.receivedDate ? `<span style="color:var(--green);font-size:11px;font-weight:700;">✅ Natanggap: ${formatDateLong(m.receivedDate)}</span>` : `<button class="btn secondary btn-sm" onclick="markMaterialReceived('${m.id}')">Markahan Natanggap</button>`}
+          ${!m.receivedDate && days!==null ? `<span style="font-size:11px;font-weight:700;color:${delayed?'var(--red)':'var(--gray)'};">${delayed?'🔴 LAGPAS NA':''} Day ${days}</span>` : ''}
+        </div>` : '';
+      return `<tr>
+        <td><b>${escapeHtml(m.name)}</b><br><span style="color:var(--gray);font-size:11px;">${escapeHtml(String(m.qty))} ${escapeHtml(m.unit||'')}</span></td>
+        <td>${linkedItem ? escapeHtml(linkedItem.itemCode) : '<span style="color:var(--gray);">(general)</span>'}</td>
+        <td><select onchange="updateMaterialStockStatus('${m.id}', this.value)">${statusOptionsHtml}</select>${shortFieldsHtml}</td>
+        <td style="white-space:nowrap;"><button class="btn ghost btn-sm" onclick="removeMaterialLine('${m.id}')">✕</button></td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="4" style="color:var(--gray);text-align:center;padding:12px;">Wala pang naitalang materyales.</td></tr>`;
+    return `<tr><td colspan="6" style="background:var(--gray-bg);padding:14px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;">
+        <div>
+          <div style="font-weight:800;margin-bottom:6px;">📎 BOM File(s)</div>
+          ${filesHtml}
+          <label class="btn btn-sm" style="margin-top:8px;display:inline-block;cursor:pointer;">+ Mag-upload pa ng BOM
+            <input type="file" multiple style="display:none;" onchange="uploadBomFiles('${enc}', this.files); this.value='';">
+          </label>
+        </div>
+        <div>
+          <div style="font-weight:800;margin-bottom:6px;">⚡ Mabilis na dagdag ng materyales</div>
+          <textarea id="matBulk" rows="4" style="width:100%;" placeholder="Isang materyales kada linya, hal.&#10;M8 Bolts, 50, pc&#10;SS304 Sheet 1.5mm, 6, sheet"></textarea>
+          <div class="hint">Format: Pangalan, Qty, Unit (Qty/Unit optional).</div>
+          <button class="btn btn-sm" style="margin-top:6px;" onclick="addMaterialLinesBulk('${enc}')">+ Idagdag lahat</button>
+          <details style="margin-top:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--gray);">Isa-isang dagdag / i-link sa item</summary>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:6px;">
+              <div class="field" style="min-width:180px;"><label>Item</label><select id="matFormItem">${itemOpts}</select></div>
+              <div class="field" style="min-width:160px;"><label>Materyales</label><input type="text" id="matFormName" placeholder="hal. M8 Bolts"></div>
+              <div class="field" style="width:80px;"><label>Qty</label><input type="number" id="matFormQty" min="0" value="1"></div>
+              <div class="field" style="width:80px;"><label>Unit</label><input type="text" id="matFormUnit" value="pc"></div>
+              <button class="btn btn-sm" onclick="addMaterialLineFromForm('${enc}')">+ Idagdag</button>
+            </div>
+          </details>
+        </div>
+      </div>
+      <div style="font-weight:800;margin:14px 0 6px;">📋 Materyales ng SO na ito (${info.lines.length})</div>
+      <div class="mini-table-wrap"><table class="mini-table">
+        <tr><th>Materyales</th><th>Item</th><th>Stock Status</th><th></th></tr>${rows}
+      </table></div>
+    </td></tr>`;
+  };
+
+  const body = shown.map(s=>{
+    const enc = matKeyEnc(s.soNumber+'||'+s.client);
+    const info = s.info;
+    const open = materialsOpenSo===s.soNumber+'||'+s.client;
+    const bomCell = info.files.length
+      ? `<span style="color:var(--green);font-weight:800;">✅ ${info.files.length} file${info.files.length>1?'s':''}</span>`
+      : (info.lines.length ? `<span style="color:#a35d00;font-weight:700;">📝 Lines lang (walang file)</span>`
+      : `<span style="color:#fff;background:var(--red);font-weight:800;padding:2px 8px;border-radius:10px;font-size:11px;">WALANG BOM</span>`);
+    const stockBits = [];
+    if(info.lines.length) stockBits.push(`${info.lines.length} materyales`);
+    if(info.unchecked.length) stockBits.push(`<span style="color:var(--gray);">${info.unchecked.length} di pa chineck</span>`);
+    if(info.short.length) stockBits.push(`<span style="color:${info.delayed.length?'var(--red)':'#a35d00'};font-weight:700;">${info.short.length} kulang${info.delayed.length?' (lagpas na)':''}</span>`);
+    const stockCell = stockBits.length ? stockBits.join(' · ') : '<span style="color:var(--gray);">—</span>';
+    return `<tr style="cursor:pointer;${open?'background:var(--gray-bg);':''}" onclick="toggleMaterialsSo('${enc}')">
+      <td class="so-num">${escapeHtml(s.soNumber)}</td>
+      <td class="client-name">${escapeHtml(s.client)}</td>
+      <td style="text-align:center;">${info.itemCount}</td>
+      <td>${bomCell}</td>
+      <td style="font-size:12px;">${stockCell}</td>
+      <td style="white-space:nowrap;" onclick="event.stopPropagation()">
+        <label class="btn ${info.hasBom?'secondary':''} btn-sm" style="cursor:pointer;display:inline-block;margin:0;">📤 ${info.hasBom?'Dagdag BOM':'Upload BOM'}
+          <input type="file" multiple style="display:none;" onchange="uploadBomFiles('${enc}', this.files); this.value='';">
+        </label>
       </td>
-      <td style="white-space:nowrap;"><button class="btn ghost btn-sm" onclick="removeMaterialLine('${m.id}')">✕ Tanggalin</button></td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="6" style="color:var(--gray);text-align:center;padding:16px;">Wala pang naitalang materyales para dito.</td></tr>`;
+    </tr>${open ? detailHtml(s) : ''}`;
+  }).join('') || `<tr><td colspan="6" style="color:var(--gray);text-align:center;padding:18px;">${materialsView==='nobom' && !q ? '🎉 Lahat ng SO ay may BOM na.' : 'Walang SO na tumutugma.'}</td></tr>`;
 
   wrap.innerHTML = `
-    <div class="field" style="max-width:360px;">
-      <label>I-filter ayon sa SO</label>
-      <select onchange="materialsSoFilter=this.value; renderMaterialsTab();">
-        <option value="">Lahat ng SO</option>
-        ${soOptionsHtml(materialsSoFilter)}
-      </select>
-    </div>
-    <div class="panel" style="background:var(--gray-bg);margin:14px 0;">
-      <h3 style="margin-top:0;">+ Magdagdag ng Materyales sa BOM</h3>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
-        <div class="field" style="min-width:220px;">
-          <label>SO</label>
-          <select id="matFormSo" onchange="materialsFormSo=this.value; renderMaterialsTab();">${soOptionsHtml(materialsFormSo)}</select>
-        </div>
-        <div class="field" style="min-width:220px;">
-          <label>Para saang item (optional)</label>
-          <select id="matFormItem">${itemOptionsHtml}</select>
-        </div>
-        <div class="field" style="min-width:160px;">
-          <label>Pangalan ng Materyales/Accessory/Consumable</label>
-          <input type="text" id="matFormName" placeholder="hal. M8 Bolts">
-        </div>
-        <div class="field" style="width:90px;">
-          <label>Qty</label>
-          <input type="number" id="matFormQty" min="0" value="1">
-        </div>
-        <div class="field" style="width:90px;">
-          <label>Unit</label>
-          <input type="text" id="matFormUnit" value="pc">
-        </div>
-        <button class="btn" onclick="addMaterialLineFromForm()">+ Idagdag</button>
-      </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+      ${chip('nobom','⚠️ Walang BOM pa',noBomCount,'#ffd9d9')}
+      ${chip('hasbom','✅ May BOM na',hasBomCount,'')}
+      ${chip('all','Lahat ng SO',soList.length,'')}
+      <input type="search" id="matSearch" placeholder="🔎 Hanapin ang SO o client…" value="${escapeHtml(materialsSearch)}" oninput="setMaterialsSearch(this.value)" style="flex:1;min-width:200px;max-width:340px;padding:8px 10px;border:1px solid var(--line,#ddd);border-radius:8px;">
     </div>
     <div class="mini-table-wrap"><table class="mini-table">
-      <tr><th>SO Number</th><th>Client</th><th>Materyales</th><th>Item</th><th>Stock Status</th><th></th></tr>
-      ${rows}
+      <tr><th>SO Number</th><th>Client</th><th>Items</th><th>BOM</th><th>Materyales / Stock</th><th></th></tr>
+      ${body}
     </table></div>
   `;
 }
-function addMaterialLineFromForm(){
-  const soKey = document.getElementById('matFormSo').value;
-  const [soNum, client] = soKey.split('||');
+function addMaterialLineFromForm(enc){
+  const [soNum, client] = decodeURIComponent(enc).split('||');
   const itemId = document.getElementById('matFormItem').value;
   const name = document.getElementById('matFormName').value.trim();
   const qty = Number(document.getElementById('matFormQty').value) || 0;
@@ -8514,6 +8625,7 @@ function addMaterialLineFromForm(){
   MATERIALS.push(m);
   saveMaterialLine(m);
   renderMaterialsTab();
+  renderOverview();
 }
 function updateMaterialStockStatus(id, status){
   const m = MATERIALS.find(x=>x.id===id); if(!m) return;
