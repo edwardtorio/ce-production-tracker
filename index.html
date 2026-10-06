@@ -438,7 +438,7 @@
      Duration) that don't fit the default 460px modal without horizontal
      scrolling; this gives it room to show every column at once on a normal
      desktop screen while still shrinking to fit narrow/mobile viewports. */
-  .modal-box.modal-wide{max-width:900px;}
+  .modal-box.modal-wide{max-width:min(1500px,96vw);}
   .modal-box h4{margin:0 0 6px;font-family:var(--font-display);font-size:16px;color:var(--steel-900);}
   .modal-box p{margin:0 0 14px;font-size:13px;color:var(--gray);line-height:1.5;}
   .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;}
@@ -1714,7 +1714,15 @@ function drawingStepMissingDetails(item, processId){
       // until at least one Sub Assy/Child Part row actually exists.
       return ['(wala pang Parts List na nailagay — kailangan munang gumawa ng Parts List bago matapos ang Fabrication Drawing)'];
     }
-    return names.filter(n=>!drawingSatisfiedOrNotRequired(item, 'drawing', n));
+    // Every Sub Assy / Child Part ALSO needs its Type of Material filled in —
+    // same strictness as the drawing itself, no bypass.
+    const missing = names.filter(n=>!drawingSatisfiedOrNotRequired(item, 'drawing', n));
+    const noMat = [];
+    (item.partsList||[]).forEach(s=>{
+      if(s.name && !String(s.materialType||'').trim()) noMat.push(`${s.name} — walang Type of Material`);
+      (s.childParts||[]).forEach(c=>{ if(c.name && !String(c.materialType||'').trim()) noMat.push(`${c.name} — walang Type of Material`); });
+    });
+    return missing.concat(noMat);
   }
   const meta = DRAWING_PROCESS_MAP[processId];
   return drawingSatisfiedOrNotRequired(item, processId, '') ? [] : [meta.label];
@@ -1740,9 +1748,9 @@ function openDrawingMissingAlert(item, processId, missing){
     bodyHtml = noPartsListYet ? `
       <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>Fabrication Drawing</b> ng <b>${escapeHtml(item.itemCode)}</b> — <b>wala pang Parts List na nailagay.</b></p>
       <p class="hint">Standard: dapat lagi may Parts List ang bawat item — walang "Hindi Required" na option dito. Buksan ang "🧩 Parts List" sa task card na ito at maglagay ng kahit isang Sub Assy/Child Part bago ito matapos.</p>` : `
-      <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>Fabrication Drawing</b> ng <b>${escapeHtml(item.itemCode)}</b> — kulang pa ng naka-attach na drawing (o "Hindi Required" na marka) ang mga sumusunod:</p>
+      <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>Fabrication Drawing</b> ng <b>${escapeHtml(item.itemCode)}</b> — kulang pa ang mga sumusunod (naka-attach na drawing o "Hindi Required" na marka, at Type of Material):</p>
       <ul style="margin:8px 0;padding-left:22px;font-weight:700;">${listHtml}</ul>
-      <p class="hint">Buksan ang "🧩 Parts List" sa task card na ito para mag-attach ng drawing sa bawat isa, o pindutin ang "🚫 Hindi Required" doon kung hindi naman kailangan ang drawing para dito.</p>`;
+      <p class="hint">Buksan ang "🧩 Parts List" sa task card na ito para mag-attach ng drawing at maglagay ng Type of Material sa bawat piyesa, o pindutin ang "🚫 Hindi Required" doon kung hindi naman kailangan ang drawing para dito.</p>`;
   }else{
     bodyHtml = `
       <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>${escapeHtml(meta.label)}</b> ng <b>${escapeHtml(item.itemCode)}</b> — wala pang naka-attach na drawing dito.</p>
@@ -2877,7 +2885,7 @@ function addPartsListSubAssy(itemId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
   if(!item.partsList) item.partsList = [];
-  item.partsList.push({name:'', qtyPerUnit:1, totalQty:0, childParts:[]});
+  item.partsList.push({name:'', qtyPerUnit:1, totalQty:0, materialType:'', childParts:[]});
   savePartsListChange(item);
 }
 function removePartsListSubAssy(itemId, subIdx){
@@ -2890,7 +2898,7 @@ function addPartsListChildPart(itemId, subIdx){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item || !item.partsList || !item.partsList[subIdx]) return;
   if(!item.partsList[subIdx].childParts) item.partsList[subIdx].childParts = [];
-  item.partsList[subIdx].childParts.push({name:'', qtyPerUnit:1, totalQty:0});
+  item.partsList[subIdx].childParts.push({name:'', qtyPerUnit:1, totalQty:0, materialType:''});
   savePartsListChange(item);
 }
 function removePartsListChildPart(itemId, subIdx, childIdx){
@@ -2914,6 +2922,7 @@ function removePartsListChildPart(itemId, subIdx, childIdx){
 // which Child Part rows belong to which Sub Assy without having to read
 // every row carefully, and makes it obvious you accidentally added a
 // Child Part under the wrong Sub Assy before you even save.
+const MATERIAL_TYPE_SUGGESTIONS = ['Cold Rolled Steel (CRS)','Hot Rolled Steel (HRS)','Galvanized Iron (GI)','Stainless Steel 304','Stainless Steel 316','Aluminum','Mild Steel Plate','Checkered Plate','Angle Bar','Square Tube','Rectangular Tube','Round Pipe','Flat Bar','Round Bar','Expanded Metal','Wire Mesh'];
 const PARTS_LIST_GROUP_ACCENTS = [
   {color:'var(--blue)',   bg:'var(--blue-bg)'},
   {color:'var(--green)',  bg:'var(--green-bg)'},
@@ -2976,14 +2985,14 @@ function partsListTableHtml(item, processId){
   const hasList = item.partsList && item.partsList.length;
   if(!hasList && !canEditPartsList) return '';
   const mainQty = Number(item.qty)||0;
-  const colCount = showNatapos ? 7 : 6; // Piyesa, Qty/parent, Total Kailangan, Fabrication Drawing, Burring-Tapping-Countersunk Drawing, Bending Flat Pattern, + (Natapos, only mula Laser Cutting hanggang Delivery)
+  const colCount = showNatapos ? 8 : 7; // Piyesa, Qty/parent, Total Kailangan, Fabrication Drawing, Burring-Tapping-Countersunk Drawing, Bending Flat Pattern, + (Natapos, only mula Laser Cutting hanggang Delivery)
   // Narrower than before (was 130px) — every extra pixel here is a pixel
   // the 3 drawing columns + Natapos don't get, and this field only shows up
   // at all on the one card that can actually edit the Parts List
   // (canEditPartsList), where a slightly tighter box is a fair trade for
   // not needing to scroll right to see the rest of the row.
-  const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:2px 5px;width:100%;max-width:110px;box-sizing:border-box;" onchange="${changeFn}">`;
-  const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:2px 5px;width:100%;max-width:50px;box-sizing:border-box;" onchange="${changeFn}">`;
+  const nameInput = (val, changeFn) => `<input type="text" value="${escapeHtml(val)}" placeholder="Pangalan ng piyesa" style="font-size:12px;padding:3px 5px;flex:1 1 130px;min-width:110px;box-sizing:border-box;" onchange="${changeFn}">`;
+  const qtyInput = (val, changeFn) => `<input type="number" min="0" value="${val}" style="font-size:12px;padding:3px 5px;width:100%;max-width:64px;box-sizing:border-box;" onchange="${changeFn}">`;
   // Small formula caption under each total — spells out that the number
   // still traces back to the item's own qty (e.g. "4 × 20 pc"), so it's
   // visibly obvious a freshly-added row is computed off the real Main
@@ -3004,6 +3013,14 @@ function partsListTableHtml(item, processId){
   // process is one of the ones that gets it (showNatapos) — Bending Flat
   // Pattern keeps its divider in that case since it's no longer the true
   // last column, and only drops it when Natapos isn't shown.
+  const materialDatalistId = `matTypes_${item.id}`;
+  const materialCell = (obj, changeFn) => {
+    const val = (obj && obj.materialType) || '';
+    if(canEditPartsList){
+      return `<input type="text" list="${materialDatalistId}" value="${escapeHtml(val)}" placeholder="hal. GI 1.2mm" style="font-size:12px;padding:3px 5px;width:100%;box-sizing:border-box;${val?'':'border-color:var(--red);'}" onchange="${changeFn}">`;
+    }
+    return val ? `<span style="font-size:12px;font-weight:600;">${escapeHtml(val)}</span>` : `<span style="display:inline-block;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px;background:#fde3e3;color:var(--red);white-space:nowrap;">❌ Wala pa</span>`;
+  };
   const lastColsHtml = (name) => `<td style="${drawColCellPad}${colDivider}">${fabDrawingCell(name)}</td><td style="${drawColCellPad}${colDivider}">${burringCell(name)}</td><td style="${drawColCellPad}${showNatapos?colDivider:''}">${bendingCell(name)}</td>${showNatapos ? `<td style="${cellPad}">${partsCountInputHtml(item, processId, name)}</td>` : ''}`;
   // Visual language, chosen so the split between groups AND between a Sub
   // Assy and its own Child Parts is obvious at a glance, without reading
@@ -3034,7 +3051,7 @@ function partsListTableHtml(item, processId){
     // Sub Assy row: the ONE row in this group that's fully tinted with the
     // group's accent color — the clear "group header" row.
     const subRowStyle = `border-left:5px solid ${accent.color};background:${accent.bg};${dividerTop}`;
-    let inner = `<tr style="${subRowStyle}"><td style="${cellPad}${colDivider}display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">${badge}${nameCell}${subAssyChip(accent.color)}${removeBtn}</td><td style="${cellPad}${colDivider}">${qtyCell}</td><td style="${cellPad}${colDivider}"><b>${Number(s.totalQty||0).toLocaleString()}</b>${formulaHint([s.qtyPerUnit, mainQty+' '+item.unit])}</td>${lastColsHtml(s.name)}</tr>`;
+    let inner = `<tr style="${subRowStyle}"><td style="${cellPad}${colDivider}display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">${badge}${nameCell}${subAssyChip(accent.color)}${removeBtn}</td><td style="${cellPad}${colDivider}">${qtyCell}</td><td style="${cellPad}${colDivider}"><b>${Number(s.totalQty||0).toLocaleString()}</b>${formulaHint([s.qtyPerUnit, mainQty+' '+item.unit])}</td><td style="${cellPad}${colDivider}">${materialCell(s, `updatePartsListSubField('${item.id}',${subIdx},'materialType',this.value)`)}</td>${lastColsHtml(s.name)}</tr>`;
     (s.childParts||[]).forEach((c, childIdx)=>{
       const childBadge = `<span style="display:inline-block;min-width:15px;height:15px;line-height:13px;text-align:center;border-radius:50%;border:1.5px solid ${accent.color};color:${accent.color};font-size:8.5px;font-weight:700;margin-right:4px;flex:0 0 auto;">${subIdx+1}.${childIdx+1}</span>`;
       const cNameCell = canEditPartsList
@@ -3048,7 +3065,7 @@ function partsListTableHtml(item, processId){
       // "one level down" from its Sub Assy — only the thin colored left
       // rail (same accent) and the indent + "↳" tie it back to its parent.
       const childRowStyle = `border-left:5px solid ${accent.color};background:#fff;`;
-      inner += `<tr style="${childRowStyle}"><td style="${cellPad}${colDivider}padding-left:26px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">↳ ${childBadge}${cNameCell}${childChip(accent.color)}${cRemoveBtn}<div class="hint" style="width:100%;margin-left:19px;">ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}"</div></td><td style="${cellPad}${colDivider}">${cQtyCell}</td><td style="${cellPad}${colDivider}">${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, mainQty+' '+item.unit])}</td>${lastColsHtml(c.name)}</tr>`;
+      inner += `<tr style="${childRowStyle}"><td style="${cellPad}${colDivider}padding-left:26px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">↳ ${childBadge}${cNameCell}${childChip(accent.color)}${cRemoveBtn}<div class="hint" style="width:100%;margin-left:19px;">ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}"</div></td><td style="${cellPad}${colDivider}">${cQtyCell}</td><td style="${cellPad}${colDivider}">${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, mainQty+' '+item.unit])}</td><td style="${cellPad}${colDivider}">${materialCell(c, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'materialType',this.value)`)}</td>${lastColsHtml(c.name)}</tr>`;
     });
     if(canEditPartsList){
       inner += `<tr style="border-left:5px solid ${accent.color};background:#fff;"><td style="padding:5px 8px 7px 26px;" colspan="${colCount}"><button type="button" class="btn secondary btn-sm" onclick="addPartsListChildPart('${item.id}',${subIdx})">+ Child Part sa Sub Assy #${subIdx+1}${s.name?(' ('+escapeHtml(s.name)+')'):''}</button></td></tr>`;
@@ -3079,7 +3096,7 @@ function partsListTableHtml(item, processId){
   // This inline override (which always beats the stylesheet rule) lets
   // every header wrap onto multiple lines and shrinks the padding so the
   // wrapped text actually stays inside its own column.
-  const drawColHeaderStyle = 'font-size:9.5px;white-space:normal;overflow-wrap:break-word;padding:6px 4px;line-height:1.25;';
+  const drawColHeaderStyle = 'font-size:10.5px;white-space:normal;overflow-wrap:break-word;padding:6px 4px;line-height:1.25;';
   const firstColsHeaderStyle = 'white-space:normal;overflow-wrap:break-word;padding:6px 4px;line-height:1.25;';
   // Abbreviated header text (full name still available via title tooltip)
   // — same reasoning as the compact drawing links above: 3 drawing columns
@@ -3096,15 +3113,21 @@ function partsListTableHtml(item, processId){
   // compact drawingLinksForEntry() calls above). mini-table-wrap's
   // overflow-x:auto stays on as a safety net only for genuinely tiny/zoomed
   // screens where even these % widths can't all fit.
+  // Piyesa | Qty/Pc | Total | Type of Material | Fab. Drawing | B/T/C Drawing |
+  // Bending Pattern | (Natapos). Generous widths — the whole row is meant to
+  // be visible at once across the full card width, no sideways scrolling.
   const colgroupHtml = showNatapos
-    ? `<colgroup><col style="width:18%;"><col style="width:8%;"><col style="width:9%;"><col style="width:16%;"><col style="width:16%;"><col style="width:16%;"><col style="width:17%;"></colgroup>`
-    : `<colgroup><col style="width:22%;"><col style="width:9%;"><col style="width:11%;"><col style="width:19%;"><col style="width:19%;"><col style="width:20%;"></colgroup>`;
+    ? `<colgroup><col style="width:19%;"><col style="width:6%;"><col style="width:7%;"><col style="width:14%;"><col style="width:16%;"><col style="width:13%;"><col style="width:13%;"><col style="width:12%;"></colgroup>`
+    : (canAttachFabDrawingHere
+        ? `<colgroup><col style="width:22%;"><col style="width:6%;"><col style="width:8%;"><col style="width:15%;"><col style="width:27%;"><col style="width:11%;"><col style="width:11%;"></colgroup>`
+        : `<colgroup><col style="width:22%;"><col style="width:7%;"><col style="width:9%;"><col style="width:16%;"><col style="width:18%;"><col style="width:14%;"><col style="width:14%;"></colgroup>`);
   return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table" style="border-collapse:separate;border-spacing:0;table-layout:fixed;width:100%;">
       ${colgroupHtml}
-      <tr><th style="${colDivider}${firstColsHeaderStyle}">Piyesa</th><th style="${colDivider}${firstColsHeaderStyle}" title="Qty per parent">Qty/Pc</th><th style="${colDivider}${firstColsHeaderStyle}" title="Total Kailangan">Total</th>${lastColsHeaderHtml}</tr>
+      <tr><th style="${colDivider}${firstColsHeaderStyle}">Piyesa</th><th style="${colDivider}${firstColsHeaderStyle}" title="Qty per parent">Qty/Pc</th><th style="${colDivider}${firstColsHeaderStyle}" title="Total Kailangan">Total</th><th style="${colDivider}${firstColsHeaderStyle}" title="Type of Materials">Type of Material</th>${lastColsHeaderHtml}</tr>
       ${rows}
     </table></div>
+    ${canEditPartsList ? `<datalist id="${materialDatalistId}">${MATERIAL_TYPE_SUGGESTIONS.map(m=>`<option value="${escapeHtml(m)}">`).join('')}</datalist>` : ''}
     ${addSubBtn}
   </details>`;
 }
@@ -6142,8 +6165,8 @@ async function confirmPartial(itemId, processId){
   function rescaleParts(list, newMainQty){
     if(!list || !list.length) return list;
     return list.map(s=>({
-      name:s.name, qtyPerUnit:s.qtyPerUnit, totalQty: s.qtyPerUnit * newMainQty,
-      childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit * newMainQty }))
+      name:s.name, qtyPerUnit:s.qtyPerUnit, materialType:s.materialType||'', totalQty: s.qtyPerUnit * newMainQty,
+      childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, materialType:c.materialType||'', totalQty: c.qtyPerUnit * newMainQty }))
     }));
   }
   clone.partsList = rescaleParts(clone.partsList, doneQty);
@@ -6277,8 +6300,8 @@ async function confirmSplitAssign(itemId, processId){
   function rescaleParts(list, newMainQty){
     if(!list || !list.length) return list;
     return list.map(s=>({
-      name:s.name, qtyPerUnit:s.qtyPerUnit, totalQty: s.qtyPerUnit * newMainQty,
-      childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit * newMainQty }))
+      name:s.name, qtyPerUnit:s.qtyPerUnit, materialType:s.materialType||'', totalQty: s.qtyPerUnit * newMainQty,
+      childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, materialType:c.materialType||'', totalQty: c.qtyPerUnit * newMainQty }))
     }));
   }
   const newItems = [];
@@ -6738,7 +6761,7 @@ function openEditItemModal(itemId){
   delete rowCurrency['edit']; delete rowFxInfo['edit']; // fresh state each time this modal opens
   editItemRoute = it.route.slice();
   editItemDrawingImageData = it.drawingImage || '';
-  partsListState['edit'] = (it.partsList || []).map(p=>({name:p.name, qtyPerUnit:p.qtyPerUnit, childParts:(p.childParts||[]).map(c=>({name:c.name, qtyPerUnit:c.qtyPerUnit}))}));
+  partsListState['edit'] = (it.partsList || []).map(p=>({name:p.name, qtyPerUnit:p.qtyPerUnit, materialType:p.materialType||'', childParts:(p.childParts||[]).map(c=>({name:c.name, qtyPerUnit:c.qtyPerUnit, materialType:c.materialType||''}))}));
   const box = document.getElementById('modalBox');
   box.innerHTML = `
     <h4>Edit Item</h4>
@@ -6826,10 +6849,10 @@ async function saveEditItem(itemId){
   it.actualDeliveryDate = document.getElementById('editItemActualDelivery').value || '';
   it.partsBreakdown = document.getElementById('editItemParts').value.trim();
   it.partsList = (partsListState['edit'] || []).filter(p=>p.name).map(p=>({
-    name:p.name, qtyPerUnit:p.qtyPerUnit, totalQty: p.qtyPerUnit*(Number(it.qty)||0),
+    name:p.name, qtyPerUnit:p.qtyPerUnit, materialType:p.materialType||'', totalQty: p.qtyPerUnit*(Number(it.qty)||0),
     // Child Part total references the item qty directly, NOT further
     // multiplied by the parent Sub Assy's qtyPerUnit — see recalcPartsListTotals.
-    childParts: (p.childParts||[]).filter(c=>c.name).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, totalQty: c.qtyPerUnit*(Number(it.qty)||0) }))
+    childParts: (p.childParts||[]).filter(c=>c.name).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, materialType:c.materialType||'', totalQty: c.qtyPerUnit*(Number(it.qty)||0) }))
   }));
   delete partsListState['edit'];
   // Preserve status/timestamps/assignee for processes kept in the new route; reset any newly added ones.
@@ -7347,7 +7370,7 @@ function renderPersonActionableTasksHtml(name){
     const qtyDisplay = isPartialQty ? `${t.item.qty} out of ${t.item.originalQty} ${t.item.unit}` : `${t.item.qty} ${t.item.unit}`;
     const qtyPillHtml = `<span style="display:inline-block;border:2px solid #e91e8c;border-radius:999px;padding:2px 12px;font-size:15px;font-weight:800;color:#e91e8c;white-space:nowrap;line-height:1.4;">${escapeHtml(qtyDisplay)}</span>`;
     return `
-    <div class="task-card ${cardClass}${isCatchUpCritical?' critical-blink':''}" style="${cardStyle}">
+    <div class="task-card ${cardClass}${isCatchUpCritical?' critical-blink':''}" style="${cardStyle}flex-wrap:wrap;">
       <div class="tinfo">
         <div class="so-tag">${escapeHtml(t.item.soNumber)} · ${escapeHtml(t.item.client)}</div>
         <div class="code">${escapeHtml(t.item.itemCode)}</div>
@@ -7368,7 +7391,6 @@ function renderPersonActionableTasksHtml(name){
         ${drawingAttachHtml}
         ${drawingsHtml}
         ${allDrawingsHtml}
-        ${partsListHtml}
         ${rawPartsHtml}
         ${inspectionChecklistWidgetHtml}
       </div>
@@ -7385,6 +7407,7 @@ function renderPersonActionableTasksHtml(name){
         ${doneStampHtml}
         <div style="display:flex;align-items:center;gap:6px;">${pauseResumeHtml(t.item, t.processId)}</div>
       </div>
+      ${partsListHtml ? `<div class="task-card-fullrow" style="flex:0 0 100%;width:100%;min-width:0;">${partsListHtml}</div>` : ''}
     </div>`;
   }).join('');
   }
@@ -10298,8 +10321,8 @@ function checkAndSuggestReference(rowId){
   }
   if(ref.partsList && ref.partsList.length){
     partsListState[rowId] = JSON.parse(JSON.stringify(ref.partsList)).map(s=>({
-      name:s.name, qtyPerUnit:s.qtyPerUnit,
-      childParts:(s.childParts||[]).map(c=>({name:c.name, qtyPerUnit:c.qtyPerUnit}))
+      name:s.name, qtyPerUnit:s.qtyPerUnit, materialType:s.materialType||'',
+      childParts:(s.childParts||[]).map(c=>({name:c.name, qtyPerUnit:c.qtyPerUnit, materialType:c.materialType||''}))
     }));
     renderPartRows(rowId);
   }
@@ -10346,11 +10369,11 @@ function buildItemFromRow(wrap, ctx){
   const partsList = (partsListState[rowId] || [])
     .filter(r=>r.name)
     .map(r=>({
-      name: r.name, qtyPerUnit: r.qtyPerUnit, totalQty: r.qtyPerUnit * (Number(qty)||0),
+      name: r.name, qtyPerUnit: r.qtyPerUnit, materialType: r.materialType||'', totalQty: r.qtyPerUnit * (Number(qty)||0),
       // Child Part total references the item qty directly, NOT further
       // multiplied by the parent Sub Assy's qtyPerUnit — see recalcPartsListTotals.
       childParts: (r.childParts||[]).filter(c=>c.name).map(c=>({
-        name: c.name, qtyPerUnit: c.qtyPerUnit, totalQty: c.qtyPerUnit * (Number(qty)||0)
+        name: c.name, qtyPerUnit: c.qtyPerUnit, materialType: c.materialType||'', totalQty: c.qtyPerUnit * (Number(qty)||0)
       }))
     }));
   if(!code && !desc) return {error:'empty'};
