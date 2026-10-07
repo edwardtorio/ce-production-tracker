@@ -2639,13 +2639,47 @@ function updatePartsProgress(itemId, processId, name, value){
   renderMyTasks();
   saveItem(item);
 }
+// WEIGHT-BASED items (unit = kg / ton / mt, e.g. "Supply and Installation of
+// Platform ... 9,217.4 kg"): the item's qty is a weight, NOT a piece count, so
+// the Parts List can't be "per unit × qty". Instead each piyesa's Qty is its
+// TOTAL number of pieces, production logs pieces finished per process, and
+// the kg on the main item is deducted automatically from the share of the
+// Parts List that was completed (weighted by each piyesa's optional kg/pc).
+function isWeightItem(item){ return /^(kgs?|tons?|mt)$/i.test(String((item&&item.unit)||'').trim()); }
+function partsMainQty(item){ return isWeightItem(item) ? 1 : (Number(item.qty)||0); }
+function round2(n){ return Math.round((Number(n)||0)*100)/100; }
+// Share of the Parts List finished at this process, and the kg that
+// represents. A piyesa with no kg/pc entered counts as the average of the
+// ones that DO have a weight (or all equal if none have one).
+function weightPartialPlan(item, processId){
+  const entries = partsCountEntries(item).filter(e=>e.qtyPerUnit>0);
+  const progress = (item.partsProgress && item.partsProgress[processId]) || {};
+  const known = entries.filter(e=>e.kgEach>0);
+  const avg = known.length ? known.reduce((a,e)=>a+e.kgEach,0)/known.length : 1;
+  let doneW = 0, totalW = 0, anyDone = false;
+  const rows = [], excess = [];
+  entries.forEach(e=>{
+    const w = e.kgEach>0 ? e.kgEach : avg;
+    const logged = Number(progress[e.name])||0;
+    if(logged > e.qtyPerUnit) excess.push({name:e.name, logged, maxAllowed:e.qtyPerUnit});
+    doneW += Math.min(logged, e.qtyPerUnit) * w;
+    totalW += e.qtyPerUnit * w;
+    if(logged>0) anyDone = true;
+    rows.push({name:e.name, logged, total:e.qtyPerUnit, w});
+  });
+  const fraction = totalW>0 ? doneW/totalW : 0;
+  const totalKg = Number(item.qty)||0;
+  const doneKg = round2(totalKg*fraction);
+  return { rows, excess, fraction, doneKg, remainKg: round2(totalKg-doneKg), anyDone,
+           complete: rows.length>0 && rows.every(r=>r.logged>=r.total) };
+}
 // Flat list of every named Sub Assy/Child Part with its qtyPerUnit — same
 // traversal as drawingStepMissingDetails, reused here for the count gate.
 function partsCountEntries(item){
   const entries = [];
   (item.partsList||[]).forEach(s=>{
-    if(s.name) entries.push({name:s.name, qtyPerUnit:Number(s.qtyPerUnit)||0});
-    (s.childParts||[]).forEach(c=>{ if(c.name) entries.push({name:c.name, qtyPerUnit:Number(c.qtyPerUnit)||0}); });
+    if(s.name) entries.push({name:s.name, qtyPerUnit:Number(s.qtyPerUnit)||0, kgEach:Number(s.kgEach)||0});
+    (s.childParts||[]).forEach(c=>{ if(c.name) entries.push({name:c.name, qtyPerUnit:Number(c.qtyPerUnit)||0, kgEach:Number(c.kgEach)||0}); });
   });
   return entries;
 }
@@ -2673,6 +2707,18 @@ function partsCountCheck(item, processId, claimedQty, rowQty){
   const missing = [];
   const insufficient = [];
   const excess = [];
+  if(isWeightItem(item)){
+    // Full completion of a kg-based item: every piyesa must be logged at
+    // exactly its total piece count (qtyPerUnit IS the total here).
+    entries.forEach(e=>{
+      if(!(e.qtyPerUnit>0)) return;
+      const logged = progress[e.name];
+      if(logged===undefined || logged===null || logged===''){ missing.push(e.name); return; }
+      if(logged < e.qtyPerUnit) insufficient.push({name:e.name, logged, needed:e.qtyPerUnit});
+      if(logged > e.qtyPerUnit) excess.push({name:e.name, logged, maxAllowed:e.qtyPerUnit});
+    });
+    return { missing, insufficient, excess, maxSupportableQty: claimedQty };
+  }
   let maxSupportableQty = Infinity;
   entries.forEach(e=>{
     const logged = progress[e.name];
@@ -2858,7 +2904,7 @@ function openInspectionChecklistMissingAlert(item, missing){
 // Part's needed count always references the real item quantity straight,
 // same base as its parent, not compounded through it).
 function recalcPartsListTotals(item){
-  const mainQty = Number(item.qty)||0;
+  const mainQty = partsMainQty(item);
   (item.partsList||[]).forEach(s=>{
     s.totalQty = (Number(s.qtyPerUnit)||0) * mainQty;
     (s.childParts||[]).forEach(c=>{
@@ -2900,7 +2946,7 @@ async function savePartsListChange(item){
 function updatePartsListSubField(itemId, subIdx, field, value){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item || !item.partsList || !item.partsList[subIdx]) return;
-  item.partsList[subIdx][field] = field==='qtyPerUnit' ? (Number(value)||0) : value;
+  item.partsList[subIdx][field] = (field==='qtyPerUnit'||field==='kgEach') ? (Number(value)||0) : value;
   savePartsListChange(item);
 }
 function updatePartsListChildField(itemId, subIdx, childIdx, field, value){
@@ -2908,7 +2954,7 @@ function updatePartsListChildField(itemId, subIdx, childIdx, field, value){
   if(!item || !item.partsList || !item.partsList[subIdx]) return;
   const child = (item.partsList[subIdx].childParts||[])[childIdx];
   if(!child) return;
-  child[field] = field==='qtyPerUnit' ? (Number(value)||0) : value;
+  child[field] = (field==='qtyPerUnit'||field==='kgEach') ? (Number(value)||0) : value;
   savePartsListChange(item);
 }
 function addPartsListSubAssy(itemId){
@@ -3071,9 +3117,13 @@ function partsListTableHtml(item, processId){
     // reads as a clean section break even when scrolling fast.
     const dividerTop = subIdx>0 ? `border-top:5px solid ${accent.color};` : '';
     const badge = `<span style="display:inline-block;min-width:17px;height:17px;line-height:17px;text-align:center;border-radius:50%;background:${accent.color};color:#fff;font-size:9.5px;font-weight:700;margin-right:4px;flex:0 0 auto;">${subIdx+1}</span>`;
+    const wMode = isWeightItem(item);
+    const kgBox = (obj, fn) => !wMode ? '' : (canEditPartsList
+      ? `<input type="number" min="0" step="any" value="${obj.kgEach||''}" placeholder="kg/pc" title="Timbang kada piraso (kg) — para tama ang bawas ng kg sa main item" style="font-size:12px;padding:3px 5px;width:64px;box-sizing:border-box;" onchange="${fn}">`
+      : (obj.kgEach ? `<span class="hint" style="font-size:10px;">${obj.kgEach} kg/pc</span>` : ''));
     const nameCell = canEditPartsList
-      ? nameInput(s.name, `updatePartsListSubField('${item.id}',${subIdx},'name',this.value)`)
-      : `<b>${escapeHtml(s.name)}</b>`;
+      ? nameInput(s.name, `updatePartsListSubField('${item.id}',${subIdx},'name',this.value)`) + kgBox(s, `updatePartsListSubField('${item.id}',${subIdx},'kgEach',this.value)`)
+      : `<b>${escapeHtml(s.name)}</b>` + kgBox(s,'');
     const qtyCell = canEditPartsList
       ? qtyInput(s.qtyPerUnit, `updatePartsListSubField('${item.id}',${subIdx},'qtyPerUnit',this.value)`)
       : s.qtyPerUnit;
@@ -3085,8 +3135,8 @@ function partsListTableHtml(item, processId){
     (s.childParts||[]).forEach((c, childIdx)=>{
       const childBadge = `<span style="display:inline-block;min-width:15px;height:15px;line-height:13px;text-align:center;border-radius:50%;border:1.5px solid ${accent.color};color:${accent.color};font-size:8.5px;font-weight:700;margin-right:4px;flex:0 0 auto;">${subIdx+1}.${childIdx+1}</span>`;
       const cNameCell = canEditPartsList
-        ? nameInput(c.name, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'name',this.value)`)
-        : escapeHtml(c.name);
+        ? nameInput(c.name, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'name',this.value)`) + kgBox(c, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'kgEach',this.value)`)
+        : escapeHtml(c.name) + kgBox(c,'');
       const cQtyCell = canEditPartsList
         ? qtyInput(c.qtyPerUnit, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'qtyPerUnit',this.value)`)
         : c.qtyPerUnit;
@@ -3151,10 +3201,11 @@ function partsListTableHtml(item, processId){
     : (canAttachFabDrawingHere
         ? `<colgroup><col style="width:22%;"><col style="width:6%;"><col style="width:8%;"><col style="width:15%;"><col style="width:27%;"><col style="width:11%;"><col style="width:11%;"></colgroup>`
         : `<colgroup><col style="width:22%;"><col style="width:7%;"><col style="width:9%;"><col style="width:16%;"><col style="width:18%;"><col style="width:14%;"><col style="width:14%;"></colgroup>`);
-  return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (× ${item.qty} ${item.unit} ng Main Assy)</summary>
+  return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? PARTS_LIST_OPEN_KEYS.add('${openKey}') : PARTS_LIST_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--accent-teal-dk);">🧩 Parts List (${isWeightItem(item)?`${item.qty} ${item.unit} ang Main Assy — bilang ng piraso ang Qty ng bawat piyesa`:`× ${item.qty} ${item.unit} ng Main Assy`})</summary>
+    ${(canEditPartsList && isWeightItem(item)) ? `<div class="hint" style="margin:4px 0;background:var(--amber-bg);padding:6px 8px;border-radius:6px;">⚖️ Kg ang unit ng item na ito. Ilagay sa <b>Pcs</b> ang TOTAL na bilang ng piraso ng bawat piyesa, at (kung alam) ang <b>kg/pc</b>. Kapag may natapos na piyesa ang production, awtomatikong babawasan ang kg ng main item.</div>` : ''}
     <div class="mini-table-wrap" style="margin-top:4px;"><table class="mini-table" style="border-collapse:separate;border-spacing:0;table-layout:fixed;width:100%;">
       ${colgroupHtml}
-      <tr><th style="${colDivider}${firstColsHeaderStyle}">Piyesa</th><th style="${colDivider}${firstColsHeaderStyle}" title="Qty per parent">Qty/Pc</th><th style="${colDivider}${firstColsHeaderStyle}" title="Total Kailangan">Total</th><th style="${colDivider}${firstColsHeaderStyle}" title="Type of Materials">Type of Material</th>${lastColsHeaderHtml}</tr>
+      <tr><th style="${colDivider}${firstColsHeaderStyle}">Piyesa</th><th style="${colDivider}${firstColsHeaderStyle}" title="${isWeightItem(item)?'Bilang ng piraso (TOTAL)':'Qty per parent'}">${isWeightItem(item)?'Pcs':'Qty/Pc'}</th><th style="${colDivider}${firstColsHeaderStyle}" title="Total Kailangan">Total</th><th style="${colDivider}${firstColsHeaderStyle}" title="Type of Materials">Type of Material</th>${lastColsHeaderHtml}</tr>
       ${rows}
     </table></div>
     ${canEditPartsList ? `<datalist id="${materialDatalistId}">${MATERIAL_TYPE_SUGGESTIONS.map(m=>`<option value="${escapeHtml(m)}">`).join('')}</datalist>` : ''}
@@ -6098,6 +6149,25 @@ async function rejectJinReviewConfirm(itemId, processId){
 function openPartialModal(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
+  if(isWeightItem(item) && partsCountEntries(item).some(e=>e.qtyPerUnit>0)){
+    const plan = weightPartialPlan(item, processId);
+    const rowsHtml = plan.rows.map(r=>`<tr><td>${escapeHtml(r.name)}</td><td style="text-align:right;"><b>${r.logged}</b> / ${r.total} pcs</td><td style="text-align:right;color:var(--gray);">${r.w.toLocaleString(undefined,{maximumFractionDigits:3})} kg/pc</td></tr>`).join('');
+    const bad = plan.excess.length ? `<p style="color:var(--red);font-weight:700;">⚠ Sobra ang nailagay na bilang sa: ${plan.excess.map(x=>escapeHtml(x.name)).join(', ')}.</p>` : '';
+    const none = !plan.anyDone ? `<p style="color:var(--red);font-weight:700;">Wala pang nailagay na Natapos na piyesa — buksan ang 🧩 Parts List at ilagay muna ang bilang.</p>` : '';
+    const box0 = document.getElementById('modalBox');
+    box0.innerHTML = `<h4>Partial na Natapos (batay sa Parts List)</h4>
+      <p><b>${escapeHtml(item.itemCode)}</b> — ${processLabel(processId)}. Kabuuan: <b>${item.qty} ${escapeHtml(item.unit)}</b>.</p>
+      <div class="mini-table-wrap"><table class="mini-table"><tr><th>Piyesa</th><th>Natapos / Kailangan</th><th>Bigat</th></tr>${rowsHtml}</table></div>
+      ${bad}${none}
+      <p style="margin-top:10px;">Ipapasa sa susunod na proseso: <b style="color:var(--green);">${plan.doneKg.toLocaleString()} ${escapeHtml(item.unit)}</b> (${(plan.fraction*100).toFixed(1)}% ng Parts List)<br>Matitira dito: <b>${plan.remainKg.toLocaleString()} ${escapeHtml(item.unit)}</b></p>
+      <div class="hint">Awtomatikong kinukuwenta ang kg mula sa natapos na piyesa. Walang kg/pc ang ilang piyesa? Pantay-pantay ang bigat nila (average ng may timbang).</div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn" ${(plan.anyDone && !plan.excess.length)?'':'disabled'} onclick="confirmPartial('${itemId}','${processId}')">Ipasa ang Natapos na Bahagi</button>
+      </div>`;
+    document.getElementById('modalOverlay').classList.add('show');
+    return;
+  }
   if(Number(item.qty)<=1){ showToast('Iisang piraso lang ito — gamitin na lang ang normal na Done.'); return; }
   const box = document.getElementById('modalBox');
   box.innerHTML = `
@@ -6115,10 +6185,15 @@ function openPartialModal(itemId, processId){
 async function confirmPartial(itemId, processId){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item) return;
-  const doneQty = Number(document.getElementById('partialQty').value);
+  const wPlan = (isWeightItem(item) && partsCountEntries(item).some(e=>e.qtyPerUnit>0)) ? weightPartialPlan(item, processId) : null;
+  const doneQty = wPlan ? wPlan.doneKg : Number(document.getElementById('partialQty').value);
   const totalQty = Number(item.qty);
-  if(!doneQty || doneQty<1){ showToast('Maglagay ng valid na dami.'); return; }
-  if(doneQty>=totalQty){
+  if(wPlan){
+    if(wPlan.excess.length){ openPartsCountMissingAlert(item, processId, {missing:[], insufficient:[], excess:wPlan.excess, maxSupportableQty:Infinity}, doneQty); return; }
+    if(!wPlan.anyDone){ showToast('Ilagay muna ang bilang ng natapos na piyesa (Natapos) bago mag-Partial.'); return; }
+    if(!wPlan.complete && (wPlan.remainKg<=0 || doneQty<=0)){ showToast('Masyadong maliit ang bahaging natapos para i-split — dagdagan ang timbang/bilang.'); return; }
+  }else if(!doneQty || doneQty<1){ showToast('Maglagay ng valid na dami.'); return; }
+  if(wPlan ? wPlan.complete : doneQty>=totalQty){
     // Entire remaining quantity is done — same as a normal full completion.
     closeModal();
     await cycleStep(itemId, processId);
@@ -6142,7 +6217,7 @@ async function confirmPartial(itemId, processId){
   // before the split) so logging ahead for the piece(s) that stay behind as
   // the remainder is still allowed — it just can never log more than this
   // row could ever legitimately need, full stop.
-  const countCheck = partsCountCheck(item, processId, doneQty, totalQty);
+  const countCheck = wPlan ? null : partsCountCheck(item, processId, doneQty, totalQty);
   if(countCheck && (countCheck.missing.length || countCheck.insufficient.length || countCheck.excess.length)){
     openPartsCountMissingAlert(item, processId, countCheck, doneQty);
     return;
@@ -6183,7 +6258,7 @@ async function confirmPartial(itemId, processId){
     }
   }
   clone.splitNote = `${doneQty} ${item.unit} na-split mula sa orihinal na ${totalQty} ${item.unit} noong ${formatDateLong(new Date().toISOString().slice(0,10))}`;
-  item.qty = totalQty - doneQty;
+  item.qty = round2(totalQty - doneQty);
   if(item.routeStatus[processId]==='ongoing') startActiveSegment(item, processId); // remainder keeps working — fresh segment
   if(!item.splitNote) item.splitNote = `${item.qty} ${item.unit} pa ang natitira dito (${doneQty} ${item.unit} ay naipasa na sa susunod na proseso).`;
   // The parts needed also split proportionally — the forwarded portion only
@@ -6199,8 +6274,22 @@ async function confirmPartial(itemId, processId){
       childParts: (s.childParts||[]).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, materialType:c.materialType||'', totalQty: c.qtyPerUnit * newMainQty }))
     }));
   }
-  clone.partsList = rescaleParts(clone.partsList, doneQty);
-  item.partsList = rescaleParts(item.partsList, item.qty);
+  if(wPlan){
+    // kg-based: split the Parts List by the PIECES finished — the forwarded
+    // clone needs exactly what was logged done, the remainder keeps the rest.
+    const loggedMap = (item.partsProgress && item.partsProgress[processId]) || {};
+    const split = (list, side)=> (list||[]).map(sp=>{
+      const part = (name, tot)=>{ const l = Math.min(Number(loggedMap[name])||0, tot); return side==='done' ? l : tot-l; };
+      const kids = (sp.childParts||[]).map(c=>{ const q = part(c.name, Number(c.qtyPerUnit)||0); return {name:c.name, qtyPerUnit:q, kgEach:c.kgEach||0, materialType:c.materialType||'', totalQty:q}; }).filter(c=>c.qtyPerUnit>0);
+      const q = part(sp.name, Number(sp.qtyPerUnit)||0);
+      return {name:sp.name, qtyPerUnit:q, kgEach:sp.kgEach||0, materialType:sp.materialType||'', totalQty:q, childParts:kids};
+    }).filter(sp=>sp.qtyPerUnit>0 || sp.childParts.length);
+    clone.partsList = split(item.partsList, 'done');
+    item.partsList = split(item.partsList, 'remain');
+  }else{
+    clone.partsList = rescaleParts(clone.partsList, doneQty);
+    item.partsList = rescaleParts(item.partsList, item.qty);
+  }
   // The logged "Nagawa" counts split the same way — the forwarded clone
   // takes exactly what its qty needed (already confirmed sufficient by the
   // countCheck gate above), and whatever's left over stays on the remaining
@@ -6208,7 +6297,11 @@ async function confirmPartial(itemId, processId){
   // completion of this same step. Only THIS step's own logged counts are
   // touched — a different process's counts on the same item aren't affected
   // by a split happening at this one.
-  if(item.partsProgress && item.partsProgress[processId]){
+  if(wPlan && item.partsProgress && item.partsProgress[processId]){
+    const lg = item.partsProgress[processId];
+    clone.partsProgress = Object.assign({}, item.partsProgress, { [processId]: Object.assign({}, lg) });
+    delete item.partsProgress[processId];
+  }else if(item.partsProgress && item.partsProgress[processId]){
     const qtyPerUnitByName = {};
     partsCountEntries(item).forEach(e=>{ qtyPerUnitByName[e.name] = e.qtyPerUnit; });
     const srcProgress = item.partsProgress[processId];
@@ -6246,7 +6339,7 @@ function openAssignModal(itemId, processId){
   // Splitting the piece count across several people only makes sense with
   // more than 1 piece AND more than 1 possible owner to split it among —
   // see openSplitAssignModal.
-  const canSplit = owners.length>1 && Number(item.qty)>1;
+  const canSplit = owners.length>1 && Number(item.qty)>1 && !isWeightItem(item);
   const box = document.getElementById('modalBox');
   box.innerHTML = `
     <h4>Sino ang gagawa nito?</h4>
@@ -6791,7 +6884,7 @@ function openEditItemModal(itemId){
   delete rowCurrency['edit']; delete rowFxInfo['edit']; // fresh state each time this modal opens
   editItemRoute = it.route.slice();
   editItemDrawingImageData = it.drawingImage || '';
-  partsListState['edit'] = (it.partsList || []).map(p=>({name:p.name, qtyPerUnit:p.qtyPerUnit, materialType:p.materialType||'', childParts:(p.childParts||[]).map(c=>({name:c.name, qtyPerUnit:c.qtyPerUnit, materialType:c.materialType||''}))}));
+  partsListState['edit'] = (it.partsList || []).map(p=>({name:p.name, qtyPerUnit:p.qtyPerUnit, kgEach:p.kgEach||0, materialType:p.materialType||'', childParts:(p.childParts||[]).map(c=>({name:c.name, qtyPerUnit:c.qtyPerUnit, kgEach:c.kgEach||0, materialType:c.materialType||''}))}));
   const box = document.getElementById('modalBox');
   box.innerHTML = `
     <h4>Edit Item</h4>
@@ -6879,10 +6972,10 @@ async function saveEditItem(itemId){
   it.actualDeliveryDate = document.getElementById('editItemActualDelivery').value || '';
   it.partsBreakdown = document.getElementById('editItemParts').value.trim();
   it.partsList = (partsListState['edit'] || []).filter(p=>p.name).map(p=>({
-    name:p.name, qtyPerUnit:p.qtyPerUnit, materialType:p.materialType||'', totalQty: p.qtyPerUnit*(Number(it.qty)||0),
+    name:p.name, qtyPerUnit:p.qtyPerUnit, kgEach:p.kgEach||0, materialType:p.materialType||'', totalQty: p.qtyPerUnit*partsMainQty(it),
     // Child Part total references the item qty directly, NOT further
     // multiplied by the parent Sub Assy's qtyPerUnit — see recalcPartsListTotals.
-    childParts: (p.childParts||[]).filter(c=>c.name).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, materialType:c.materialType||'', totalQty: c.qtyPerUnit*(Number(it.qty)||0) }))
+    childParts: (p.childParts||[]).filter(c=>c.name).map(c=>({ name:c.name, qtyPerUnit:c.qtyPerUnit, kgEach:c.kgEach||0, materialType:c.materialType||'', totalQty: c.qtyPerUnit*partsMainQty(it) }))
   }));
   delete partsListState['edit'];
   // Preserve status/timestamps/assignee for processes kept in the new route; reset any newly added ones.
@@ -9901,7 +9994,7 @@ function extractItemsFromPositionsForPage(items){
   unitItems.forEach((u, idx)=>{
     const rowY = u.y;
     const nextY = idx+1 < unitItems.length ? unitItems[idx+1].y : (boundaryItem ? boundaryItem.y : rowY - 80);
-    const qtyItem = items.filter(it=> Math.abs(it.y-rowY)<=Y_TOL && it.x < u.x && /^\d+(\.\d+)?$/.test(norm(it.str)))
+    const qtyItem = items.filter(it=> Math.abs(it.y-rowY)<=Y_TOL && it.x < u.x && /^(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$/.test(norm(it.str)))
       .sort((a,b)=> b.x-a.x)[0];
     // Some supplier/customer SO templates price in Dollars instead of Pesos
     // (e.g. "$8.906" instead of "₱500.00") — matched here too so the rate
@@ -9923,7 +10016,7 @@ function extractItemsFromPositionsForPage(items){
     results.push({
       code: code || '(check code)',
       desc: descText || '(check description)',
-      qty: qtyItem ? norm(qtyItem.str) : '',
+      qty: qtyItem ? norm(qtyItem.str).replace(/,/g,'') : '',
       unit: norm(u.str).replace(/s$/,'') || 'pc',
       rate: rateStr ? (Number(rateStr.replace(/,/g,'')) || 0) : 0,
       rateCurrency,
@@ -10010,7 +10103,7 @@ function parseSoText(text, items){
     // whichever currency symbol precedes the Rate figure decides
     // rateCurrency; parseSoText()'s caller converts USD rows to pesos
     // afterward using that day's FX rate instead of leaving them blank.
-    const rowRegex = new RegExp('(\\d+(?:\\.\\d+)?)\\s+(' + SO_UNIT_WORD_PATTERN + ')\\b\\s*(PHP|₱|\\$)\\s?([\\d,]+\\.?\\d*)\\s+(?:PHP|₱|\\$)\\s?[\\d,]+\\.?\\d*', 'gi');
+    const rowRegex = new RegExp('((?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?)\\s+(' + SO_UNIT_WORD_PATTERN + ')\\b\\s*(PHP|₱|\\$)\\s?([\\d,]+\\.?\\d*)\\s+(?:PHP|₱|\\$)\\s?[\\d,]+\\.?\\d*', 'gi');
     let lastIndex = 0, rm;
     while((rm = rowRegex.exec(clean)) !== null){
       const chunk = clean.slice(lastIndex, rm.index).trim();
@@ -10027,7 +10120,7 @@ function parseSoText(text, items){
       if(/subtotal|tax total|shipping cost|handling cost|^total$/i.test(desc)) continue;
       const rate = Number(rm[4].replace(/,/g,'')) || 0;
       const rateCurrency = rm[3]==='$' ? 'USD' : 'PHP';
-      parsedItems.push({code: code || '(check code)', desc: desc || '(check description)', qty: rm[1], unit: rm[2].replace(/s$/,'') || 'pc', rate, rateCurrency});
+      parsedItems.push({code: code || '(check code)', desc: desc || '(check description)', qty: rm[1].replace(/,/g,''), unit: rm[2].replace(/s$/,'') || 'pc', rate, rateCurrency});
     }
   }
   return {soNumber, client, items: parsedItems};
@@ -10917,11 +11010,11 @@ function buildItemFromRow(wrap, ctx){
   const partsList = (partsListState[rowId] || [])
     .filter(r=>r.name)
     .map(r=>({
-      name: r.name, qtyPerUnit: r.qtyPerUnit, materialType: r.materialType||'', totalQty: r.qtyPerUnit * (Number(qty)||0),
+      name: r.name, qtyPerUnit: r.qtyPerUnit, materialType: r.materialType||'', totalQty: r.qtyPerUnit * (isWeightItem({unit}) ? 1 : (Number(qty)||0)),
       // Child Part total references the item qty directly, NOT further
       // multiplied by the parent Sub Assy's qtyPerUnit — see recalcPartsListTotals.
       childParts: (r.childParts||[]).filter(c=>c.name).map(c=>({
-        name: c.name, qtyPerUnit: c.qtyPerUnit, materialType: c.materialType||'', totalQty: c.qtyPerUnit * (Number(qty)||0)
+        name: c.name, qtyPerUnit: c.qtyPerUnit, materialType: c.materialType||'', totalQty: c.qtyPerUnit * (isWeightItem({unit}) ? 1 : (Number(qty)||0))
       }))
     }));
   if(!code && !desc) return {error:'empty'};
