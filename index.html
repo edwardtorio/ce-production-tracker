@@ -2496,13 +2496,13 @@ function jsAttr(s){
   s = String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");
   return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-function linkifyText(text){
+function linkifyText(text, linkLabel){
   if(!text) return '';
   const urlRegex = /(https?:\/\/[^\s,]+)/gi;
   const parts = String(text).split(urlRegex);
   return parts.map(part=>{
     if(/^https?:\/\//i.test(part)){
-      return `<a href="${escapeHtml(part)}" target="_blank" rel="noopener" style="color:var(--accent-teal-dk);font-weight:700;text-decoration:underline;">🔗 Buksan ang drawing</a>`;
+      return `<a href="${escapeHtml(part)}" target="_blank" rel="noopener" style="color:var(--accent-teal-dk);font-weight:700;text-decoration:underline;">🔗 ${escapeHtml(linkLabel||'Buksan ang drawing')}</a>`;
     }
     return escapeHtml(part);
   }).join('');
@@ -9569,7 +9569,7 @@ function renderSoDetailPanel(so){
           <div style="font-size:14px;">Delivered Amount: <b style="color:var(--green);">${fmtPHP(deliveredValue)}</b></div>
         </div>
       </div>
-      ${refFiles?`<div class="hint" style="margin-top:8px;"><b>Reference Files:</b> ${linkifyText(refFiles)}</div>`:''}
+      ${refFiles?`<div class="hint" style="margin-top:8px;"><b>Reference Files:</b> ${linkifyText(refFiles, 'Buksan ang Original SO')}</div>`:''}
       <div style="margin-top:10px;"><div class="mini-bar" style="width:160px;"><div class="f" style="width:${pct}%"></div></div>
       <span style="font-size:12px;color:var(--gray);"> ${pct}% complete · ${so.items.length} line items · ${qty.toLocaleString()} pcs · ${fmtPHP(value)}</span></div>
       <div class="mini-table-wrap" style="margin-top:12px;"><table class="mini-table">
@@ -10395,7 +10395,8 @@ function addItemRow(prefill, existingId){
       <div class="route-chips">${routeChipsHtml(id, [])}</div>
       <div class="route-preview" id="routePreview_${id}">Route: (wala pang napipili)</div>
     </div>
-    <div class="route-picker" style="margin-top:8px;">
+    <div class="hint" style="margin-top:8px;">📎 Ang Drawing, Sub Assy at Child Part ay ilalagay na sa <b>Fabrication Drawing</b> (task card ng Engineering) pagkatapos ma-add ang item — hindi na dito.</div>
+    <div class="route-picker" style="display:none;" aria-hidden="true">
       <div class="route-picker-label">Drawing(s) ng Item na Ito — pwedeng higit sa isa, makikita ito sa My Tasks kahit gamit ay cellphone lang. Kung PDF ito na may BOM table, awtomatiko ring susubukan i-detect ang Sub Assy/Child Part na bumubuo sa Main Assy (item) na ito.</div>
       <div class="hint" style="margin-bottom:6px;"><b>Main Assy</b> (itong item) → <b>Sub Assy</b> (2+ karaniwan) → <b>Child Part</b> (1+ bawat Sub Assy, kung meron). Awtomatikong nagmu-multiply ang Total Kailangan sa bawat antas.</div>
       <div class="drawing-menu-wrap">
