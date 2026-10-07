@@ -8926,10 +8926,20 @@ function mutLine(id, fn){
   saveMaterialLine(m);
   return m;
 }
+// Joey's paper form writes both Stock on Hand and FOR PO — typing FOR PO is the
+// faster copy: stock on hand = requested qty - for PO.
+function setForPo(id, v){
+  const m0 = MATERIALS.find(x=>x.id===id); if(!m0) return;
+  if(v===''||v===null){ setStockOnHand(id, ''); renderMaterialsTab(); return; }
+  const fp = Math.max(0, numv(v));
+  setStockOnHand(id, Math.max(0, numv(m0.qty) - fp));
+  renderMaterialsTab();
+}
 function setStockOnHand(id, v){
   mutLine(id, m=>{ m.stockOnHand = (v===''||v===null) ? null : Math.max(0, numv(v)); });
   const m = MATERIALS.find(x=>x.id===id);
   const el = document.getElementById('forpo_'+id); if(el && m) el.textContent = lStockChecked(m) ? fmtN(lBuyQty(m)) : '—';
+  const fi = document.getElementById('forpoIn_'+id); if(fi && m) fi.value = lStockChecked(m) ? lBuyQty(m) : '';
   const btn = document.getElementById('whseBtn_'+(m&&m.prfId)); if(btn && m){ const all = prfLines(m.prfId); btn.disabled = !all.length || all.some(x=>!lStockChecked(x)); }
 }
 function setLineField(id, field, v){
@@ -8967,7 +8977,11 @@ function whseFilesHtml(prf){
   return (prf.whseFiles||[]).map(f=>{
     const isImg = /\.(png|jpe?g|webp|gif)$/i.test(f.name||f.path||'');
     return `<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener" style="font-size:12px;">${isImg?`<img src="${escapeHtml(f.url)}" style="height:64px;border:1px solid #ccc;border-radius:4px;display:block;">`:''}📎 ${escapeHtml(f.name||'PRF scan')}</a>`;
-  }).join('');
+  }).join('') ? (prf.whseFiles||[]).map(f=>{
+    const isImg = /\.(png|jpe?g|webp|gif)$/i.test(f.name||f.path||'');
+    return `<div style="display:flex;flex-direction:column;gap:3px;"><a href="${escapeHtml(f.url)}" target="_blank" rel="noopener" style="font-size:12px;">${isImg?`<img src="${escapeHtml(f.url)}" style="height:64px;border:1px solid #ccc;border-radius:4px;display:block;">`:''}📎 ${escapeHtml(f.name||'PRF scan')}</a>
+      <button class="btn secondary btn-sm" onclick="readWhseScanAi('${prf.id}','${escapeHtml(f.url)}','${escapeHtml(f.name||'')}')">🤖 Basahin ang sulat-kamay</button></div>`;
+  }).join('') : '';
 }
 async function uploadWhseScan(prfId, files){
   files = Array.from(files||[]); if(!files.length) return;
@@ -8982,6 +8996,84 @@ async function uploadWhseScan(prfId, files){
   }
   saveDrawingEntry(prf); renderMaterialsTab();
   showToast('✅ Na-attach ang na-check na PRF.');
+  const last = prf.whseFiles[prf.whseFiles.length-1];
+  if(last) readWhseScanAi(prfId, last.url, last.name, files[files.length-1]);
+}
+// ---- AI reading of the handwritten Stock on Hand / For PO (Supabase Edge Function) ----
+let PENDING_WHSE_AI = null;
+async function prepScanForAi(blob, name){
+  const isPdf = /\.pdf$/i.test(name||'') || blob.type==='application/pdf';
+  let bmp;
+  if(isPdf){
+    await ensurePdfJs();
+    const pdf = await pdfjsLib.getDocument({data: await blob.arrayBuffer()}).promise;
+    const page = await pdf.getPage(1);
+    const v0 = page.getViewport({scale:1});
+    const sc = Math.min(2.5, 1800 / v0.width);
+    const vp = page.getViewport({scale: sc});
+    const cv = document.createElement('canvas'); cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+    const ctx = cv.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height);
+    await page.render({canvasContext:ctx, viewport:vp}).promise;
+    return cv.toDataURL('image/jpeg', 0.85).split(',')[1];
+  }
+  bmp = await createImageBitmap(blob);
+  const sc = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+  const cv = document.createElement('canvas'); cv.width = Math.round(bmp.width*sc); cv.height = Math.round(bmp.height*sc);
+  const ctx = cv.getContext('2d'); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height); ctx.drawImage(bmp,0,0,cv.width,cv.height);
+  return cv.toDataURL('image/jpeg', 0.85).split(',')[1];
+}
+async function readWhseScanAi(prfId, url, name, fileObj){
+  if(typeof sbClient==='undefined' || !sbClient){ showToast('Walang koneksyon sa server.'); return; }
+  const lines = prfLines(prfId); if(!lines.length) return;
+  showToast('🤖 Binabasa ang sulat-kamay…');
+  try{
+    const blob = fileObj || await (await fetch(url)).blob();
+    const image = await prepScanForAi(blob, name);
+    const {data, error} = await sbClient.functions.invoke('read-prf-stock', {body:{image, mediaType:'image/jpeg',
+      lines: lines.map(m=>({id:m.id, name:m.name, qty:m.qty, unit:m.unit}))}});
+    if(error) throw new Error(error.message||'error');
+    if(!data || !data.ok){
+      if(data && data.code==='no_key'){ alert('Hindi pa naka-set ang ANTHROPIC_API_KEY sa Supabase (Edge Functions → Secrets). Ilagay muna iyon para gumana ang pagbasa ng sulat-kamay. Samantala, i-type muna ang For PO.'); return; }
+      throw new Error((data&&data.message)||'Hindi nabasa');
+    }
+    PENDING_WHSE_AI = {prfId, rows: data.rows||[]};
+    confirmWhseAi();   // applied directly — values stay editable in the table
+  }catch(e){ console.error(e); showToast('Hindi nabasa ng AI: '+(e.message||e)); }
+}
+function showWhseAiModal(){
+  const P = PENDING_WHSE_AI; if(!P) return;
+  const lines = prfLines(P.prfId);
+  const rows = lines.map(m=>{
+    const r = P.rows.find(x=>x.id===m.id) || {};
+    if(r.for_po==null && r.stock_on_hand!=null) r.for_po = Math.max(0, numv(m.qty)-numv(r.stock_on_hand));
+    const lowc = r.confidence && r.confidence!=='high';
+    return `<tr><td style="font-size:12px;">${escapeHtml(m.name)}<br><span class="hint">Hiningi: ${fmtN(m.qty)} ${escapeHtml(m.unit||'')}</span></td>
+      <td><input type="number" min="0" step="any" value="${r.stock_on_hand==null?'':r.stock_on_hand}" placeholder="?" style="width:80px" onchange="aiRow('${m.id}').stock_on_hand=this.value===''?null:Number(this.value)"></td>
+      <td><input type="number" min="0" step="any" value="${r.for_po==null?'':r.for_po}" placeholder="?" style="width:80px" onchange="aiRow('${m.id}').for_po=this.value===''?null:Number(this.value)"></td>
+      <td style="font-size:11px;color:${lowc?'var(--red)':'var(--gray)'};">${escapeHtml(r.confidence||'')}${r.note?' · '+escapeHtml(r.note):''}</td></tr>`;
+  }).join('');
+  const box = document.getElementById('modalBox'); box.classList.add('modal-wide');
+  box.innerHTML = `<h3 style="margin-top:0;">🤖 Nabasa mula sa sulat-kamay — i-verify</h3>
+    <div class="hint" style="margin-bottom:8px;">Suriin ang bawat numero laban sa larawan bago ilapat. Ang Stock on Hand ay kukuwentahin kung For PO lang ang nabasa.</div>
+    <div class="mini-table-wrap"><table class="mini-table"><tr><th>Materyales</th><th>Stock on Hand</th><th>For PO</th><th>Kumpiyansa</th></tr>${rows}</table></div>
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
+      <button class="btn secondary" onclick="PENDING_WHSE_AI=null;closeModal()">Kanselahin</button>
+      <button class="btn" onclick="confirmWhseAi()">✅ Ilapat sa Stock on Hand</button></div>`;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+function aiRow(id){ const P = PENDING_WHSE_AI; let r = P.rows.find(x=>x.id===id); if(!r){ r = {id}; P.rows.push(r); } return r; }
+function confirmWhseAi(){
+  const P = PENDING_WHSE_AI; if(!P) return;
+  let n = 0;
+  prfLines(P.prfId).forEach(m=>{
+    const r = P.rows.find(x=>x.id===m.id); if(!r) return;
+    let st = r.stock_on_hand;
+    if(st==null && r.for_po!=null) st = Math.max(0, numv(m.qty)-numv(r.for_po));
+    if(st==null) return;
+    mutLine(m.id, x=>{ x.stockOnHand = Math.max(0, numv(st)); }); n++;
+  });
+  PENDING_WHSE_AI = null; closeModal(); renderMaterialsTab();
+  showToast(`✅ Nabasa at nailagay ang Stock on Hand ng ${n} linya. Kung may mmali, i-edit sa table, saka i-confirm ang Stock Check.`);
 }
 function applyPoToBlank(prfId){
   const sup = (document.getElementById('poSup_'+prfId)||{}).value||'';
@@ -9264,11 +9356,11 @@ function prfTabBodyHtml(prf, tab, lines){
       <td>${itemCellHtml(m)}</td>
       <td style="text-align:right;white-space:nowrap;"><input type="number" min="0" step="any" value="${fmtN(m.qty)}" ${inpS} onchange="setLineQty('${m.id}', this.value)"> ${escapeHtml(m.unit||'')}</td>
       <td><input type="number" min="0" step="any" value="${lStockChecked(m)?m.stockOnHand:''}" placeholder="0" ${inpS} onchange="setStockOnHand('${m.id}', this.value)"></td>
-      <td style="font-weight:800;" id="forpo_${m.id}">${lStockChecked(m)?fmtN(lBuyQty(m)):'—'}</td>
+      <td><input type="number" min="0" step="any" id="forpoIn_${m.id}" value="${lStockChecked(m)?lBuyQty(m):''}" placeholder="—" ${inpS} style="font-weight:800;" onchange="setForPo('${m.id}', this.value)"><span id="forpo_${m.id}" style="display:none;"></span></td>
       <td><input type="text" value="${escapeHtml(m.remarks||'')}" style="width:100%;min-width:120px;font-size:12px;padding:3px 5px;" onchange="setLineField('${m.id}','remarks',this.value)"></td>
       <td><button class="btn ghost btn-sm" onclick="removePrfLine('${m.id}')">✕</button></td></tr>`).join('');
     const ready = lines.every(lStockChecked);
-    return `<div class="mini-table-wrap"><table class="mini-table"><tr><th>Materyales</th><th>Qty (kailangan)</th><th>Stock on Hand</th><th>For PO</th><th>Remarks</th><th></th></tr>${rows}</table></div>
+    return `<div class="mini-table-wrap"><table class="mini-table"><tr><th>Materyales</th><th>Qty (kailangan)</th><th>Stock on Hand</th><th>For PO (bibilhin)</th><th>Remarks</th><th></th></tr>${rows}</table></div>
       <div style="margin-top:8px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
         ${prf.prfNo?'':`<div class="field"><label>PRF No. (galing sa papel o awtomatiko)</label><input type="text" id="prfNoIn_${id}" value="${escapeHtml(nextPrfNo())}" style="width:170px"></div>`}
         <button class="btn secondary btn-sm" onclick="setAllStockZero('${id}')" title="Ilalagay ang 0 sa mga blangkong stock on hand">Walang stock (0) sa blanko</button>
@@ -9276,12 +9368,12 @@ function prfTabBodyHtml(prf, tab, lines){
       <div style="margin-top:8px;padding:8px;border:1px dashed var(--border,#bbb);border-radius:8px;">
         <label class="btn btn-sm" style="cursor:pointer;margin:0;">📷 I-upload ang na-check na PRF ni Joey (scan/larawan)
           <input type="file" accept="image/*,.pdf,application/pdf" multiple style="display:none;" onchange="uploadWhseScan('${id}', this.files); this.value='';"></label>
-        <span class="hint">Itatabi bilang katibayan. Hindi nababasa ng tracker ang sulat-kamay — ilagay sa taas ang Stock on Hand ayon sa nakasulat sa form.</span>
+        <span class="hint">Pagka-upload, kusang babasahin ng AI ang sulat-kamay na Stock on Hand / For PO at ipapakita para i-verify bago ilapat.</span>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">${whseFilesHtml(prf)}</div>
       </div>
       <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
         <button class="btn" id="whseBtn_${id}" ${ready?'':'disabled'} onclick="confirmWarehouseCheck('${id}')">${prf.prfNo?'🔄 I-update ang Stock Check':'✅ I-confirm ang Stock Check & Gumawa ng PRF No.'}</button>
-        <span class="hint">${prf.prfNo?`Na-check ni ${escapeHtml(prf.whseBy||'')} noong ${escapeHtml(prf.whseCheckedAt||'')}.`:'Ilagay ang stock on hand ng bawat linya (0 kung wala). Ang "For PO" ay awtomatikong kinukuwenta.'}</span>
+        <span class="hint">${prf.prfNo?`Na-check ni ${escapeHtml(prf.whseBy||'')} noong ${escapeHtml(prf.whseCheckedAt||'')}.`:'Ilagay ang stock on hand ng bawat linya (0 kung wala). Puwede ring ilagay ang "For PO" na nakasulat sa form — awtomatikong kukuwentahin ang Stock on Hand.'}</span>
       </div>`;
   }
   const buy = lines.filter(m=>lBuyQty(m)>0);
