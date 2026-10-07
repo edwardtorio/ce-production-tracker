@@ -8685,6 +8685,14 @@ function soPipeline(s){
   if(worst===2) return {key:'recv', label:'Hinihintay: Delivery ng supplier'};
   return {key:'ready', label:'✅ Kumpleto — handa sa Withdrawal'};
 }
+// PRF numbers follow the paper form: CEMPC{yy}-{mm}-{NNNN} (monthly running no.)
+function nextPrfNo(){
+  const d = new Date(), yy = String(d.getFullYear()).slice(-2), mm = String(d.getMonth()+1).padStart(2,'0');
+  const re = new RegExp('^CEMPC'+yy+'-'+mm+'-(\\d+)$','i');
+  let max = 0;
+  prfEntries().forEach(x=>{ const r = re.exec((x.prfNo||'').trim()); if(r) max = Math.max(max, Number(r[1])); });
+  return `CEMPC${yy}-${mm}-${String(max+1).padStart(4,'0')}`;
+}
 function nextDocNo(prefix, field){
   const yr = new Date().getFullYear();
   const re = new RegExp('^'+prefix+'-'+yr+'-(\\d+)$');
@@ -8936,7 +8944,12 @@ function confirmWarehouseCheck(prfId){
   const lines = prfLines(prfId);
   if(!lines.length || lines.some(m=>!lStockChecked(m))){ showToast('Lagyan muna ng Stock on Hand ang lahat ng linya (0 kung wala).'); return; }
   const actor = needActor(); if(!actor) return;
-  if(!prf.prfNo) prf.prfNo = nextDocNo('PRF','prfNo');
+  if(!prf.prfNo){
+    const typed = ((document.getElementById('prfNoIn_'+prfId)||{}).value||'').trim().toUpperCase();
+    const no = typed || nextPrfNo();
+    if(prfEntries().some(d=>d.id!==prfId && (d.prfNo||'').toUpperCase()===no)){ showToast('May PRF na may numerong '+no+' — palitan.'); return; }
+    prf.prfNo = no;
+  }
   prf.whseCheckedAt = prf.whseCheckedAt || todayIso(); prf.whseBy = actor;
   saveDrawingEntry(prf);
   lines.forEach(m=>{ syncLineLegacy(m, prf); saveMaterialLine(m); });
@@ -8944,6 +8957,31 @@ function confirmWarehouseCheck(prfId){
   prfTabState[prfId] = buy ? 'canvass' : 'issue';
   renderMaterialsTab(); renderOverview();
   showToast(buy ? `✅ ${prf.prfNo} — ${buy} linya ang ipapasa kay Procurement.` : `✅ ${prf.prfNo} — sapat ang stock, walang bibilhin.`);
+}
+function setAllStockZero(prfId){
+  const actor = needActor(); if(!actor) return;
+  prfLines(prfId).filter(m=>!lStockChecked(m)).forEach(m=>mutLine(m.id, x=>{ x.stockOnHand = 0; }));
+  renderMaterialsTab();
+}
+function whseFilesHtml(prf){
+  return (prf.whseFiles||[]).map(f=>{
+    const isImg = /\.(png|jpe?g|webp|gif)$/i.test(f.name||f.path||'');
+    return `<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener" style="font-size:12px;">${isImg?`<img src="${escapeHtml(f.url)}" style="height:64px;border:1px solid #ccc;border-radius:4px;display:block;">`:''}📎 ${escapeHtml(f.name||'PRF scan')}</a>`;
+  }).join('');
+}
+async function uploadWhseScan(prfId, files){
+  files = Array.from(files||[]); if(!files.length) return;
+  if(isReadOnly){ showToast('Read-only ang view na ito.'); return; }
+  const prf = DRAWINGS_POOL.find(d=>d.id===prfId); if(!prf) return;
+  const actor = needActor(); if(!actor) return;
+  showToast('Ina-upload…');
+  for(const f of files){
+    const up = await uploadDrawingFile(f, prf.soNumber, '', 'prf', '');
+    if(!up.ok){ showToast('Hindi na-upload: '+(up.message||'error')); continue; }
+    (prf.whseFiles = prf.whseFiles||[]).push({url:up.url, path:up.storagePath, name:up.fileName||f.name, by:actor, at:todayIso()});
+  }
+  saveDrawingEntry(prf); renderMaterialsTab();
+  showToast('✅ Na-attach ang na-check na PRF.');
 }
 function applyPoToBlank(prfId){
   const sup = (document.getElementById('poSup_'+prfId)||{}).value||'';
@@ -9231,6 +9269,16 @@ function prfTabBodyHtml(prf, tab, lines){
       <td><button class="btn ghost btn-sm" onclick="removePrfLine('${m.id}')">✕</button></td></tr>`).join('');
     const ready = lines.every(lStockChecked);
     return `<div class="mini-table-wrap"><table class="mini-table"><tr><th>Materyales</th><th>Qty (kailangan)</th><th>Stock on Hand</th><th>For PO</th><th>Remarks</th><th></th></tr>${rows}</table></div>
+      <div style="margin-top:8px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        ${prf.prfNo?'':`<div class="field"><label>PRF No. (galing sa papel o awtomatiko)</label><input type="text" id="prfNoIn_${id}" value="${escapeHtml(nextPrfNo())}" style="width:170px"></div>`}
+        <button class="btn secondary btn-sm" onclick="setAllStockZero('${id}')" title="Ilalagay ang 0 sa mga blangkong stock on hand">Walang stock (0) sa blanko</button>
+      </div>
+      <div style="margin-top:8px;padding:8px;border:1px dashed var(--border,#bbb);border-radius:8px;">
+        <label class="btn btn-sm" style="cursor:pointer;margin:0;">📷 I-upload ang na-check na PRF ni Joey (scan/larawan)
+          <input type="file" accept="image/*,.pdf,application/pdf" multiple style="display:none;" onchange="uploadWhseScan('${id}', this.files); this.value='';"></label>
+        <span class="hint">Itatabi bilang katibayan. Hindi nababasa ng tracker ang sulat-kamay — ilagay sa taas ang Stock on Hand ayon sa nakasulat sa form.</span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">${whseFilesHtml(prf)}</div>
+      </div>
       <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
         <button class="btn" id="whseBtn_${id}" ${ready?'':'disabled'} onclick="confirmWarehouseCheck('${id}')">${prf.prfNo?'🔄 I-update ang Stock Check':'✅ I-confirm ang Stock Check & Gumawa ng PRF No.'}</button>
         <span class="hint">${prf.prfNo?`Na-check ni ${escapeHtml(prf.whseBy||'')} noong ${escapeHtml(prf.whseCheckedAt||'')}.`:'Ilagay ang stock on hand ng bawat linya (0 kung wala). Ang "For PO" ay awtomatikong kinukuwenta.'}</span>
@@ -9364,6 +9412,64 @@ function legacyLinesHtml(s){
   return `<div style="font-weight:800;margin:10px 0 6px;">📋 Mas lumang materyales (walang PRF)</div>
     <div class="mini-table-wrap"><table class="mini-table"><tr><th>Materyales</th><th>Stock Status</th><th></th></tr>${rows}</table></div>`;
 }
+// ---- Per-SO consolidated purchase summary (all PRFs: raw mats, accessories, consumables) ----
+function lineGroupOf(m, prf){
+  if(prf && prf.kind==='consumable') return 'cons';
+  if(/consum/i.test(m.category||'')) return 'cons';
+  if(/access/i.test(m.category||'')) return 'acc';
+  return 'raw';
+}
+const LINE_GROUP_LABEL = {raw:'🔩 Raw Materials', acc:'🧷 Accessories', cons:'🧴 Consumables'};
+function soPurchaseRows(info){
+  const out = [];
+  info.prfs.forEach(prf=>{
+    prfLines(prf.id).forEach(m=>{
+      out.push({g:lineGroupOf(m,prf), prfNo:prf.prfNo||'(walang No.)', m,
+        checked:lStockChecked(m), buy:lBuyQty(m), stock:lFromStock(m), amt:lAmount(m)});
+    });
+  });
+  return out;
+}
+function soPurchaseSummaryHtml(s, enc){
+  const rows = soPurchaseRows(s.info);
+  if(!rows.length) return '';
+  const grand = rows.reduce((a,r)=>a+r.amt,0);
+  const sec = ['raw','acc','cons'].map(g=>{
+    const rs = rows.filter(r=>r.g===g); if(!rs.length) return '';
+    const sub = rs.reduce((a,r)=>a+r.amt,0);
+    const trs = rs.map(r=>{ const m=r.m;
+      const pend = r.checked ? Math.max(0, r.buy-lReceived(m)) : null;
+      return `<tr>
+      <td style="white-space:nowrap;font-size:12px;">${escapeHtml(r.prfNo)}</td>
+      <td style="font-size:12px;">${escapeHtml(m.name)}</td>
+      <td style="text-align:right;">${fmtN(m.qty)} ${escapeHtml(m.unit||'')}</td>
+      <td style="text-align:right;">${r.checked?fmtN(r.stock):'—'}</td>
+      <td style="text-align:right;font-weight:700;">${r.checked?fmtN(r.buy):'—'}</td>
+      <td style="font-size:12px;">${escapeHtml(m.supplier||'')}</td>
+      <td style="font-size:12px;white-space:nowrap;">${escapeHtml(m.poNo||'')}</td>
+      <td style="text-align:right;">${numv(m.unitPrice)?fmtPHP(numv(m.unitPrice)):''}</td>
+      <td style="text-align:right;font-weight:700;">${r.amt?fmtPHP(r.amt):''}</td>
+      <td style="text-align:right;color:${pend>0?'var(--red)':'var(--green)'};">${r.buy>0?fmtN(lReceived(m))+(pend>0?' / '+fmtN(r.buy):' ✓'):''}</td>
+      <td style="text-align:right;">${lIssued(m)||lReturned(m)?fmtN(lNetIssued(m)):''}</td></tr>`; }).join('');
+    return `<div style="font-weight:800;margin:10px 0 4px;">${LINE_GROUP_LABEL[g]} <span style="font-weight:600;color:var(--gray);">· ${rs.length} linya · ${fmtPHP(sub)}</span></div>
+      <div class="mini-table-wrap"><table class="mini-table"><tr><th>PRF No.</th><th>Materyales</th><th>Hiningi</th><th>Sa stock</th><th>Binili</th><th>Supplier</th><th>PO No.</th><th>Unit Price</th><th>Amount</th><th>Natanggap</th><th>Nailabas (net)</th></tr>${trs}</table></div>`;
+  }).join('');
+  return `<div style="background:#fff;border:1px solid var(--line,#ddd);border-radius:10px;padding:12px;margin-bottom:12px;">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:space-between;">
+      <div style="font-weight:800;font-size:14px;">📦 Buod ng Lahat ng Materyales ng SO na Ito <span style="font-weight:600;color:var(--gray);font-size:12px;">(lahat ng PRF: materials, accessories, consumables)</span></div>
+      <div style="display:flex;gap:10px;align-items:center;"><span style="font-weight:800;">Kabuuang Nabili: ${fmtPHP(grand)}</span>
+      <button class="btn secondary btn-sm" onclick="exportSoPurchaseCsv('${enc}')">⬇ CSV</button></div></div>${sec}</div>`;
+}
+function exportSoPurchaseCsv(enc){
+  const key = decodeURIComponent(enc);
+  const s = materialsSoOptionsList().map(x=>Object.assign({},x,{info:soBomInfo(x)})).find(x=>x.soNumber+'||'+x.client===key); if(!s) return;
+  const q = v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+  const head = ['Group','PRF No.','Materyales','Hiningi','Unit','Sa stock','Binili','Supplier','PO No.','PO Date','Unit Price','Amount','Natanggap','Nailabas net'];
+  const lines = [head.map(q).join(',')];
+  soPurchaseRows(s.info).forEach(r=>{ const m=r.m; lines.push([LINE_GROUP_LABEL[r.g].replace(/^\S+\s/,''), r.prfNo, m.name, m.qty, m.unit, r.checked?r.stock:'', r.checked?r.buy:'', m.supplier, m.poNo, m.poDate, numv(m.unitPrice)||'', r.amt||'', lReceived(m), lNetIssued(m)].map(q).join(',')); });
+  const blob = new Blob(['\ufeff'+lines.join('\n')], {type:'text/csv'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `Materyales_${s.soNumber}.csv`; document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);
+}
 function renderMaterialsTab(){
   const wrap = document.getElementById('materialsTabBody');
   if(!wrap) return;
@@ -9396,6 +9502,7 @@ function renderMaterialsTab(){
     const prfNos = info.prfs.map(p=>p.prfNo||'(walang No.)').join(', ');
     const bits = [];
     if(info.lines.length) bits.push(`${info.lines.length} materyales`);
+    { const tot = soPurchaseRows(info).reduce((a,r)=>a+r.amt,0); if(tot>0) bits.push(`<b>${fmtPHP(tot)}</b> nabili`); }
     if(info.short.length) bits.push(`<span style="color:${info.delayed.length?'var(--red)':'#a35d00'};font-weight:700;">${info.short.length} kulang${info.delayed.length?' (lagpas na)':''}</span>`);
     const stockCell = (prfNos?`<div style="font-weight:700;">${escapeHtml(prfNos)}</div>`:'') + (bits.length?bits.join(' · '):'<span style="color:var(--gray);">—</span>');
     return `<tr style="cursor:pointer;${open?'background:var(--gray-bg);':''}" onclick="toggleMaterialsSo('${enc}')">
@@ -9410,6 +9517,7 @@ function renderMaterialsTab(){
         </label>
       </td>
     </tr>${open ? `<tr><td colspan="6" style="background:var(--gray-bg);padding:14px;">
+      ${soPurchaseSummaryHtml(s, enc)}
       ${info.prfs.map(prfCardHtml).join('') || '<div class="hint" style="margin-bottom:10px;">Wala pang PRF para sa SO na ito. I-upload ang PRF ni Engineering (Karl Chua) gamit ang 📤 sa kanan.</div>'}
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
         <button class="btn secondary btn-sm" onclick="createManualPrf('${enc}','consumable')">+ PRF para sa Consumables (Warehouse)</button>
