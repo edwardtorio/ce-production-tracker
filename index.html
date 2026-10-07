@@ -8634,8 +8634,14 @@ const PRF_STAGES = [
 function matActor(){ try{ return localStorage.getItem('cempc_mat_actor')||''; }catch(e){ return ''; } }
 function setMatActor(v){ try{ localStorage.setItem('cempc_mat_actor', v.trim()); }catch(e){} }
 function needActor(){
-  const a = matActor();
-  if(!a){ showToast('Ilagay muna ang pangalan mo sa "Ikaw ay:" sa taas.'); const el=document.getElementById('matActor'); if(el) el.focus(); return ''; }
+  let a = matActor();
+  if(!a){
+    // Ask right away (a toast was too easy to miss and the upload just silently did nothing).
+    a = (window.prompt('Ilagay ang pangalan mo (hal. Karl Chua, Joey Boticario, Carmina Rosales) — itatala ito sa bawat upload/record:') || '').trim();
+    if(!a){ showToast('Kailangan ang pangalan mo para makapag-upload/record.'); return ''; }
+    setMatActor(a);
+    const el = document.getElementById('matActor'); if(el){ el.value = a; el.style.borderColor = ''; }
+  }
   return a;
 }
 const todayIso = ()=> new Date().toISOString().slice(0,10);
@@ -8806,6 +8812,7 @@ async function createPrfFromFile(file, soKey, parsed, actor){
     });
   }
   materialsOpenSo = soKey; prfTabState[d.id] = 'whse';
+  materialsView = 'all'; materialsSearch = '';
   renderMaterialsTab(); renderOverview();
   showToast(parsed ? `✅ Na-upload ang PRF — ${parsed.rows.length} materyales na-detect.` : '✅ Na-upload ang PRF file.');
   return d;
@@ -8860,6 +8867,7 @@ async function createManualPrf(enc, kind){
   d.uploadedBy = actor; d.prfNo = ''; d.kind = kind||'consumable'; d.purpose = '';
   DRAWINGS_POOL.push(d); saveDrawingEntry(d);
   prfTabState[d.id] = 'whse'; materialsOpenSo = soNum+'||'+client;
+  materialsView = 'all';
   renderMaterialsTab(); renderOverview();
 }
 function addPrfLinesBulk(prfId){
