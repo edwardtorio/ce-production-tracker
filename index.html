@@ -7042,6 +7042,84 @@ async function deleteSoPermanently(soNumber, client){
   showToast(`Permanently deleted ${soNumber}`);
 }
 
+/* ---------- On-time / Late: based on the DURATION given to each process ----------
+   A step's allotted duration = the working days between the previous step's
+   target date and this step's own target date (min 1). The clock starts when
+   the step actually reached its owner (the previous step's completion), and
+   stops when the OWNER finished it — for review-gated processes that's the
+   moment they submitted it for review (reviewSubmittedAt), NOT when Edward
+   confirmed it, so waiting in the review queue is never counted against the
+   owner. Edward's own review is measured from when it reached him
+   (reviewSubmittedAt) to his confirmation, with 1 working day allowed.
+   Everything is compared on the local (PH) calendar. */
+const REVIEW_ALLOWED_WORKING_DAYS = 1;
+function localDateStrOf(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function isNonWorkingLocal(d){
+  if(d.getDay()===0) return true;
+  const hol = PH_HOLIDAYS_BY_YEAR[d.getFullYear()];
+  return !!(hol && hol.includes(localDateStrOf(d)));
+}
+function addWorkingDaysLocal(startDate, n){
+  const d = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  let added = 0;
+  while(added < n){ d.setDate(d.getDate()+1); if(!isNonWorkingLocal(d)) added++; }
+  return d;
+}
+function workingDaysBetweenLocal(fromStr, toStr){ // working days in (from, to]
+  const a = new Date(fromStr+'T00:00:00'), b = new Date(toStr+'T00:00:00');
+  let n = 0; const d = new Date(a);
+  while(d < b){ d.setDate(d.getDate()+1); if(!isNonWorkingLocal(d)) n++; }
+  return n;
+}
+function stepOwnerEndAt(item, pid){
+  if(needsJinReview(pid) && item.reviewSubmittedAt && item.reviewSubmittedAt[pid]) return item.reviewSubmittedAt[pid];
+  return item.routeCompletedAt && item.routeCompletedAt[pid];
+}
+function stepReceivedAt(item, pid){
+  const route = item.route || [];
+  const idx = route.indexOf(pid);
+  let latest = '';
+  for(let j=0;j<idx;j++){
+    const c = item.routeCompletedAt && item.routeCompletedAt[route[j]];
+    if(c && c > latest) latest = c;
+  }
+  if(latest) return latest;
+  if(idx>0 && item.routeStartTimestamp && item.routeStartTimestamp[pid]) return item.routeStartTimestamp[pid];
+  const up = item.dateUploaded || item.dateAdded;
+  return up ? up+'T00:00:00' : '';
+}
+function stepAllottedWorkingDays(item, pid){
+  const route = item.route || [];
+  const idx = route.indexOf(pid);
+  const target = item.routeTargetDates && item.routeTargetDates[pid];
+  if(!target) return 0;
+  let prev = '';
+  for(let j=idx-1;j>=0;j--){ const t = item.routeTargetDates && item.routeTargetDates[route[j]]; if(t){ prev = t; break; } }
+  if(!prev) prev = item.dateUploaded || item.dateAdded || '';
+  if(!prev) return 1;
+  return Math.max(1, workingDaysBetweenLocal(prev, target));
+}
+// true = on time, false = late, null = can't be judged (missing timestamps).
+function stepOnTime(item, pid, asReviewer){
+  let start, end, allotted;
+  if(asReviewer){
+    start = item.reviewSubmittedAt && item.reviewSubmittedAt[pid];
+    end = item.routeCompletedAt && item.routeCompletedAt[pid];
+    allotted = REVIEW_ALLOWED_WORKING_DAYS;
+  }else{
+    start = stepReceivedAt(item, pid);
+    end = stepOwnerEndAt(item, pid);
+    allotted = stepAllottedWorkingDays(item, pid);
+    if(!allotted) return null;
+  }
+  if(!start || !end) return null;
+  const s = new Date(start), e = new Date(end);
+  if(isNaN(s) || isNaN(e)) return null;
+  const deadline = addWorkingDaysLocal(s, allotted);
+  deadline.setHours(23,59,59,999);
+  return e <= deadline;
+}
+
 /* ---------- Team view ---------- */
 let selectedPerson = null;
 let selectedProcess = null; // clicking a name under a specific process filters to that process only
@@ -7072,8 +7150,7 @@ function computePersonPeriodStats(name, processId, granularity){
     if(periodKey(completedAt.slice(0,10), granularity) !== curKey) return;
     completed++;
     value += itemAmount(it) / (it.route.length||1);
-    const target = it.routeTargetDates && it.routeTargetDates[processId];
-    if(target && new Date(completedAt) <= new Date(target+'T23:59:59')) onTime++;
+    if(stepOnTime(it, processId)===true) onTime++;
   });
   const pct = completed ? Math.round(onTime/completed*100) : null;
   return { value, completed, pct };
@@ -7097,8 +7174,7 @@ function computePersonPeriodStatsAll(name, granularity){
       if(periodKey(completedAt.slice(0,10), granularity) !== curKey) return;
       completed++;
       value += itemAmount(it) / (it.route.length||1);
-      const target = it.routeTargetDates && it.routeTargetDates[p.id];
-      if(target && new Date(completedAt) <= new Date(target+'T23:59:59')) onTime++;
+      if(stepOnTime(it, p.id)===true) onTime++;
     });
   });
   const pct = completed ? Math.round(onTime/completed*100) : null;
@@ -7592,11 +7668,8 @@ function computeScorecards(){
       relevant.forEach(it=>{
         if(it.routeStatus[p.id]==='done'){
           completed++;
-          const completedAt = it.routeCompletedAt && it.routeCompletedAt[p.id];
-          const target = it.routeTargetDates && it.routeTargetDates[p.id];
-          if(target && completedAt){
-            if(new Date(completedAt) <= new Date(target+'T23:59:59')) onTime++; else late++;
-          }else{ notTracked++; }
+          const ot = stepOnTime(it, p.id, false);
+          if(ot===null) notTracked++; else if(ot) onTime++; else late++;
         }
       });
       scorecards[name].tasks.push({ stageLabel: ownerDisplayLabel(p.id,name)!==name ? ownerDisplayLabel(p.id,name) : p.label, assigned: relevant.length, completed, onTime, late, notTracked });
@@ -7612,11 +7685,8 @@ function computeScorecards(){
     rows.forEach(({item:it, processId:pid})=>{
       if(it.routeStatus[pid]==='done'){
         completed++;
-        const completedAt = it.routeCompletedAt && it.routeCompletedAt[pid];
-        const target = it.routeTargetDates && it.routeTargetDates[pid];
-        if(target && completedAt){
-          if(new Date(completedAt) <= new Date(target+'T23:59:59')) onTime++; else late++;
-        }else{ notTracked++; }
+        const ot = stepOnTime(it, pid, true);
+        if(ot===null) notTracked++; else if(ot) onTime++; else late++;
       }
     });
     if(!scorecards[JIN_REVIEWER_NAME]) scorecards[JIN_REVIEWER_NAME] = { name: JIN_REVIEWER_NAME, tasks: [] };
@@ -7655,11 +7725,8 @@ function computePersonScorecardForPeriod(name, granularity, selectedKey){
     assignedSet.forEach(({item:it, processId:pid})=>{
       if(it.routeStatus[pid]==='done'){
         completed++;
-        const completedAt = it.routeCompletedAt && it.routeCompletedAt[pid];
-        const target = it.routeTargetDates && it.routeTargetDates[pid];
-        if(target && completedAt){
-          if(new Date(completedAt) <= new Date(target+'T23:59:59')) onTime++; else late++;
-        }else{ notTracked++; }
+        const ot = stepOnTime(it, pid, true);
+        if(ot===null) notTracked++; else if(ot) onTime++; else late++;
       }
     });
     tasks.push({ stageLabel: '🔍 For Review / Confirmation', assigned: assignedSet.length, completed, onTime, late, notTracked });
@@ -7684,11 +7751,8 @@ function computePersonScorecardForPeriod(name, granularity, selectedKey){
     assignedSet.forEach(it=>{
       if(it.routeStatus[p.id]==='done'){
         completed++;
-        const completedAt = it.routeCompletedAt && it.routeCompletedAt[p.id];
-        const target = it.routeTargetDates && it.routeTargetDates[p.id];
-        if(target && completedAt){
-          if(new Date(completedAt) <= new Date(target+'T23:59:59')) onTime++; else late++;
-        }else{ notTracked++; }
+        const ot = stepOnTime(it, p.id, false);
+        if(ot===null) notTracked++; else if(ot) onTime++; else late++;
       }
     });
     tasks.push({ stageLabel: ownerDisplayLabel(p.id,name)!==name ? ownerDisplayLabel(p.id,name) : p.label, assigned: assignedSet.length, completed, onTime, late, notTracked });
