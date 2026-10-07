@@ -821,7 +821,7 @@
       <div id="teamOverviewStats" style="margin-top:24px;"></div>
     </div>
     <div class="panel">
-      <h3>Team Workload (queue / ongoing / done)</h3>
+      <h3>Team Workload (queue / ongoing / done) <span id="teamPerfPeriod" style="font-size:12px;font-weight:600;color:var(--gray);margin-left:8px;"></span></h3>
       <div class="hint" style="margin-bottom:10px;">I-tap ang pangalan/card ninyo dito para buksan ang inyong profile — makikita doon ang inyong mga tasks at performance.</div>
       <div class="workload-grid" id="workloadGrid"></div>
     </div>
@@ -4623,7 +4623,7 @@ function renderTeamWorkload(){
     const perf = computePersonOverallPerformance(name);
     const perfBadge = perf.pct===null ? '' : `<div style="position:absolute;top:10px;right:10px;width:34px;height:34px;border-radius:50%;
         background:${perf.pct>=90?'var(--green)':perf.pct>=70?'var(--amber)':'var(--red)'};color:#fff;
-        display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;" title="${perf.onTime} on-time / ${perf.assigned} assigned">${perf.pct}%</div>`;
+        display:flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:800;" title="${perf.onTime} on-time / ${perf.assigned} natapos — ${profilePeriodState.dateFilter ? periodLabel(profilePeriodState.dateFilter, profilePeriodState.granularity) : 'Lahat ng Panahon'}">${perf.pct}%</div>`;
     wHtml += `<div class="person-card${d.critical?' critical-blink':''}" style="cursor:pointer;position:relative;${isActive?'border-color:var(--accent-teal);box-shadow:0 0 0 1px var(--accent-teal);':''}" onclick="selectPersonOverall('${jsAttr(name)}')">
       ${perfBadge}
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;padding-right:${perf.pct===null?'0':'38px'};">${avatarHtml(name,28)}<div class="pname">${name}</div></div>
@@ -7184,13 +7184,17 @@ function computePersonPeriodStatsAll(name, granularity){
 // EVERYTHING ever assigned to them (done or still pending) — not divided by
 // only what they've completed. This is all-time (not period-scoped), since
 // "how many were assigned to you" isn't naturally a per-day/week/month idea.
+// The round % badge on each Team Workload card follows the SAME period picked
+// inside the person's profile (profilePeriodState — Buwanan/Lingguhan/... plus
+// the specific month), and is the same "On-time rate" shown in that profile:
+// of what they actually finished in that period, how much was on time.
 function computePersonOverallPerformance(name){
-  const sc = computeScorecards()[name];
-  if(!sc) return { assigned:0, onTime:0, pct:null };
-  const assigned = sc.tasks.reduce((a,t)=>a+t.assigned,0);
+  const sc = computePersonScorecardForPeriod(name, profilePeriodState.granularity, profilePeriodState.dateFilter);
   const onTime = sc.tasks.reduce((a,t)=>a+t.onTime,0);
-  const pct = assigned ? Math.round(onTime/assigned*100) : null;
-  return { assigned, onTime, pct };
+  const late = sc.tasks.reduce((a,t)=>a+t.late,0);
+  const judged = onTime + late;
+  const pct = judged ? Math.round(onTime/judged*100) : null;
+  return { assigned: judged, onTime, pct };
 }
 // Team-wide performance is measured at the ITEM/SO level (did the whole line
 // item finish by its Target Delivery Date) — NOT an average of individual
@@ -7212,6 +7216,7 @@ function computeTeamOverallPerformance(){
   return { onTime, late, total, pct };
 }
 function renderTeam(){
+  { const el = document.getElementById('teamPerfPeriod'); if(el) el.textContent = '% = on-time rate · ' + (profilePeriodState.dateFilter ? periodLabel(profilePeriodState.dateFilter, profilePeriodState.granularity) : 'Lahat ng Panahon'); }
   renderTeamOverviewBanner();
   renderTeamWorkload();
 }
@@ -8120,15 +8125,17 @@ function renderTeamOverviewBanner(){
 // The popup's own day/week/month/year granularity + optional single-period
 // filter for the "Natapos na Items" breakdown — independent from any other
 // dropdown state elsewhere, reset fresh each time the popup is opened.
-let profilePeriodState = { granularity:'day', dateFilter:'' };
+let profilePeriodState = { granularity:'month', dateFilter: (function(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })() };
 function setProfileGranularity(name, val){
   profilePeriodState.granularity = val;
-  profilePeriodState.dateFilter = '';
+  profilePeriodState.dateFilter = periodKey(todayDateStr(), val);
   renderScorecardProfile(name);
+  if(document.getElementById('view-team').classList.contains('active')) renderTeam();
 }
 function setProfileDateFilter(name, val){
   profilePeriodState.dateFilter = val;
   renderScorecardProfile(name);
+  if(document.getElementById('view-team').classList.contains('active')) renderTeam();
 }
 // Every task (in-progress or already finished) that belongs to this person,
 // across every process they own — one row per item per step. Used by the
