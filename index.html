@@ -8956,6 +8956,200 @@ function applyPoToBlank(prfId){
   });
   renderMaterialsTab();
 }
+// ---------------- Comparative Data (canvass form) upload ----------------
+// Carmina's "COMPARATIVE DATA SHEETS" PDF: item rows x up to 4 supplier
+// columns. The winning supplier's column is highlighted yellow. We read the
+// text positions (pdf.js) for the numbers and render the page to a canvas to
+// see which supplier's cells are yellow.
+let PENDING_CMP = null;   // {prfId, file, form, rows:[{...}], poNo, poDate}
+function cmpIsYellow(r,g,b){ return r>225 && g>215 && b<120; }
+function cmpParseNum(s){ const n = parseFloat(String(s||'').replace(/[₱,\s]/g,'')); return isFinite(n)?n:null; }
+function cmpIsoDate(s){
+  const m = String(s||'').match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); if(!m) return '';
+  let y = +m[3]; if(y<100) y += 2000;
+  return `${y}-${String(+m[1]).padStart(2,'0')}-${String(+m[2]).padStart(2,'0')}`;
+}
+function parseComparativeForm(items){
+  const frags = items.filter(i=>i.page===1);
+  const ext = frags.filter(f=>/^External Provider\s*#\s*\d/i.test(f.str.trim())).sort((a,b)=>a.x-b.x);
+  if(!ext.length) return null;
+  const hdrY = ext[0].y;
+  const variance = frags.filter(f=>/^Variance$/i.test(f.str.trim()));
+  const upHdr = frags.filter(f=>/^Unit Price$/i.test(f.str.trim()) && f.x > ext[0].x - 40 &&
+      !variance.some(v=>Math.abs(v.x-f.x)<6 && v.y<f.y && f.y-v.y<6)).sort((a,b)=>a.x-b.x);
+  if(upHdr.length < ext.length) return null;
+  const cols = ext.map((e,i)=>{
+    const ux = upHdr[i].x;
+    const cx = e.x + e.w/2;
+    const nm = frags.filter(f=>f.y<hdrY-1 && f.y>hdrY-9 && !/External|Unit|Total|Variance/i.test(f.str) && Math.abs((f.x+f.w/2)-cx)<22)
+      .sort((a,b)=>Math.abs((a.x+a.w/2)-cx)-Math.abs((b.x+b.w/2)-cx))[0];
+    return {n:i+1, ux, name: nm ? nm.str.trim() : '', nameFrag: nm||null};
+  });
+  const qtyHdr = frags.find(f=>/^Qty$/i.test(f.str.trim()));
+  const totRow = frags.find(f=>/^TOTAL AMOUNT/i.test(f.str.trim()));
+  const priceHdrY = Math.min(...upHdr.map(f=>f.y));
+  const qx = qtyHdr ? qtyHdr.x : 199;
+  const botY = totRow ? totRow.y : 0;
+  const anchors = frags.filter(f=>qtyHdr && Math.abs(f.x-qx)<8 && /^[\d.,]+$/.test(f.str.trim()) && f.y<priceHdrY-2 && f.y>botY+1)
+    .sort((a,b)=>b.y-a.y);
+  const descLimit = (frags.find(f=>/^PO\/SO$/i.test(f.str.trim()))||{x:135}).x - 4;
+  const descFrags = frags.filter(f=>f.x<descLimit && !/^SO-[A-Z]+-\d+/i.test(f.str.trim()) && f.y<priceHdrY-2 && f.y>botY+1);
+  const rows = anchors.map(a=>({y:a.y, qty:cmpParseNum(a.str), desc:[], prices:{}}));
+  descFrags.forEach(f=>{
+    let best=null, bd=1e9; rows.forEach(r=>{ const d=Math.abs(f.y-r.y); if(d<bd){bd=d;best=r;} });
+    if(best && bd<7) best.desc.push(f);
+  });
+  rows.forEach(r=>{
+    r.desc.sort((a,b)=>b.y-a.y || a.x-b.x);
+    r.text = r.desc.map(f=>f.str.trim()).join(' ').replace(/\s+/g,' ').trim();
+    const mc = r.text.match(/^([A-Z]{1,4}-\d{2,4}-[A-Z0-9-]+)\s+(.*)$/);
+    r.code = mc ? mc[1] : ''; r.name = mc ? mc[2] : r.text;
+    cols.forEach(c=>{
+      const f = frags.find(x=>Math.abs(x.y-r.y)<=3 && /^[\d.,]+$/.test(x.str.trim()) && x.x>=c.ux-6 && x.x<=c.ux+12 && cmpParseNum(x.str)>0);
+      if(f) r.prices[c.n] = {price:cmpParseNum(f.str), frag:f};
+    });
+  });
+  // PO no. / date: the topmost PO-... fragment (the red one beside the CDS no.)
+  const poFr = frags.filter(f=>/^PO-[A-Z]+-\d+/i.test(f.str.trim())).sort((a,b)=>b.y-a.y)[0];
+  const dtFr = poFr ? frags.find(f=>Math.abs(f.y-poFr.y)<2 && /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(f.str.trim())) : null;
+  const prfRef = (frags.find(f=>/PRF Ref/i.test(f.str))||{}).str || '';
+  return {cols, rows, poNo: poFr?poFr.str.trim():'', poDate: dtFr?cmpIsoDate(dtFr.str.trim()):'', prfRef: prfRef.replace(/PRF Ref No:\s*/i,'').trim()};
+}
+// Renders page 1 and decides, per supplier column, which cells are yellow.
+async function detectCmpYellow(file, form){
+  await ensurePdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  const page = await pdf.getPage(1);
+  const scale = 3;
+  const vp = page.getViewport({scale});
+  const cv = document.createElement('canvas'); cv.width = Math.ceil(vp.width); cv.height = Math.ceil(vp.height);
+  const ctx = cv.getContext('2d', {willReadFrequently:true});
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,cv.width,cv.height);
+  await page.render({canvasContext: ctx, viewport: vp}).promise;
+  const yellowAt = (x,y)=>{
+    const [px,py] = vp.convertToViewportPoint(x,y);
+    if(px<0||py<0||px>=cv.width||py>=cv.height) return false;
+    const d = ctx.getImageData(Math.floor(px),Math.floor(py),1,1).data;
+    return cmpIsYellow(d[0],d[1],d[2]);
+  };
+  const cellYellow = (f)=>{
+    const pts = [[f.x-2.5, f.y+2],[f.x+f.w+2.5, f.y+2],[f.x-2.5, f.y+3.2],[f.x+f.w+2.5, f.y+3.2]];
+    const hit = pts.filter(p=>yellowAt(p[0],p[1])).length;
+    return hit >= 2;
+  };
+  form.cols.forEach(c=>{ c.yellowHdr = c.nameFrag ? cellYellow(c.nameFrag) : false; });
+  form.rows.forEach(r=>{ r.yellow = {}; Object.keys(r.prices).forEach(n=>{ r.yellow[n] = cellYellow(r.prices[n].frag); }); });
+}
+function cmpScoreMatch(row, m){
+  const norm = s=>String(s||'').toLowerCase();
+  let sc = 0;
+  if(row.code && norm(m.itemCode).includes(norm(row.code))) sc += 10;
+  if(row.code && norm(m.name).includes(norm(row.code))) sc += 10;
+  const bq = lBuyQty(m);
+  if(row.qty!=null && Math.abs(row.qty-bq)<1e-9) sc += 3;
+  const th = s=>{ const x = norm(s).match(/(\d+(?:\.\d+)?)\s*mm/); return x ? parseFloat(x[1]) : null; };
+  const a = th(row.name), b = th(m.name);
+  if(a!=null && b!=null && Math.abs(a-b)<1e-9) sc += 3;
+  const tok = s=>new Set(norm(s).split(/[^a-z0-9.]+/).filter(t=>t.length>1));
+  const ta = tok(row.name), tb = tok(m.name);
+  let inter = 0; ta.forEach(t=>{ if(tb.has(t)) inter++; });
+  sc += inter / Math.max(1, Math.max(ta.size, tb.size));
+  return sc;
+}
+async function uploadComparativeData(prfId, files){
+  const f = (files||[])[0]; if(!f) return;
+  if(isReadOnly){ showToast('Read-only ang view na ito.'); return; }
+  const prf = DRAWINGS_POOL.find(d=>d.id===prfId); if(!prf) return;
+  const actor = needActor(); if(!actor) return;
+  showToast('Binabasa ang Comparative Data…');
+  let form = null;
+  try{
+    const {items} = await extractPdfTextAndItems(f);
+    form = parseComparativeForm(items);
+    if(form && form.rows.length) await detectCmpYellow(f, form);
+  }catch(e){ console.error(e); form = null; }
+  if(!form || !form.rows.length){ showToast('Hindi nabasa ang Comparative Data form. Ilagay na lang nang mano-mano.'); return; }
+  const buy = prfLines(prfId).filter(m=>lBuyQty(m)>0);
+  const used = new Set();
+  const isDone = m=>numv(m.unitPrice)>0 && !!m.poNo;
+  const pairs = [];
+  form.rows.forEach((r,ri)=>buy.forEach(m=>{ if(!isDone(m)) pairs.push({ri, id:m.id, s:cmpScoreMatch(r,m)}); }));
+  pairs.sort((a,b)=>b.s-a.s);
+  const matched = {};
+  pairs.forEach(p=>{ if(p.s>=3 && matched[p.ri]===undefined && !used.has(p.id)){ matched[p.ri]=p.id; used.add(p.id); } });
+  const rows = form.rows.map((r,ri)=>{
+    let win = null;
+    const ys = Object.keys(r.yellow).filter(n=>r.yellow[n]);
+    if(ys.length===1) win = +ys[0];
+    else if(!ys.length){ const h = form.cols.filter(c=>c.yellowHdr && r.prices[c.n]); if(h.length===1) win = h[0].n; }
+    return {code:r.code, name:r.name, qty:r.qty, prices:Object.fromEntries(Object.entries(r.prices).map(([n,v])=>[n,v.price])), win, lineId: matched[ri]||''};
+  });
+  PENDING_CMP = {prfId, file:f, cols: form.cols.map(c=>({n:c.n,name:c.name})), rows, poNo: form.poNo, poDate: form.poDate, prfRef: form.prfRef};
+  showCmpModal();
+}
+function showCmpModal(){
+  const P = PENDING_CMP; if(!P) return;
+  const buy = prfLines(P.prfId).filter(m=>lBuyQty(m)>0);
+  const colName = n=>{ const c = P.cols.find(x=>x.n===n); return c ? (c.name||('Provider #'+n)) : ''; };
+  P.poBySup = P.poBySup || {};
+  const winCols = [...new Set(P.rows.filter(r=>r.lineId && r.win).map(r=>r.win))].sort();
+  winCols.forEach(n=>{ if(!P.poBySup[n]) P.poBySup[n] = {poNo:P.poNo||'', poDate:P.poDate||''}; });
+  const poBoxes = winCols.length ? winCols.map(n=>`<div style="border:1px solid var(--border,#ccc);border-radius:8px;padding:6px 8px;"><div style="font-weight:800;font-size:12px;margin-bottom:4px;">${escapeHtml(colName(n))}</div>
+      <div style="display:flex;gap:8px;"><div class="field"><label>PO No.</label><input type="text" value="${escapeHtml(P.poBySup[n].poNo)}" style="width:140px" onchange="PENDING_CMP.poBySup[${n}].poNo=this.value"></div>
+      <div class="field"><label>PO Date</label><input type="date" value="${escapeHtml(P.poBySup[n].poDate)}" onchange="PENDING_CMP.poBySup[${n}].poDate=this.value"></div></div></div>`).join('') : '<span class="hint">Pumili muna ng supplier at linya sa ibaba.</span>';
+  const rows = P.rows.map((r,i)=>{
+    const lineOpts = `<option value="">— huwag ilapat —</option>` + buy.map(m=>`<option value="${m.id}" ${m.id===r.lineId?'selected':''}>${(numv(m.unitPrice)>0&&m.poNo)?'✔ may PO na ('+escapeHtml(m.poNo)+') — ':''}${escapeHtml(m.name)} (${fmtN(lBuyQty(m))} ${escapeHtml(m.unit||'')})</option>`).join('');
+    const provOpts = `<option value="">— piliin —</option>` + P.cols.filter(c=>r.prices[c.n]).map(c=>`<option value="${c.n}" ${r.win===c.n?'selected':''}>${escapeHtml(c.name||('#'+c.n))} — ${fmtPHP(r.prices[c.n])}</option>`).join('');
+    const m = buy.find(x=>x.id===r.lineId);
+    const already = m && numv(m.unitPrice)>0 && m.poNo ? `<div style="color:var(--red);font-size:11px;">⚠ May PO na ang linyang ito (${escapeHtml(m.poNo)} · ${escapeHtml(m.supplier||'')}) — papalitan kapag inilapat.</div>` : '';
+    const warn = already + (m && r.qty!=null && Math.abs(r.qty-lBuyQty(m))>1e-9 ? `<div style="color:var(--red);font-size:11px;">⚠ Qty sa form: ${fmtN(r.qty)}, sa PRF: ${fmtN(lBuyQty(m))}</div>` : '');
+    return `<tr>
+      <td style="min-width:170px;font-size:12px;">${r.code?`<b>${escapeHtml(r.code)}</b><br>`:''}${escapeHtml(r.name)}<br><span class="hint">Qty ${fmtN(r.qty||0)}</span></td>
+      <td><select style="max-width:230px;font-size:12px;" onchange="PENDING_CMP.rows[${i}].lineId=this.value;showCmpModal()">${lineOpts}</select>${warn}</td>
+      <td><select style="font-size:12px;" onchange="PENDING_CMP.rows[${i}].win=this.value?+this.value:null;showCmpModal()">${provOpts}</select>${r.win?'':'<div style="color:var(--red);font-size:11px;">Walang nakitang yellow — pumili.</div>'}</td></tr>`;
+  }).join('');
+  const box = document.getElementById('modalBox');
+  box.classList.add('modal-wide');
+  box.innerHTML = `<h3 style="margin-top:0;">📊 Comparative Data — i-verify bago ilapat</h3>
+    <div class="hint" style="margin-bottom:8px;">File: ${escapeHtml(P.file.name)}${P.prfRef?' · PRF Ref sa form: '+escapeHtml(P.prfRef):''}. Ang <b>yellow</b> na supplier ang napili; maaari pang palitan. Iilapat lang ito sa mga linyang itinugma — iwanang “huwag ilapat” ang mga item na sa ibang supplier/PO bibilhin; ilagay mo ang susunod na Comparative form kapag nai-bigay na ni Carmina.</div>
+    <div class="hint" style="margin-bottom:4px;">Isang PO kada supplier — kung iba-iba ang supplier ng mga item, lagyan ng sariling PO No. ang bawat isa.</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;">${poBoxes}</div>
+    <div class="mini-table-wrap"><table class="mini-table"><tr><th>Item sa Comparative form</th><th>Linya sa PRF</th><th>Nanalong Supplier</th></tr>${rows}</table></div>
+    <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">
+      <button class="btn secondary" onclick="PENDING_CMP=null;closeModal()">Kanselahin</button>
+      <button class="btn" onclick="confirmCmp()">✅ Ilapat sa PRF</button></div>`;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+async function confirmCmp(){
+  const P = PENDING_CMP; if(!P) return;
+  const todo = P.rows.filter(r=>r.lineId && r.win && r.prices[r.win]);
+  if(!todo.length){ showToast('Walang linyang may napiling supplier.'); return; }
+  const actor = needActor(); if(!actor) return;
+  const prf = DRAWINGS_POOL.find(d=>d.id===P.prfId);
+  PENDING_CMP = null; closeModal();
+  todo.forEach(r=>{
+    const c = P.cols.find(x=>x.n===r.win);
+    mutLine(r.lineId, m=>{
+      m.supplier = (c&&c.name)||''; m.unitPrice = r.prices[r.win];
+      const po = (P.poBySup||{})[r.win] || {poNo:P.poNo, poDate:P.poDate};
+      if(po.poNo){ m.poNo = po.poNo; m.poDate = po.poDate || todayIso(); }
+      m.canvassBy = actor;
+    });
+  });
+  renderMaterialsTab(); renderOverview();
+  showToast(`✅ ${todo.length} linya ang napunan mula sa Comparative Data.`);
+  if(prf){
+    const up = await uploadDrawingFile(P.file, prf.soNumber, '', 'prf', '');
+    if(up.ok){ (prf.canvassFiles = prf.canvassFiles||[]).push({url:up.url, path:up.storagePath, name:up.fileName||P.file.name, by:actor, at:todayIso(), poNo:[...new Set(todo.map(r=>((P.poBySup||{})[r.win]||{}).poNo||P.poNo).filter(Boolean))].join(', '), lines:todo.length}); saveDrawingEntry(prf); renderMaterialsTab(); }
+    else showToast('Napunan na ang mga linya pero hindi na-attach ang PDF: '+(up.message||'error'));
+  }
+}
+function cmpFilesHtml(prf){
+  const arr = (prf.canvassFiles||[]).slice();
+  if(prf.canvassUrl && !arr.some(f=>f.url===prf.canvassUrl)) arr.unshift({url:prf.canvassUrl, name:prf.canvassName||'Comparative Data', poNo:''});
+  return arr.map(f=>`<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener" style="font-size:12px;">📎 ${escapeHtml(f.poNo||f.name||'Comparative Data')}</a>`).join(' ');
+}
 function receiveBatch(prfId){
   const actor = needActor(); if(!actor) return;
   const dr = (document.getElementById('rcvDr_'+prfId)||{}).value.trim();
@@ -9060,6 +9254,12 @@ function prfTabBodyHtml(prf, tab, lines){
         <div class="field"><label>PO No.</label><input type="text" id="poNo_${id}" style="width:120px"></div>
         <div class="field"><label>PO Date</label><input type="date" id="poDt_${id}" value="${todayIso()}"></div>
         <button class="btn secondary btn-sm" onclick="applyPoToBlank('${id}')">Ilapat sa lahat ng blanko</button></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px;padding:8px;border:1px dashed var(--border,#bbb);border-radius:8px;">
+        <label class="btn btn-sm" style="cursor:pointer;margin:0;">📊 I-upload ang Comparative Data (Canvass)
+          <input type="file" accept=".pdf,application/pdf" style="display:none;" onchange="uploadComparativeData('${id}', this.files); this.value='';"></label>
+        <span class="hint">Puwedeng mag-upload ng ilang beses sa isang PRF (iba-ibang supplier/PO) — bawat form ay sa piling linya lang ilalapat.</span>
+        ${cmpFilesHtml(prf)}
+      </div>
       <div class="mini-table-wrap"><table class="mini-table"><tr><th>Materyales</th><th>Bibilhin</th><th>Supplier</th><th>Unit Price (₱)</th><th>Amount</th><th>PO No.</th><th>PO Date</th></tr>${rows}</table></div>
       <div style="text-align:right;font-weight:800;margin-top:6px;">Total Amount: <span id="prfTotal_${id}">${fmtPHP(total)}</span></div>
       <div class="hint">Kapag may presyo at PO No. na ang bawat linya, lilipat ang PRF sa "Hinihintay: Delivery".</div>`;
