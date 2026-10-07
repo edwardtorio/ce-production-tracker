@@ -1640,6 +1640,32 @@ function attachedDrawingsSummaryHtml(item){
   const isOpen = ATTACHED_DRAWINGS_OPEN_KEYS.has(openKey);
   return `<details style="margin-top:4px;" ${isOpen?'open':''} ontoggle="this.open ? ATTACHED_DRAWINGS_OPEN_KEYS.add('${openKey}') : ATTACHED_DRAWINGS_OPEN_KEYS.delete('${openKey}')"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Lahat ng Naka-attach na Drawing (${totalCount})</summary><div class="hint" style="margin-top:4px;">${groupBoxes}</div></details>`;
 }
+// For Edward's "For Review" cards: EVERY drawing attached to the item
+// (Fabrication Drawing, Laser Cutting Program, Bending Flat Pattern,
+// Burring-Tapping-Countersunk, Bystronic, Manual Cutting, Turret Punch...),
+// always expanded — no collapsing and no type left out — so the checker can
+// open each one right there and inspect the work against it. Types that are
+// relevant to this item's route but have nothing attached show as missing.
+function reviewDrawingsHtml(item, onlyAttached){
+  const boxes = Object.keys(DRAWING_PROCESS_MAP)
+    .filter(pid=>isDrawingTypeRelevantToItem(item, pid))
+    .map(pid=>{
+      const meta = DRAWING_PROCESS_MAP[pid];
+      const ds = dedupeDrawingsForDisplay(drawingsForItemProcess(item, pid));
+      if(!ds.length){
+        if(onlyAttached) return '';
+        return `<div style="border:2px dashed var(--line);border-radius:8px;padding:6px 8px;color:var(--gray);"><div style="font-weight:700;font-size:11px;">${escapeHtml(meta.label)}</div><div style="font-size:12px;">❌ Wala pang naka-attach</div></div>`;
+      }
+      const rows = ds.map(({d, childParts})=>{
+        const suffix = childParts.length ? ` <span style="color:var(--gray);">(${childParts.map(x=>escapeHtml(x)).join(', ')})</span>` : '';
+        return `<div style="margin-top:4px;font-size:12.5px;">📐 ${drawingLinksForEntry(d, meta.label)}${suffix}</div>`;
+      }).join('');
+      return `<div style="border:2px solid var(--steel-600);border-radius:8px;padding:6px 8px;background:var(--steel-50);"><div style="font-weight:700;font-size:11px;color:var(--steel-700);">${escapeHtml(meta.label)} (${ds.length})</div>${rows}</div>`;
+    }).filter(Boolean);
+  if(!boxes.length) return '';
+  if(onlyAttached) return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;margin-top:4px;">${boxes.join('')}</div>`;
+  return `<div style="margin-top:10px;"><div style="font-weight:700;font-size:12px;margin-bottom:6px;">📎 Mga Naka-attach na Drawing (para i-check)</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;">${boxes.join('')}</div></div>`;
+}
 // Inline widget shown on a task card for a CONSUMING step (welding, laser
 // cutting, bending, ...): lists whatever's attached, or flags it missing so
 // the operator (and management, via the Overview list) can see right away
@@ -5995,7 +6021,7 @@ function renderJinReview(){
     // and (same as those other cards) shows every drawing type, not just the
     // one for the process currently under review.
     const partsListHtml = partsListTableHtml(item, processId);
-    const allDrawingsHtml = DRAWING_PROCESS_MAP[processId] ? '' : attachedDrawingsSummaryHtml(item);
+    const allDrawingsHtml = reviewDrawingsHtml(item);
     return `<div class="panel" style="margin-bottom:12px;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
         <div>
@@ -6009,8 +6035,8 @@ function renderJinReview(){
           <button class="btn secondary btn-sm" style="color:var(--red);" onclick="openRejectJinReviewModal('${item.id}','${processId}')">✕ Hindi pa tapos</button>
         </div>
       </div>
-      ${partsListHtml}
       ${allDrawingsHtml}
+      ${partsListHtml}
       <details style="margin-top:10px;">
         <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--gray);">Sariling Activity Log ni ${escapeHtml(submittedBy)} — ${formatDateLong(logDate)}</summary>
         <div style="margin-top:6px;">${activityHtml}</div>
@@ -9569,7 +9595,10 @@ function renderSoDetailPanel(so){
           <div style="font-size:14px;">Delivered Amount: <b style="color:var(--green);">${fmtPHP(deliveredValue)}</b></div>
         </div>
       </div>
-      ${refFiles?`<div class="hint" style="margin-top:8px;"><b>Reference Files:</b> ${linkifyText(refFiles, 'Buksan ang Original SO')}</div>`:''}
+      ${(first.soPdfUrl||refFiles)?`<div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        ${first.soPdfUrl?`<a class="btn secondary btn-sm" href="${escapeHtml(first.soPdfUrl)}" target="_blank" rel="noopener" style="text-decoration:none;" title="${escapeHtml(first.soPdfName||'')}">📄 Buksan ang Original SO</a>`:''}
+        ${refFiles?`<span class="hint">${first.soPdfUrl?'Iba pang reference: ':'<b>Original SO:</b> '}${linkifyText(refFiles, 'Buksan ang Original SO')}</span>`:''}
+      </div>`:''}
       <div style="margin-top:10px;"><div class="mini-bar" style="width:160px;"><div class="f" style="width:${pct}%"></div></div>
       <span style="font-size:12px;color:var(--gray);"> ${pct}% complete · ${so.items.length} line items · ${qty.toLocaleString()} pcs · ${fmtPHP(value)}</span></div>
       <div class="mini-table-wrap" style="margin-top:12px;"><table class="mini-table">
@@ -9580,17 +9609,15 @@ function renderSoDetailPanel(so){
           return `<tr><td class="so-num">${escapeHtml(it.itemCode)}</td><td>${escapeHtml(it.description)}</td><td>${it.qty} ${it.unit}</td><td>${fmtPHP(itemAmount(it))}</td><td>${routeMiniHtml(it)}</td><td style="white-space:nowrap;">${delivered}</td><td style="white-space:nowrap;${delay.style}">${delay.text}</td></tr>`;
         }).join('')}
       </table></div>
-      ${(first.soPdfUrl||so.items.some(it=>(it.drawings&&it.drawings.length)||it.drawingLink))?`
-      <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--line, #e6dad3);">
-        ${first.soPdfUrl?`<div class="hint"><b>📄 Naka-attach na SO:</b> <a href="${escapeHtml(first.soPdfUrl)}" target="_blank" rel="noopener">${escapeHtml(first.soPdfName||'Buksan ang SO PDF')}</a></div>`:''}
-        <div style="margin-top:${first.soPdfUrl?'8px':'0'};">
-          ${so.items.map(it=>{
-            const dh = drawingLinkHtml(it);
-            if(!dh) return '';
-            return `<div class="hint" style="margin-top:4px;"><b>${escapeHtml(it.itemCode)}</b></div>${dh}`;
-          }).join('')}
-        </div>
-      </div>`:''}
+      ${(()=>{
+        const blocks = so.items.map(it=>{
+          const typed = reviewDrawingsHtml(it, true);
+          const legacy = drawingLinkHtml(it);
+          if(!typed && !legacy) return '';
+          return `<div style="margin-top:10px;"><div class="hint"><b>${escapeHtml(it.itemCode)}</b> · ${escapeHtml((it.description||'').slice(0,60))}</div>${typed}${legacy||''}</div>`;
+        }).filter(Boolean).join('');
+        return blocks ? `<div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--line, #e6dad3);"><div style="font-weight:800;font-size:13px;">📐 Lahat ng Drawing ng SO na Ito</div><div class="hint">Fabrication Drawing, Laser Cutting Program, Bending Flat Pattern at iba pa — per item.</div>${blocks}</div>` : '';
+      })()}
     </div>`;
 }
 function renderBrowseSo(){
