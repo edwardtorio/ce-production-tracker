@@ -9282,7 +9282,35 @@ function cmpFilesHtml(prf){
   if(prf.canvassUrl && !arr.some(f=>f.url===prf.canvassUrl)) arr.unshift({url:prf.canvassUrl, name:prf.canvassName||'Comparative Data', poNo:''});
   return arr.map(f=>`<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener" style="font-size:12px;">📎 ${escapeHtml(f.poNo||f.name||'Comparative Data')}</a>`).join(' ');
 }
-function receiveBatch(prfId){
+// Supplier DR / SI scans (picture or PDF) picked on the Receiving tab, held until
+// "Gumawa ng IR" is pressed, then uploaded and saved on that IR's receipt lines.
+// A PRF can have several IRs (partial deliveries) — each IR keeps its own DR/SI.
+const PENDING_RCV = {};
+function rcvPick(prfId, kind, files){
+  const P = (PENDING_RCV[prfId] = PENDING_RCV[prfId] || {DR:[], SI:[]});
+  P[kind] = Array.from(files||[]);
+  const el = document.getElementById('rcvPicked_'+prfId);
+  if(el){
+    const parts = ['DR','SI'].filter(k=>P[k].length).map(k=>`${k}: ${P[k].map(f=>f.name).join(', ')}`);
+    el.textContent = parts.length ? '📎 Ia-attach: '+parts.join(' · ') : '';
+  }
+}
+function rcvFilesHtml(files){
+  return (files||[]).map(f=>{
+    const isImg = /\.(png|jpe?g|webp|gif)$/i.test(f.name||f.path||'');
+    return `<a href="${escapeHtml(f.url)}" target="_blank" rel="noopener" style="font-size:12px;margin-right:8px;">${isImg?'🖼️':'📎'} ${escapeHtml(f.kind||'')} ${escapeHtml(f.name||'')}</a>`;
+  }).join('');
+}
+async function uploadRcvList(prf, list, actor){
+  const out = [];
+  for(const x of list){
+    const up = await uploadDrawingFile(x.file, prf.soNumber, '', 'prf', 'IR-'+x.kind);
+    if(!up.ok) return {ok:false, message: up.message, name: x.file.name};
+    out.push({kind:x.kind, url:up.url, path:up.storagePath, name:up.fileName||x.file.name, by:actor, at:todayIso()});
+  }
+  return {ok:true, files:out};
+}
+async function receiveBatch(prfId){
   const actor = needActor(); if(!actor) return;
   const dr = (document.getElementById('rcvDr_'+prfId)||{}).value.trim();
   const si = (document.getElementById('rcvSi_'+prfId)||{}).value.trim();
@@ -9293,10 +9321,38 @@ function receiveBatch(prfId){
   if(!todo.length){ showToast('Maglagay ng qty na natanggap sa kahit isang linya.'); return; }
   const over = todo.filter(x=>lReceived(x.m)+x.q > lBuyQty(x.m)+1e-9);
   if(over.length && !confirm(`Lampas sa inorder ang ${over.length} linya (${over.map(x=>x.m.name).join(', ')}). Ituloy pa rin?`)) return;
+  const prf = DRAWINGS_POOL.find(d=>d.id===prfId);
+  const P = PENDING_RCV[prfId] || {DR:[], SI:[]};
+  const list = [...P.DR.map(f=>({kind:'DR', file:f})), ...P.SI.map(f=>({kind:'SI', file:f}))];
+  let files = [];
+  if(list.length){
+    if(!prf){ showToast('Hindi mahanap ang PRF.'); return; }
+    showToast('Ina-upload ang DR/SI…');
+    const r = await uploadRcvList(prf, list, actor);
+    if(!r.ok){ showToast('Hindi na-upload ang '+r.name+': '+(r.message||'error')+' — walang na-record. Subukan ulit.'); return; }
+    files = r.files;
+  }
   const doc = nextDocNo('IR','receipts');
-  todo.forEach(x=>mutLine(x.m.id, m=>{ (m.receipts = m.receipts||[]).push({doc, date:dt, qty:x.q, dr, si, by:actor}); }));
+  todo.forEach(x=>mutLine(x.m.id, m=>{ (m.receipts = m.receipts||[]).push({doc, date:dt, qty:x.q, dr, si, by:actor, files:files.map(f=>({...f}))}); }));
+  delete PENDING_RCV[prfId];
   renderMaterialsTab(); renderOverview();
-  showToast(`✅ ${doc} (Item Receipt) na-record — ${todo.length} linya.`);
+  showToast(`✅ ${doc} (Item Receipt) na-record — ${todo.length} linya${files.length?`, ${files.length} file ang na-attach`:''}.`);
+}
+// Add DR / SI scans to an IR that was already recorded (e.g. supplier gave the
+// papers later) — attached to every receipt line of that IR doc.
+async function addRcvFiles(prfId, doc, kind, files){
+  files = Array.from(files||[]); if(!files.length) return;
+  if(isReadOnly){ showToast('Read-only ang view na ito.'); return; }
+  const actor = needActor(); if(!actor) return;
+  const prf = DRAWINGS_POOL.find(d=>d.id===prfId); if(!prf) return;
+  showToast('Ina-upload…');
+  const r = await uploadRcvList(prf, files.map(f=>({kind, file:f})), actor);
+  if(!r.ok){ showToast('Hindi na-upload ang '+r.name+': '+(r.message||'error')); return; }
+  prfLines(prfId).forEach(m=>{
+    if((m.receipts||[]).some(e=>e.doc===doc)) mutLine(m.id, x=>{ (x.receipts||[]).forEach(e=>{ if(e.doc===doc) e.files = (e.files||[]).concat(r.files.map(f=>({...f}))); }); });
+  });
+  renderMaterialsTab();
+  showToast(`✅ Na-attach ang ${r.files.length} file sa ${doc}.`);
 }
 function issueBatch(prfId){
   const actor = needActor(); if(!actor) return;
@@ -9415,11 +9471,20 @@ function prfTabBodyHtml(prf, tab, lines){
       <td><input type="number" min="0" step="any" id="rcvQ_${m.id}" placeholder="${pend>0?fmtN(pend):0}" ${inpS}></td></tr>`; }).join('');
     const hist = {};
     buy.forEach(m=>(m.receipts||[]).forEach(e=>{ (hist[e.doc]=hist[e.doc]||{e, n:0}).n++; }));
-    const histHtml = Object.values(hist).map(h=>`<div style="font-size:12px;">📥 <b>${escapeHtml(h.e.doc)}</b> · ${escapeHtml(h.e.date)} · DR ${escapeHtml(h.e.dr||'—')} · SI ${escapeHtml(h.e.si||'—')} · ${h.n} linya · ${escapeHtml(h.e.by||'')}</div>`).join('') || '<div class="hint">Wala pang natatanggap.</div>';
+    const histHtml = Object.values(hist).map(h=>`<div style="font-size:12px;padding:6px 0;border-top:1px solid var(--border,#ddd);">📥 <b>${escapeHtml(h.e.doc)}</b> · ${escapeHtml(h.e.date)} · DR ${escapeHtml(h.e.dr||'—')} · SI ${escapeHtml(h.e.si||'—')} · ${h.n} linya · ${escapeHtml(h.e.by||'')}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:3px;">${rcvFilesHtml(h.e.files)||'<span class="hint">Walang naka-attach na DR/SI file.</span>'}
+          <label class="btn secondary btn-sm" style="cursor:pointer;margin:0;">+ DR file<input type="file" accept="image/*,.pdf,application/pdf" multiple style="display:none;" onchange="addRcvFiles('${id}','${escapeHtml(h.e.doc)}','DR', this.files); this.value='';"></label>
+          <label class="btn secondary btn-sm" style="cursor:pointer;margin:0;">+ SI file<input type="file" accept="image/*,.pdf,application/pdf" multiple style="display:none;" onchange="addRcvFiles('${id}','${escapeHtml(h.e.doc)}','SI', this.files); this.value='';"></label></div></div>`).join('') || '<div class="hint">Wala pang natatanggap.</div>';
     return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px;">
         <div class="field"><label>DR No. (Supplier)</label><input type="text" id="rcvDr_${id}" style="width:120px"></div>
         <div class="field"><label>SI No. (Supplier)</label><input type="text" id="rcvSi_${id}" style="width:120px"></div>
         <div class="field"><label>Petsa ng tanggap</label><input type="date" id="rcvDt_${id}" value="${todayIso()}"></div></div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:8px;padding:8px;border:1px dashed var(--border,#bbb);border-radius:8px;">
+        <label class="btn btn-sm" style="cursor:pointer;margin:0;">📎 Piliin ang DR (litrato/PDF)<input type="file" accept="image/*,.pdf,application/pdf" multiple style="display:none;" onchange="rcvPick('${id}','DR', this.files)"></label>
+        <label class="btn btn-sm" style="cursor:pointer;margin:0;">📎 Piliin ang SI (litrato/PDF)<input type="file" accept="image/*,.pdf,application/pdf" multiple style="display:none;" onchange="rcvPick('${id}','SI', this.files)"></label>
+        <span id="rcvPicked_${id}" class="hint"></span>
+        <span class="hint">Ia-attach sa IR na gagawin mo sa ibaba. Bawat delivery (partial o kumpleto) ay sariling IR na may sariling DR/SI.</span>
+      </div>
       <div class="mini-table-wrap"><table class="mini-table"><tr><th>Materyales</th><th>Inorder</th><th>Natanggap na</th><th>Kulang pa</th><th>Tatanggapin ngayon</th></tr>${rows}</table></div>
       <button class="btn" style="margin-top:8px;" onclick="receiveBatch('${id}')">📥 Gumawa ng IR (Item Receipt)</button>
       <div style="margin-top:8px;">${histHtml}</div>`;
