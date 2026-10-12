@@ -4006,11 +4006,25 @@ async function loadInitialState(){
   let itemsRows = [], metaRows = [], materialsRows = [], drawingsRows = [], firstRun = false;
   if(typeof sbClient!=='undefined' && sbClient){
     try{
+      // Supabase returns at most 1000 rows per request, so a plain select()
+      // silently drops everything past the 1000th row once a table grows past
+      // that (drawings_pool did — newer drawings stopped showing up). Read
+      // every table in pages of 1000, in a stable order, until a short page.
+      const fetchAllRows = async (table, cols, orderCol)=>{
+        let all = [];
+        for(let from=0; ; from+=1000){
+          const {data, error} = await sbClient.from(table).select(cols).order(orderCol, {ascending:true}).range(from, from+999);
+          if(error) return {data:null, error};
+          all = all.concat(data||[]);
+          if(!data || data.length<1000) break;
+        }
+        return {data:all, error:null};
+      };
       const [itemsRes, metaRes, materialsRes, drawingsRes] = await Promise.all([
-        sbClient.from('items').select('data'),
-        sbClient.from('meta').select('key,data'),
-        sbClient.from('materials_requests').select('data'),
-        sbClient.from('drawings_pool').select('data'),
+        fetchAllRows('items','data','id'),
+        fetchAllRows('meta','key,data','key'),
+        fetchAllRows('materials_requests','data','id'),
+        fetchAllRows('drawings_pool','data','id'),
       ]);
       if(itemsRes.error) throw itemsRes.error;
       if(metaRes.error) throw metaRes.error;
