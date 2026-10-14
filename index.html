@@ -946,6 +946,7 @@
       <h3>Breakdown per Sales Order</h3>
       <div class="mini-table-wrap"><table class="mini-table" id="marginSoTable"></table></div>
     </div>
+    <div class="panel" id="sheetSyncPanel"></div>
     <div class="panel">
       <h3>Materials / Consumables — Hindi Pa Na-a-assign kada Item o SO</h3>
       <div class="hint" style="margin-bottom:10px;">Kung may gastos na hindi mo pa na-type kada item o kada SO, i-tally na lang dito kada linggo/buwan — awtomatiko itong ia-allocate sa mga natapos na items sa panahong iyon base sa halaga nila.</div>
@@ -1181,6 +1182,9 @@ const DEFAULT_OWNERS = {
 // timed) Manpower and Electricity costing. {} until set on the Cost Rates
 // tab — an unset process costs ₱0/hr until someone fills it in.
 const DEFAULT_COST_RATES = {};
+// Galing sa Google Sheets (Apps Script): rate/oras ng bawat tao (attendance) at nabili kada SO (PrP). Tingnan ang Contribution Margin tab.
+let SHEET_SYNC = {fetchedAt:null, rates:{}, so:{}, warnings:[]};
+let SHEET_MISSING = new Set();
 const STATUS_CYCLE = ['queue','ongoing','done'];
 // Every completed step (whole OR partial qty) from Fabrication Drawing all
 // the way through Finish Good must go through Jennifer "Jin" Domingo for
@@ -3567,6 +3571,7 @@ async function persistState(){
       {key:'costRates', data: PROCESS_COST_RATES},
       {key:'periodCosts', data: PERIOD_COST_ENTRIES},
       {key:'activityLog', data: ACTIVITY_LOG},
+      {key:'sheetSync', data: SHEET_SYNC},
     ];
     const {error: metaError} = await sbClient.from('meta').upsert(metaRows, {onConflict:'key'});
     if(metaError) throw metaError;
@@ -3667,6 +3672,7 @@ async function persistMeta(){
       {key:'costRates', data: PROCESS_COST_RATES},
       {key:'periodCosts', data: PERIOD_COST_ENTRIES},
       {key:'activityLog', data: ACTIVITY_LOG},
+      {key:'sheetSync', data: SHEET_SYNC},
     ];
     const {error} = await sbClient.from('meta').upsert(metaRows, {onConflict:'key'});
     if(error) throw error;
@@ -4063,6 +4069,7 @@ async function loadInitialState(){
     TEAM_PHOTOS = metaByKey.photos && typeof metaByKey.photos==='object' ? metaByKey.photos : JSON.parse(JSON.stringify(DEFAULT_PHOTOS));
     PROCESS_COST_RATES = metaByKey.costRates && typeof metaByKey.costRates==='object' ? metaByKey.costRates : JSON.parse(JSON.stringify(DEFAULT_COST_RATES));
     PERIOD_COST_ENTRIES = Array.isArray(metaByKey.periodCosts) ? metaByKey.periodCosts : [];
+    SHEET_SYNC = (metaByKey.sheetSync && typeof metaByKey.sheetSync==='object') ? metaByKey.sheetSync : {fetchedAt:null, rates:{}, so:{}, warnings:[]};
     ACTIVITY_LOG = Array.isArray(metaByKey.activityLog) ? metaByKey.activityLog : [];
   }
 
@@ -8493,12 +8500,34 @@ function renderScorecardProfile(name){
 
 
 /* ---------- Costing: manpower / electricity / materials / consumables / margin ---------- */
+// Rate/oras ng taong naka-assign (galing sa attendance sheet: sahod + 13th month + SSS/PHIC/HDMF).
+// Kung walang tugmang pangalan sa sheet, balik sa Cost Rates ng process.
+const _sheetRateCache = {};
+function sheetRateFor(name){
+  const rates = SHEET_SYNC && SHEET_SYNC.rates;
+  if(!name || !rates || Object.keys(rates).length===0) return null;
+  const key = name+'|'+(SHEET_SYNC.fetchedAt||'');
+  if(key in _sheetRateCache) return _sheetRateCache[key];
+  const toks = s=>String(s).toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  const want = toks(name);
+  const hits = Object.keys(rates).filter(k=>{ const t = toks(k); return want.length>0 && want.every(w=>t.includes(w)); });
+  let r = null;
+  if(hits.length===1) r = Number(rates[hits[0]]) || null;
+  _sheetRateCache[key] = r;
+  return r;
+}
 function itemManpowerCost(item){
   let total = 0;
   item.route.forEach(pid=>{
-    const secs = activeSecondsSoFar(item, pid);
-    const rate = (PROCESS_COST_RATES[pid] && PROCESS_COST_RATES[pid].manpowerPerHour) || 0;
-    total += (secs/3600) * rate;
+    const hrs = activeSecondsSoFar(item, pid)/3600;
+    if(hrs<=0) return;
+    let rate = sheetRateFor(currentAssignee(item, pid));
+    if(rate===null){
+      rate = (PROCESS_COST_RATES[pid] && PROCESS_COST_RATES[pid].manpowerPerHour) || 0;
+      const who = currentAssignee(item, pid);
+      if(who && SHEET_SYNC && SHEET_SYNC.rates && Object.keys(SHEET_SYNC.rates).length) SHEET_MISSING.add(who);
+    }
+    total += hrs * rate;
   });
   return total;
 }
@@ -8559,8 +8588,31 @@ function computeEffectiveCosts(){
     });
     return stillPending;
   }
-  const pendingMat2 = distributeBySO(pendingMat, 'soMaterialsCostTotal', 'materials');
-  const pendingCon2 = distributeBySO(pendingCon, 'soConsumablesCostTotal', 'consumables');
+  // PrP (Google Sheet): aktuwal na nabili kada SO — mas inuuna kaysa sa manual na SO total.
+  function distributeFromSheet(pendingList, pick, resultKey){
+    const left = [], groups = {};
+    pendingList.forEach(it=>{
+      const rec = SHEET_SYNC && SHEET_SYNC.so && SHEET_SYNC.so[String(it.soNumber||'').toUpperCase()];
+      if(!rec){ left.push(it); return; }
+      const k = String(it.soNumber).toUpperCase();
+      (groups[k] = groups[k] || {rec, items:[]}).items.push(it);
+    });
+    Object.values(groups).forEach(g=>{
+      const total = pick(g.rec);
+      const totalValue = g.items.reduce((a,it)=>a+itemAmount(it),0);
+      g.items.forEach(it=>{
+        result[it.id][resultKey] = totalValue>0 ? (itemAmount(it)/totalValue)*total : total/g.items.length;
+        result[it.id].src = 'prp';
+      });
+    });
+    return left;
+  }
+  const matPick = r=>(Number(r.raw)||0)+(Number(r.accessories)||0)+(Number(r.paints)||0);
+  const conPick = r=>Number(r.consumables)||0;
+  const pendingMat1 = distributeFromSheet(pendingMat, matPick, 'materials');
+  const pendingCon1 = distributeFromSheet(pendingCon, conPick, 'consumables');
+  const pendingMat2 = distributeBySO(pendingMat1, 'soMaterialsCostTotal', 'materials');
+  const pendingCon2 = distributeBySO(pendingCon1, 'soConsumablesCostTotal', 'consumables');
 
   function distributeByPeriod(pendingList, entryField, resultKey){
     let remaining = pendingList.slice();
@@ -9792,6 +9844,7 @@ function renderMarginTab(){
     `<div class="tab" style="color:${g===marginGranularity?'#fff':'#c9b9be'};border-bottom-color:${g===marginGranularity?'#fff':'transparent'};padding:6px 12px;font-size:12.5px;" onclick="setMarginGranularity('${g}')">${GRANULARITY_LABELS[g]}</div>`
   ).join('');
 
+  SHEET_MISSING = new Set();
   const { byPeriod, delivered, effCosts } = computeMarginByPeriod(marginGranularity);
   const curKey = currentPeriodKeyFor(marginGranularity);
   const cur = byPeriod[curKey] || {revenue:0,materials:0,consumables:0,manpower:0,electricity:0,margin:0,count:0};
@@ -9840,27 +9893,81 @@ function renderMarginTab(){
     soMap[key].electricity += m.electricity;
     soMap[key].margin += m.margin;
     soMap[key].count += 1;
+    if((effCosts[it.id]||{}).src==='prp') soMap[key].prp = true;
   });
   const soList = Object.values(soMap).sort((a,b)=>b.margin-a.margin);
   const soTable = document.getElementById('marginSoTable');
   if(soList.length===0){
     soTable.innerHTML = `<tr><td class="hint" style="padding:14px;">Wala pang na-deliver na item.</td></tr>`;
   }else{
-    soTable.innerHTML = `<tr><th>SO</th><th>Client</th><th>Items</th><th>Revenue</th><th>Materials</th><th>Consumables</th><th>Manpower</th><th>Kuryente</th><th>Contribution Margin</th></tr>` +
+    soTable.innerHTML = `<tr><th>SO</th><th>Client</th><th>Items</th><th>Revenue</th><th>Materials</th><th>Consumables</th><th>Manpower</th><th>Kuryente</th><th>Contribution Margin</th><th>CM %</th></tr>` +
       soList.map(so=>`<tr>
         <td>${escapeHtml(so.soNumber)}</td>
         <td>${escapeHtml(so.client)}</td>
         <td>${so.count}</td>
         <td>${fmtPHP(so.revenue)}</td>
-        <td>${fmtPHP(so.materials)}</td>
-        <td>${fmtPHP(so.consumables)}</td>
+        <td>${fmtPHP(so.materials)}${so.prp?' <span title="Galing sa PrP sheet">📄</span>':''}</td>
+        <td>${fmtPHP(so.consumables)}${so.prp?' <span title="Galing sa PrP sheet">📄</span>':''}</td>
         <td>${fmtPHP(so.manpower)}</td>
         <td>${fmtPHP(so.electricity)}</td>
         <td style="font-weight:700;color:${so.margin>=0?'var(--green)':'var(--red)'};">${fmtPHP(so.margin)}</td>
+        <td>${so.revenue>0?Math.round(so.margin/so.revenue*100)+'%':'—'}</td>
       </tr>`).join('');
   }
 
   renderPeriodCostTable();
+  renderSheetSyncPanel();
+}
+
+
+/* ---------- Google Sheets sync (attendance rates + PrP purchases) ---------- */
+function sheetCfg(){ try{ return JSON.parse(localStorage.getItem('cempc_sheet_cfg')||'{}')||{}; }catch(e){ return {}; } }
+function saveSheetCfg(){
+  const url = (document.getElementById('sheetUrl')||{}).value||'', key = (document.getElementById('sheetKey')||{}).value||'';
+  try{ localStorage.setItem('cempc_sheet_cfg', JSON.stringify({url:url.trim(), key:key.trim()})); }catch(e){}
+}
+async function syncSheets(refresh){
+  saveSheetCfg();
+  const cfg = sheetCfg();
+  if(!cfg.url || !cfg.key){ showToast('Ilagay muna ang Web App URL at Key.'); return; }
+  const st = document.getElementById('sheetSyncStatus'); if(st) st.textContent = '⏳ Binabasa ang Google Sheets… (maaaring abutin ng ilang minuto sa unang beses)';
+  try{
+    const res = await fetch(cfg.url+(cfg.url.includes('?')?'&':'?')+'key='+encodeURIComponent(cfg.key)+(refresh?'&refresh=1':''));
+    const j = await res.json();
+    if(!j.ok) throw new Error(j.error||'Hindi gumana');
+    const rates = {};
+    Object.keys(j.rates||{}).forEach(k=>{ rates[k] = Math.round((j.rates[k].loadedHourly||0)*100)/100; });
+    SHEET_SYNC = {fetchedAt: j.generatedAt || new Date().toISOString(), ratesMonth: j.ratesMonth||'', rates, so: j.so||{}, warnings: j.warnings||[]};
+    Object.keys(_sheetRateCache).forEach(k=>delete _sheetRateCache[k]);
+    await persistMeta();
+    renderMarginTab();
+    showToast('Na-sync: '+Object.keys(rates).length+' tao, '+Object.keys(SHEET_SYNC.so).length+' SO.');
+  }catch(e){
+    if(st) st.textContent = '⚠️ Hindi nag-sync: '+(e.message||e);
+    showToast('Hindi nag-sync: '+(e.message||e));
+  }
+}
+function renderSheetSyncPanel(){
+  const el = document.getElementById('sheetSyncPanel'); if(!el) return;
+  const cfg = sheetCfg();
+  const nRates = Object.keys(SHEET_SYNC.rates||{}).length, nSo = Object.keys(SHEET_SYNC.so||{}).length;
+  const when = SHEET_SYNC.fetchedAt ? new Date(SHEET_SYNC.fetchedAt).toLocaleString() : 'hindi pa na-sync';
+  const missing = [...SHEET_MISSING];
+  const tracked = new Set(ITEMS.filter(i=>!i.archived).map(i=>String(i.soNumber||'').toUpperCase()));
+  const noPrp = [...tracked].filter(so=>so && !(SHEET_SYNC.so||{})[so]).length;
+  const warn = (SHEET_SYNC.warnings||[]).slice(0,8).map(w=>'<div class="hint">• '+escapeHtml(w)+'</div>').join('');
+  el.innerHTML = `
+    <h3>📄 Google Sheets — Attendance Rate at PrP (Materials)</h3>
+    <div class="hint" style="margin-bottom:10px;">Manpower = oras ng taong naka-assign × rate niya (attendance sheet). Materials/Consumables = nabili sa PrP ng SO. Binabasa lang — walang sinusulatan sa sheets.</div>
+    <div class="form-grid">
+      <div class="field"><label>Web App URL (Apps Script)</label><input type="text" id="sheetUrl" value="${escapeHtml(cfg.url||'')}" placeholder="https://script.google.com/macros/s/…/exec"></div>
+      <div class="field"><label>Key</label><input type="password" id="sheetKey" value="${escapeHtml(cfg.key||'')}" placeholder="ang SECRET sa script"></div>
+    </div>
+    <button class="btn" onclick="syncSheets(false)">🔄 Sync ngayon</button>
+    <button class="btn secondary" onclick="syncSheets(true)" title="Basahin ulit ang lahat ng PrP kahit naka-cache">Force refresh</button>
+    <div id="sheetSyncStatus" class="hint" style="margin-top:8px;">Huling sync: ${escapeHtml(when)} · ${nRates} tao may rate${SHEET_SYNC.ratesMonth?' ('+escapeHtml(SHEET_SYNC.ratesMonth)+')':''} · ${nSo} SO may PrP${nSo? ' · '+noPrp+' SO sa tracker na walang PrP':''}</div>
+    ${missing.length?`<div class="hint" style="margin-top:6px;color:var(--amber);">Walang rate sa attendance (gumamit ng Cost Rates ng process): ${missing.map(escapeHtml).join(', ')}</div>`:''}
+    ${warn}`;
 }
 
 /* ---------- Period-level Materials/Consumables cost entries ---------- */
@@ -11848,6 +11955,7 @@ function handleRemoteMetaChange(payload){
   else if(row.key==='photos') TEAM_PHOTOS = row.data;
   else if(row.key==='costRates') PROCESS_COST_RATES = row.data;
   else if(row.key==='periodCosts') PERIOD_COST_ENTRIES = row.data;
+  else if(row.key==='sheetSync' && row.data && typeof row.data==='object') SHEET_SYNC = row.data;
   else if(row.key==='activityLog') ACTIVITY_LOG = Array.isArray(row.data) ? row.data : [];
   rerenderCurrentView();
   renderMyTasks(); // keeps an open "Mga Tasks ni X" popup's Activity Log section in sync across viewers
