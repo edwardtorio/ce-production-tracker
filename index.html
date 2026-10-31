@@ -1771,6 +1771,93 @@ function drawingStepMissingCount(item, processId){
 function itemHasNamedParts(item){
   return (item.partsList||[]).some(s=> s.name || (s.childParts||[]).some(c=>c.name));
 }
+/* ---------- EDWARD-ONLY OVERRIDE: ilipat ang Engineering step kahit walang drawing ----------
+   Si Edward Torio lang ang may karapatan. Walang user login ang tracker, kaya ang
+   proteksyon ay passcode na nakatago bilang SHA-256 hash dito — kailangang i-unlock
+   sa bawat device (🔐 sa kanang-ibaba). Ang ibang user ay hindi makikita ang button
+   na "Ilipat pa rin" at hindi gagana ang edwardForceMove() kung naka-lock. */
+const EDWARD_NAME = 'Edward Torio';
+const EDWARD_PASS_SHA256 = '2b64cf68f42187544bcedae2f16237bb37eb324a24997ad8906c003e19fd68d0';
+function edwardUnlocked(){ try{ return localStorage.getItem('cempc_edward_ok')===EDWARD_PASS_SHA256; }catch(e){ return false; } }
+async function edwardSha256(str){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function updateEdwardBtn(){
+  const b = document.getElementById('edwardLockBtn');
+  if(!b) return;
+  const on = edwardUnlocked();
+  b.textContent = on ? '🔓 Edward' : '🔐';
+  b.title = on ? 'Edward mode — naka-unlock (pindutin para i-lock)' : 'Edward lang — i-unlock';
+  b.style.background = on ? '#15803d' : 'rgba(0,0,0,.35)';
+}
+function toggleEdwardLock(){
+  if(edwardUnlocked()){
+    try{ localStorage.removeItem('cempc_edward_ok'); }catch(e){}
+    updateEdwardBtn(); showToast('Na-lock na ang Edward mode.');
+    return;
+  }
+  const box = document.getElementById('modalBox');
+  box.innerHTML = `<h4>🔐 Edward lang</h4>
+    <p class="hint">Ilagay ang passcode para magamit ang "Ilipat kahit walang drawing" sa Engineering.</p>
+    <div class="field"><input type="password" id="edwardPass" placeholder="Passcode" autocomplete="off" onkeydown="if(event.key==='Enter')submitEdwardUnlock()"></div>
+    <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancel</button><button class="btn" onclick="submitEdwardUnlock()">I-unlock</button></div>`;
+  document.getElementById('modalOverlay').classList.add('show');
+  setTimeout(()=>{ const el=document.getElementById('edwardPass'); if(el) el.focus(); },50);
+}
+async function submitEdwardUnlock(){
+  const el = document.getElementById('edwardPass');
+  const v = el ? el.value : '';
+  let h = '';
+  try{ h = await edwardSha256(v); }catch(e){ showToast('Hindi gumana ang passcode check sa browser na ito (kailangan ng https).'); return; }
+  if(h===EDWARD_PASS_SHA256){
+    try{ localStorage.setItem('cempc_edward_ok', h); }catch(e){}
+    closeModal(); updateEdwardBtn(); showToast('🔓 Naka-unlock — Edward mode.');
+  }else{
+    showToast('Mali ang passcode.');
+  }
+}
+// Marks ONE Engineering (drawing-chain) step Done even though its drawing /
+// Parts List / Type of Material is still missing, bypassing the drawing gate
+// AND Edward's own review queue (he is the reviewer). The gap is recorded in
+// item.drawingOverride so the item is flagged "walang drawing pa" and whoever
+// owns the process the item is now sitting in attaches the drawing there.
+async function edwardForceMove(itemId, processId, opts){
+  if(!edwardUnlocked()){ showToast('Si Edward Torio lang ang may karapatan nito.'); return false; }
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item || !DRAWING_CHAIN.includes(processId) || !(item.route||[]).includes(processId)) return false;
+  if(item.routeStatus[processId]==='done') return true;
+  ensureTimingFields(item);
+  const missing = drawingStepMissingDetails(item, processId);
+  finalizeActiveSegment(item, processId);
+  if(item.routePaused) delete item.routePaused[processId];
+  if(item.routeStartTimestamp && !item.routeStartTimestamp[processId]) item.routeStartTimestamp[processId] = new Date().toISOString();
+  if(!item.drawingOverride) item.drawingOverride = {};
+  item.drawingOverride[processId] = { by: EDWARD_NAME, at: new Date().toISOString(), missing: missing.slice(0,30) };
+  const isLastStep = item.route.indexOf(processId) === item.route.length-1;
+  finalizeStepDone(item, processId, isLastStep);
+  if(item.jinRejection) delete item.jinRejection[processId];
+  if(!opts || !opts.silent){
+    renderBoard(); renderOverview(); renderMyTasks();
+    if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  }
+  await saveItem(item);
+  if(!opts || !opts.silent){
+    const nextId = currentStepId(item);
+    showToast(`⏭ ${item.itemCode} · ${processLabel(processId)} inilipat ni Edward (walang drawing pa)${nextId?` → ${processLabel(nextId)}`:''}`);
+  }
+  return true;
+}
+async function edwardForceMoveAllEngineering(itemId){
+  const item = ITEMS.find(i=>i.id===itemId);
+  if(!item) return;
+  const pend = (item.route||[]).filter(pid=>DRAWING_CHAIN.includes(pid) && item.routeStatus[pid]!=='done');
+  for(const pid of pend){ await edwardForceMove(itemId, pid, {silent:true}); }
+  renderBoard(); renderOverview(); renderMyTasks();
+  if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
+  closeModal();
+  showToast(`⏭ ${item.itemCode} — lahat ng Engineering ay inilipat ni Edward (walang drawing pa). I-attach ang drawing sa proseso kung nasaan ang item.`);
+}
 // The actual blocking alert shown when cycleStep() refuses to mark a
 // drawing-producing step done — a real modal (not a toast) so it stays on
 // screen and actually GUIDES the person: names every specific Sub
@@ -1794,7 +1881,8 @@ function openDrawingMissingAlert(item, processId, missing){
       <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>${escapeHtml(meta.label)}</b> ng <b>${escapeHtml(item.itemCode)}</b> — wala pang naka-attach na drawing dito.</p>
       <p class="hint">Gamitin ang "📎 I-attach ang ${escapeHtml(meta.label)}" na form sa task card na ito, o pindutin ang "🚫 Hindi Required" doon kung hindi naman kailangan.</p>`;
   }
-  box.innerHTML = `<h4>⚠️ Kulang pa bago matapos</h4>${bodyHtml}<div class="modal-actions"><button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
+  const edBtn = edwardUnlocked() ? `<button class="btn secondary" onclick="closeModal();edwardForceMove('${item.id}','${processId}')">⏭ Ilipat pa rin (Edward) — drawing habol na lang</button>` : '';
+  box.innerHTML = `<h4>⚠️ Kulang pa bago matapos</h4>${bodyHtml}<div class="modal-actions">${edBtn}<button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
   document.getElementById('modalOverlay').classList.add('show');
 }
 // Material Withdrawal is the control point between planning and the shop
@@ -1816,7 +1904,7 @@ function withdrawalBlockers(item, checkAttachments){
   route.filter(pid=>DRAWING_CHAIN.includes(pid)).forEach(pid=>{
     if(item.routeStatus[pid]!=='done'){
       out.push({kind:'engineering', text:`${processLabel(pid)} (Engineering) — hindi pa tapos`});
-    }else if(checkAttachments){
+    }else if(checkAttachments && !(item.drawingOverride && item.drawingOverride[pid])){
       const miss = drawingStepMissingDetails(item, pid);
       if(miss.length) out.push({kind:'attach', text:`${processLabel(pid)} — walang naka-attach na drawing/program (o "Hindi Required" na marka)${pid==='drawing'?': '+miss.join(', '):''}`});
     }
@@ -1828,7 +1916,7 @@ function openWithdrawalBlockedAlert(item, blockers){
   box.innerHTML = `<h4>⛔ Hindi pa pwedeng mag-Withdraw ng Materyales</h4>
     <p><b>${escapeHtml(item.itemCode)}</b> — kailangan munang kumpleto ang galing sa Material Procurement at sa Engineering bago magsimula ang Material Withdrawal at ang buong production (Laser Cutting hanggang Delivery), para hindi maulit ang trabaho ng fabrication:</p>
     <ul style="margin:8px 0;padding-left:22px;font-weight:700;">${blockers.map(b=>`<li>${escapeHtml(b.text)}</li>`).join('')}</ul>
-    <div class="modal-actions"><button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
+    <div class="modal-actions">${(edwardUnlocked() && blockers.some(b=>b.kind==='engineering')) ? `<button class="btn secondary" onclick="edwardForceMoveAllEngineering('${item.id}')">⏭ Ilipat lahat ng Engineering (Edward) — drawing habol na lang</button>` : ''}<button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
   document.getElementById('modalOverlay').classList.add('show');
 }
 // Stable DOM-id suffix for one attach-form instance — item + process, plus
@@ -1912,8 +2000,10 @@ function drawingAttachFormHtml(item, processId, childPart){
       ? `<div class="hint" style="margin-top:4px;color:var(--gray);">🚫 Minarkahang "Hindi Required" — hindi na ito hahadlangan sa pagtapos. <button type="button" class="irc-edit" onclick="toggleDrawingNotRequired('${item.id}','${processId}','${jsAttr(notRequiredKey)}')">↩ Kailangan pala</button></div>`
       : `<div style="margin-top:4px;"><button type="button" class="irc-edit" onclick="toggleDrawingNotRequired('${item.id}','${processId}','${jsAttr(notRequiredKey)}')">🚫 Hindi Required (walang drawing dito)</button></div>`
   ) : '';
+  const ovInfo = item.drawingOverride && item.drawingOverride[processId];
+  const ovHtml = ovInfo ? `<div class="hint" style="color:#b45309;font-weight:700;margin-bottom:4px;">⚠ Inilipat ni ${escapeHtml(ovInfo.by||'Edward Torio')} kahit walang drawing — i-attach dito ang drawing.</div>` : '';
   return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
-    <div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}</div>
+    ${ovHtml}<div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}</div>
     ${existingHtml}
     ${pendingFileHtml}
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;align-items:center;">
@@ -12056,5 +12146,7 @@ async function init(){
 init();
 
 </script>
+<button id="edwardLockBtn" onclick="toggleEdwardLock()" style="position:fixed;right:10px;bottom:10px;z-index:900;border:none;color:#fff;border-radius:18px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;opacity:.85;">🔐</button>
+<script>try{ updateEdwardBtn(); }catch(e){}</script>
 </body>
 </html>
