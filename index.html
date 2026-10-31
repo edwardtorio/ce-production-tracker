@@ -1830,10 +1830,13 @@ async function edwardForceMove(itemId, processId, opts){
   if(!item || !DRAWING_CHAIN.includes(processId) || !(item.route||[]).includes(processId)) return false;
   if(item.routeStatus[processId]==='done') return true;
   const missing = drawingStepMissingDetails(item, processId);
+  item.engineeringPassed = true; // buong Engineering chain ng item — hindi lang ang isang step
   if(!item.engineeringDeferred) item.engineeringDeferred = {};
   item.engineeringDeferred[processId] = true;
   if(!item.drawingOverride) item.drawingOverride = {};
-  item.drawingOverride[processId] = { by: EDWARD_NAME, at: new Date().toISOString(), missing: missing.slice(0,30) };
+  (item.route||[]).filter(p2=>DRAWING_CHAIN.includes(p2) && item.routeStatus[p2]!=='done').forEach(p2=>{
+    if(!item.drawingOverride[p2]) item.drawingOverride[p2] = { by: EDWARD_NAME, at: new Date().toISOString(), missing: (p2===processId?missing:drawingStepMissingDetails(item,p2)).slice(0,30) };
+  });
   if(!opts || !opts.silent){
     renderBoard(); renderOverview(); renderMyTasks();
     if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
@@ -1857,7 +1860,7 @@ async function edwardForceMoveAllEngineering(itemId){
 }
 function edwardPassBtnHtml(t){
   if(!DRAWING_CHAIN.includes(t.processId)) return '';
-  const dfr = t.item.engineeringDeferred && t.item.engineeringDeferred[t.processId];
+  const dfr = isEngDeferred(t.item, t.processId);
   if(dfr) return `<span class="hint" style="color:#b45309;font-weight:700;">⚠ Nasa Production na — habol drawing</span>`;
   if(!edwardUnlocked()) return '';
   return `<button type="button" class="btn secondary btn-sm" onclick="edwardForceMove('${t.item.id}','${t.processId}')" title="Ipasa sa Production kahit walang drawing — mananatili sa Engineering ang task">⏭ Ipasa sa Production</button>`;
@@ -1906,7 +1909,7 @@ function withdrawalBlockers(item, checkAttachments){
     out.push({kind:'procurement', text:'Material Procurement — hindi pa tapos / wala pa ang materyales'});
   }
   route.filter(pid=>DRAWING_CHAIN.includes(pid)).forEach(pid=>{
-    if(item.engineeringDeferred && item.engineeringDeferred[pid]) return; // ipinasa ni Edward — Engineering ang maghahabol ng drawing
+    if(isEngDeferred(item, pid)) return; // ipinasa ni Edward — Engineering ang maghahabol ng drawing
     if(item.routeStatus[pid]!=='done'){
       out.push({kind:'engineering', text:`${processLabel(pid)} (Engineering) — hindi pa tapos`});
     }else if(checkAttachments && !(item.drawingOverride && item.drawingOverride[pid])){
@@ -2005,7 +2008,7 @@ function drawingAttachFormHtml(item, processId, childPart){
       ? `<div class="hint" style="margin-top:4px;color:var(--gray);">🚫 Minarkahang "Hindi Required" — hindi na ito hahadlangan sa pagtapos. <button type="button" class="irc-edit" onclick="toggleDrawingNotRequired('${item.id}','${processId}','${jsAttr(notRequiredKey)}')">↩ Kailangan pala</button></div>`
       : `<div style="margin-top:4px;"><button type="button" class="irc-edit" onclick="toggleDrawingNotRequired('${item.id}','${processId}','${jsAttr(notRequiredKey)}')">🚫 Hindi Required (walang drawing dito)</button></div>`
   ) : '';
-  const ovInfo = (item.engineeringDeferred && item.engineeringDeferred[processId]) ? (item.drawingOverride && item.drawingOverride[processId]) : null;
+  const ovInfo = isEngDeferred(item, processId) ? ((item.drawingOverride && item.drawingOverride[processId]) || {by:'Edward Torio'}) : null;
   const ovHtml = ovInfo ? `<div class="hint" style="color:#b45309;font-weight:700;margin-bottom:4px;">⚠ Ipinasa na ni ${escapeHtml(ovInfo.by||'Edward Torio')} sa Production kahit walang drawing — i-attach dito ang drawing at i-Tapos ito (hindi na babalik sa unang proseso ang production).</div>` : '';
   return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
     ${ovHtml}<div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}</div>
@@ -2138,10 +2141,17 @@ function blankRouteState(route){
   const routeStatus = {}; route.forEach(id=>routeStatus[id]='queue');
   return { route: route.slice(), routeStatus, routeCompletedAt:{}, routeTargetDates:{}, stepAssignee:{} };
 }
+// True kapag ipinasa na ni Edward ang item sa Production: LAHAT ng hindi pa
+// tapos na Engineering (drawing-chain) step nito ay hindi na humaharang —
+// bukas pa rin sa Engineering, pero tuloy ang production.
+function isEngDeferred(item, pid){
+  if(!DRAWING_CHAIN.includes(pid)) return false;
+  if(!item || item.routeStatus[pid]==='done') return false;
+  return !!(item.engineeringPassed || (item.engineeringDeferred && Object.keys(item.engineeringDeferred).length) || (item.drawingOverride && Object.keys(item.drawingOverride).length));
+}
 function currentStepId(item){
   if(!item.route || !item.route.length) return null;
-  const dfr = item.engineeringDeferred || {};
-  const found = item.route.find(pid => item.routeStatus[pid] !== 'done' && !dfr[pid]);
+  const found = item.route.find(pid => item.routeStatus[pid] !== 'done' && !isEngDeferred(item, pid));
   return found === undefined ? null : found;
 }
 // Material Procurement (buying the materials) and the whole Engineering
@@ -2187,13 +2197,12 @@ const DRAWING_CHAIN = ['drawing', 'laser_cutting_program', 'burring_tapping_coun
 // current-step behavior as everywhere else in the app.
 function activeStepIds(item){
   if(!item.route || !item.route.length) return [];
-  const dfr = item.engineeringDeferred || {};
   const notDoneAll = item.route.filter(pid => item.routeStatus[pid] !== 'done');
   if(!notDoneAll.length) return [];
   // Engineering steps Edward passed ahead to Production stay open for Engineering
   // (see edwardForceMove) but no longer hold the item back.
-  const notDone = notDoneAll.filter(pid => !dfr[pid]);
-  const deferred = notDoneAll.filter(pid => dfr[pid]);
+  const notDone = notDoneAll.filter(pid => !isEngDeferred(item, pid));
+  const deferred = notDoneAll.filter(pid => isEngDeferred(item, pid));
   const out = [];
   if(notDone.length){
     const first = notDone[0], second = notDone[1];
