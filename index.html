@@ -1777,7 +1777,7 @@ function itemHasNamedParts(item){
    sa bawat device (🔐 sa kanang-ibaba). Ang ibang user ay hindi makikita ang button
    na "Ilipat pa rin" at hindi gagana ang edwardForceMove() kung naka-lock. */
 const EDWARD_NAME = 'Edward Torio';
-const EDWARD_PASS_SHA256 = '2b64cf68f42187544bcedae2f16237bb37eb324a24997ad8906c003e19fd68d0';
+const EDWARD_PASS_SHA256 = '1941248b88112ba6ce4b9cdf39f69dbefb10e52aa9f5ec83d2014b7c04c675f0';
 function edwardUnlocked(){ try{ return localStorage.getItem('cempc_edward_ok')===EDWARD_PASS_SHA256; }catch(e){ return false; } }
 async function edwardSha256(str){
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -1794,7 +1794,7 @@ function updateEdwardBtn(){
 function toggleEdwardLock(){
   if(edwardUnlocked()){
     try{ localStorage.removeItem('cempc_edward_ok'); }catch(e){}
-    updateEdwardBtn(); showToast('Na-lock na ang Edward mode.');
+    updateEdwardBtn(); try{ renderMyTasks(); }catch(e){} showToast('Na-lock na ang Edward mode.');
     return;
   }
   const box = document.getElementById('modalBox');
@@ -1812,31 +1812,28 @@ async function submitEdwardUnlock(){
   try{ h = await edwardSha256(v); }catch(e){ showToast('Hindi gumana ang passcode check sa browser na ito (kailangan ng https).'); return; }
   if(h===EDWARD_PASS_SHA256){
     try{ localStorage.setItem('cempc_edward_ok', h); }catch(e){}
-    closeModal(); updateEdwardBtn(); showToast('🔓 Naka-unlock — Edward mode.');
+    closeModal(); updateEdwardBtn(); try{ renderMyTasks(); }catch(e){} showToast('🔓 Naka-unlock — Edward mode.');
   }else{
     showToast('Mali ang passcode.');
   }
 }
-// Marks ONE Engineering (drawing-chain) step Done even though its drawing /
-// Parts List / Type of Material is still missing, bypassing the drawing gate
-// AND Edward's own review queue (he is the reviewer). The gap is recorded in
-// item.drawingOverride so the item is flagged "walang drawing pa" and whoever
-// owns the process the item is now sitting in attaches the drawing there.
+// "Ipasa sa Production" — hindi inaalis sa Engineering. Ang item ay nagpapatuloy
+// sa Material Withdrawal/Production na parang tapos na ang drawing, PERO ang
+// Engineering step (drawing/program) ay nananatiling bukas sa task list ng
+// Engineering (item.engineeringDeferred[pid]) hanggang ma-attach nila ang mga
+// drawing at ma-Tapos nila ito. Pag natapos na ng Engineering, hindi na babalik
+// sa unang proseso ng production — tuloy lang ang production sa kung nasaan na
+// ito (iisang item lang, kaya walang double count sa SO/target/gastos).
 async function edwardForceMove(itemId, processId, opts){
   if(!edwardUnlocked()){ showToast('Si Edward Torio lang ang may karapatan nito.'); return false; }
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item || !DRAWING_CHAIN.includes(processId) || !(item.route||[]).includes(processId)) return false;
   if(item.routeStatus[processId]==='done') return true;
-  ensureTimingFields(item);
   const missing = drawingStepMissingDetails(item, processId);
-  finalizeActiveSegment(item, processId);
-  if(item.routePaused) delete item.routePaused[processId];
-  if(item.routeStartTimestamp && !item.routeStartTimestamp[processId]) item.routeStartTimestamp[processId] = new Date().toISOString();
+  if(!item.engineeringDeferred) item.engineeringDeferred = {};
+  item.engineeringDeferred[processId] = true;
   if(!item.drawingOverride) item.drawingOverride = {};
   item.drawingOverride[processId] = { by: EDWARD_NAME, at: new Date().toISOString(), missing: missing.slice(0,30) };
-  const isLastStep = item.route.indexOf(processId) === item.route.length-1;
-  finalizeStepDone(item, processId, isLastStep);
-  if(item.jinRejection) delete item.jinRejection[processId];
   if(!opts || !opts.silent){
     renderBoard(); renderOverview(); renderMyTasks();
     if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
@@ -1844,7 +1841,7 @@ async function edwardForceMove(itemId, processId, opts){
   await saveItem(item);
   if(!opts || !opts.silent){
     const nextId = currentStepId(item);
-    showToast(`⏭ ${item.itemCode} · ${processLabel(processId)} inilipat ni Edward (walang drawing pa)${nextId?` → ${processLabel(nextId)}`:''}`);
+    showToast(`⏭ ${item.itemCode} ipinasa sa Production${nextId?` (${processLabel(nextId)})`:''} — nasa Engineering pa rin ang ${processLabel(processId)} para sa drawing`);
   }
   return true;
 }
@@ -1856,7 +1853,14 @@ async function edwardForceMoveAllEngineering(itemId){
   renderBoard(); renderOverview(); renderMyTasks();
   if(document.getElementById('view-team').classList.contains('active')){ renderTeam(); }
   closeModal();
-  showToast(`⏭ ${item.itemCode} — lahat ng Engineering ay inilipat ni Edward (walang drawing pa). I-attach ang drawing sa proseso kung nasaan ang item.`);
+  showToast(`⏭ ${item.itemCode} ipinasa sa Production — nananatili sa Engineering ang mga drawing na kulang.`);
+}
+function edwardPassBtnHtml(t){
+  if(!DRAWING_CHAIN.includes(t.processId)) return '';
+  const dfr = t.item.engineeringDeferred && t.item.engineeringDeferred[t.processId];
+  if(dfr) return `<span class="hint" style="color:#b45309;font-weight:700;">⚠ Nasa Production na — habol drawing</span>`;
+  if(!edwardUnlocked()) return '';
+  return `<button type="button" class="btn secondary btn-sm" onclick="edwardForceMove('${t.item.id}','${t.processId}')" title="Ipasa sa Production kahit walang drawing — mananatili sa Engineering ang task">⏭ Ipasa sa Production</button>`;
 }
 // The actual blocking alert shown when cycleStep() refuses to mark a
 // drawing-producing step done — a real modal (not a toast) so it stays on
@@ -1881,7 +1885,7 @@ function openDrawingMissingAlert(item, processId, missing){
       <p>Hindi pa pwedeng i-mark na <b>Tapos</b> ang <b>${escapeHtml(meta.label)}</b> ng <b>${escapeHtml(item.itemCode)}</b> — wala pang naka-attach na drawing dito.</p>
       <p class="hint">Gamitin ang "📎 I-attach ang ${escapeHtml(meta.label)}" na form sa task card na ito, o pindutin ang "🚫 Hindi Required" doon kung hindi naman kailangan.</p>`;
   }
-  const edBtn = edwardUnlocked() ? `<button class="btn secondary" onclick="closeModal();edwardForceMove('${item.id}','${processId}')">⏭ Ilipat pa rin (Edward) — drawing habol na lang</button>` : '';
+  const edBtn = edwardUnlocked() ? `<button class="btn secondary" onclick="closeModal();edwardForceMove('${item.id}','${processId}')">⏭ Ipasa sa Production (Edward) — Engineering maghahabol ng drawing</button>` : '';
   box.innerHTML = `<h4>⚠️ Kulang pa bago matapos</h4>${bodyHtml}<div class="modal-actions">${edBtn}<button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
   document.getElementById('modalOverlay').classList.add('show');
 }
@@ -1902,6 +1906,7 @@ function withdrawalBlockers(item, checkAttachments){
     out.push({kind:'procurement', text:'Material Procurement — hindi pa tapos / wala pa ang materyales'});
   }
   route.filter(pid=>DRAWING_CHAIN.includes(pid)).forEach(pid=>{
+    if(item.engineeringDeferred && item.engineeringDeferred[pid]) return; // ipinasa ni Edward — Engineering ang maghahabol ng drawing
     if(item.routeStatus[pid]!=='done'){
       out.push({kind:'engineering', text:`${processLabel(pid)} (Engineering) — hindi pa tapos`});
     }else if(checkAttachments && !(item.drawingOverride && item.drawingOverride[pid])){
@@ -1916,7 +1921,7 @@ function openWithdrawalBlockedAlert(item, blockers){
   box.innerHTML = `<h4>⛔ Hindi pa pwedeng mag-Withdraw ng Materyales</h4>
     <p><b>${escapeHtml(item.itemCode)}</b> — kailangan munang kumpleto ang galing sa Material Procurement at sa Engineering bago magsimula ang Material Withdrawal at ang buong production (Laser Cutting hanggang Delivery), para hindi maulit ang trabaho ng fabrication:</p>
     <ul style="margin:8px 0;padding-left:22px;font-weight:700;">${blockers.map(b=>`<li>${escapeHtml(b.text)}</li>`).join('')}</ul>
-    <div class="modal-actions">${(edwardUnlocked() && blockers.some(b=>b.kind==='engineering')) ? `<button class="btn secondary" onclick="edwardForceMoveAllEngineering('${item.id}')">⏭ Ilipat lahat ng Engineering (Edward) — drawing habol na lang</button>` : ''}<button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
+    <div class="modal-actions">${(edwardUnlocked() && blockers.some(b=>b.kind==='engineering')) ? `<button class="btn secondary" onclick="edwardForceMoveAllEngineering('${item.id}')">⏭ Ipasa sa Production (Edward) — Engineering maghahabol ng drawing</button>` : ''}<button class="btn" onclick="closeModal()">Sige, intindi ko</button></div>`;
   document.getElementById('modalOverlay').classList.add('show');
 }
 // Stable DOM-id suffix for one attach-form instance — item + process, plus
@@ -2000,8 +2005,8 @@ function drawingAttachFormHtml(item, processId, childPart){
       ? `<div class="hint" style="margin-top:4px;color:var(--gray);">🚫 Minarkahang "Hindi Required" — hindi na ito hahadlangan sa pagtapos. <button type="button" class="irc-edit" onclick="toggleDrawingNotRequired('${item.id}','${processId}','${jsAttr(notRequiredKey)}')">↩ Kailangan pala</button></div>`
       : `<div style="margin-top:4px;"><button type="button" class="irc-edit" onclick="toggleDrawingNotRequired('${item.id}','${processId}','${jsAttr(notRequiredKey)}')">🚫 Hindi Required (walang drawing dito)</button></div>`
   ) : '';
-  const ovInfo = item.drawingOverride && item.drawingOverride[processId];
-  const ovHtml = ovInfo ? `<div class="hint" style="color:#b45309;font-weight:700;margin-bottom:4px;">⚠ Inilipat ni ${escapeHtml(ovInfo.by||'Edward Torio')} kahit walang drawing — i-attach dito ang drawing.</div>` : '';
+  const ovInfo = (item.engineeringDeferred && item.engineeringDeferred[processId]) ? (item.drawingOverride && item.drawingOverride[processId]) : null;
+  const ovHtml = ovInfo ? `<div class="hint" style="color:#b45309;font-weight:700;margin-bottom:4px;">⚠ Ipinasa na ni ${escapeHtml(ovInfo.by||'Edward Torio')} sa Production kahit walang drawing — i-attach dito ang drawing at i-Tapos ito (hindi na babalik sa unang proseso ang production).</div>` : '';
   return `<div style="margin-top:6px;padding:6px 8px;background:var(--gray-bg);border-radius:6px;">
     ${ovHtml}<div class="hint" style="font-weight:700;margin-bottom:4px;">📎 I-attach ang ${escapeHtml(meta.label)}</div>
     ${existingHtml}
@@ -2135,7 +2140,8 @@ function blankRouteState(route){
 }
 function currentStepId(item){
   if(!item.route || !item.route.length) return null;
-  const found = item.route.find(pid => item.routeStatus[pid] !== 'done');
+  const dfr = item.engineeringDeferred || {};
+  const found = item.route.find(pid => item.routeStatus[pid] !== 'done' && !dfr[pid]);
   return found === undefined ? null : found;
 }
 // Material Procurement (buying the materials) and the whole Engineering
@@ -2181,13 +2187,21 @@ const DRAWING_CHAIN = ['drawing', 'laser_cutting_program', 'burring_tapping_coun
 // current-step behavior as everywhere else in the app.
 function activeStepIds(item){
   if(!item.route || !item.route.length) return [];
-  const notDone = item.route.filter(pid => item.routeStatus[pid] !== 'done');
-  if(!notDone.length) return [];
-  const first = notDone[0], second = notDone[1];
-  if(first==='material_purchasing' && second && DRAWING_CHAIN.includes(second)){
-    return [first, second];
+  const dfr = item.engineeringDeferred || {};
+  const notDoneAll = item.route.filter(pid => item.routeStatus[pid] !== 'done');
+  if(!notDoneAll.length) return [];
+  // Engineering steps Edward passed ahead to Production stay open for Engineering
+  // (see edwardForceMove) but no longer hold the item back.
+  const notDone = notDoneAll.filter(pid => !dfr[pid]);
+  const deferred = notDoneAll.filter(pid => dfr[pid]);
+  const out = [];
+  if(notDone.length){
+    const first = notDone[0], second = notDone[1];
+    out.push(first);
+    if(first==='material_purchasing' && second && DRAWING_CHAIN.includes(second)) out.push(second);
   }
-  return [first];
+  if(deferred.length) out.push(deferred[0]);
+  return out;
 }
 // Steps where the actual physical/drafting work is normally done per SHEET
 // (one laser-cutting nesting layout, one Bystronic tube-cutting program, one
@@ -5985,6 +5999,7 @@ function lineageQtyDoneAtStep(item, processId, excludeItemId){
 // bookkeeping fields that mean "this step is genuinely, permanently done".
 function finalizeStepDone(item, processId, isLastStep){
   item.routeStatus[processId] = 'done';
+  if(item.engineeringDeferred) delete item.engineeringDeferred[processId];
   if(!item.routeCompletedAt) item.routeCompletedAt = {};
   item.routeCompletedAt[processId] = new Date().toISOString();
   if(item.lastReturn && item.lastReturn.toProcess===processId) delete item.lastReturn;
@@ -7717,6 +7732,7 @@ function renderPersonActionableTasksHtml(name){
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
         <div class="task-process-badge">${processLabel(t.processId)}</div>
         <div style="display:flex;align-items:center;gap:6px;">
+          ${edwardPassBtnHtml(t)}
           ${returnBtn}
           ${partialBtn}
           ${quickReturnBtns}
