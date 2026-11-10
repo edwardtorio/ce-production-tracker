@@ -1704,8 +1704,8 @@ function drawingIsMarkedNotRequired(item, processId, childPart){
 }
 function drawingSatisfiedOrNotRequired(item, processId, childPart){
   const key = childPart || '';
-  const has = drawingsForItemProcess(item, processId).some(d=>(d.childPart||'')===key);
-  return has || drawingIsMarkedNotRequired(item, processId, key);
+  const has = drawingEntriesForKey(item, processId, key).length>0;
+  return has || drawingNotRequiredForKey(item, processId, key);
 }
 function toggleDrawingNotRequired(itemId, processId, childPart){
   const item = ITEMS.find(i=>i.id===itemId);
@@ -1731,16 +1731,102 @@ function toggleDrawingNotRequired(itemId, processId, childPart){
 // that process's own label (there's only ever one thing to check). Every
 // missing thing must be either an actually-attached drawing, or an explicit
 // "Hindi Required" mark — never silently skipped.
+// ---------- UNIQUE KEY PER PIYESA ----------
+// Ang bilang (Natapos), "Hindi Required" at drawing ng bawat Sub Assy/Child
+// Part ay naka-key sa PANGALAN nito. Kapag pareho ang pangalan ng dalawang
+// piyesa (hal. "Lantern p7" sa maraming Sub Assy) iisa ang susi nila kaya
+// nagbabanggaan ang bilang at nagpapaikot-ikot ang Parts List. Ang
+// partKeyMap() ay nagbibigay ng natatanging susi sa bawat row: ang pangalan
+// mismo kung walang kapareho; kung may kapareho, "Pangalan — Sub Assy" (o
+// "Pangalan (Sub Assy n)" para sa Sub Assy). Hindi nagbabago ang ipinapakitang
+// pangalan.
+function normPartName(n){ return String(n||'').trim().toLowerCase().replace(/\s+/g,' '); }
+function partKeyMap(item){
+  const subs = (item && item.partsList) || [];
+  const cnt = {};
+  subs.forEach(s=>{
+    if(s.name) cnt[s.name] = (cnt[s.name]||0)+1;
+    (s.childParts||[]).forEach(c=>{ if(c.name) cnt[c.name] = (cnt[c.name]||0)+1; });
+  });
+  const used = {}, base = {};
+  const claim = (k, b)=>{ let key=k, i=2; while(used[key]) key = k+' #'+(i++); used[key]=1; base[key]=b; return key; };
+  const subKeys = [], childKeys = [];
+  subs.forEach((s,i)=>{
+    subKeys.push(s.name ? claim(cnt[s.name]>1 ? `${s.name} (Sub Assy ${i+1})` : s.name, s.name) : '');
+    childKeys.push((s.childParts||[]).map(c=> c.name ? claim(cnt[c.name]>1 ? `${c.name} — ${s.name||('Sub Assy '+(i+1))}` : c.name, c.name) : ''));
+  });
+  return { subKeys, childKeys, base };
+}
+function partKeyBase(item, key){ if(!key) return key; const km = partKeyMap(item); return km.base[key] || key; }
+// Drawing entries for one piyesa key — kung wala pang sarili ang row (legacy
+// na naka-attach sa dating shared na pangalan), ginagamit pansamantala ang
+// nasa pangalan lang; kapag may sarili na, iyon lang ang ipapakita.
+function drawingEntriesForKey(item, processId, key){
+  const all = drawingsForItemProcess(item, processId);
+  const own = all.filter(d=>(d.childPart||'')===(key||''));
+  if(own.length || !key) return own;
+  const b = partKeyBase(item, key);
+  return b!==key ? all.filter(d=>(d.childPart||'')===b) : own;
+}
+function drawingNotRequiredForKey(item, processId, key){
+  if(drawingIsMarkedNotRequired(item, processId, key)) return true;
+  const b = partKeyBase(item, key);
+  return b!==key && drawingIsMarkedNotRequired(item, processId, b);
+}
+// Hindi pinapayagan ang parehong pangalan ng Sub Assy/Child Part sa iisang
+// item (hindi pinapansin ang laki/liit ng letra at sobrang espasyo).
+function partNameConflict(list, newName, skipSub, skipChild){
+  const nn = normPartName(newName);
+  if(!nn) return null;
+  for(let i=0;i<(list||[]).length;i++){
+    const s = list[i];
+    if(!(skipSub===i && skipChild===-1) && normPartName(s.name)===nn) return {kind:'Sub Assy', name:s.name};
+    const ch = s.childParts||[];
+    for(let j=0;j<ch.length;j++){
+      if(!(skipSub===i && skipChild===j) && normPartName(ch[j].name)===nn) return {kind:'Child Part', name:ch[j].name, parent:s.name};
+    }
+  }
+  return null;
+}
+function partDupMessage(c, newName){
+  return `Mayroon nang ${c.kind} na "${c.name}"${c.parent?` (sa ${c.parent})`:''} — hindi pwedeng magkapareho ang pangalan ng piyesa sa iisang item. Palitan ang "${newName}" ng kakaibang pangalan (hal. dagdagan ng numero o ng pangalan ng Sub Assy).`;
+}
+// Sundan ang piyesa kapag pinalitan ng pangalan: sumasama ang bilang,
+// "Hindi Required" at drawing sa bagong pangalan (hindi na maiiwan).
+function migratePartKey(item, oldKey, newKey){
+  if(!oldKey || !newKey || oldKey===newKey) return;
+  ['partsProgress','drawingNotRequired'].forEach(f=>{
+    const root = item[f]; if(!root) return;
+    Object.keys(root).forEach(p=>{
+      const m = root[p];
+      if(m && m[oldKey]!==undefined && m[newKey]===undefined){ m[newKey] = m[oldKey]; delete m[oldKey]; }
+    });
+  });
+  DRAWINGS_POOL.filter(d=>d.itemId===item.id && (d.childPart||'')===oldKey).forEach(d=>{ d.childPart = newKey; try{ saveDrawingEntry(d); }catch(e){} });
+}
+// Para sa auto-fill/import: gawing kakaiba ang mga paulit-ulit na pangalan.
+function uniquifyPartsList(list){
+  const seen = new Set();
+  const fix = (n)=>{
+    if(!n) return n;
+    let nn = n, i = 2;
+    while(seen.has(normPartName(nn))) nn = `${n} (${i++})`;
+    seen.add(normPartName(nn));
+    return nn;
+  };
+  (list||[]).forEach(s=>{
+    s.name = fix(s.name);
+    (s.childParts||[]).forEach(c=>{ c.name = fix(c.name); });
+  });
+  return list;
+}
 function drawingStepMissingDetails(item, processId){
   if(!DRAWING_PROCESS_MAP[processId]) return []; // not a drawing-producing process at all
   if(processId==='drawing'){
     // Gated per Sub Assy / Child Part from the Parts List — not just once
     // for the whole item — since each piyesa can need its own drawing.
-    const names = [];
-    (item.partsList||[]).forEach(s=>{
-      if(s.name) names.push(s.name);
-      (s.childParts||[]).forEach(c=>{ if(c.name) names.push(c.name); });
-    });
+    const km = partKeyMap(item);
+    const names = km.subKeys.concat([].concat(...km.childKeys)).filter(Boolean);
     if(!names.length){
       // No Sub Assy / Child Part breakdown entered at all yet. Standard
       // rule, no exceptions: EVERY item must have a Parts List — there is no
@@ -1790,6 +1876,8 @@ function updateEdwardBtn(){
   b.textContent = on ? '🔓 Edward' : '🔐';
   b.title = on ? 'Edward mode — naka-unlock (pindutin para i-lock)' : 'Edward lang — i-unlock';
   b.style.background = on ? '#15803d' : 'rgba(0,0,0,.35)';
+  const c = document.getElementById('edwardCleanBtn');
+  if(c) c.style.display = on ? 'block' : 'none';
 }
 function toggleEdwardLock(){
   if(edwardUnlocked()){
@@ -1864,6 +1952,80 @@ function edwardPassBtnHtml(t){
   if(dfr) return `<span class="hint" style="color:#b45309;font-weight:700;">⚠ Nasa Production na — habol drawing</span>`;
   if(!edwardUnlocked()) return '';
   return `<button type="button" class="btn secondary btn-sm" onclick="edwardForceMove('${t.item.id}','${t.processId}')" title="Ipasa sa Production kahit walang drawing — mananatili sa Engineering ang task">⏭ Ipasa sa Production</button>`;
+}
+// ---------- LINISIN ANG MALING DRAWING (Edward lang) ----------
+// Hinahanap ang Fabrication/Burring/Bending drawing na hindi dapat nandoon:
+//  1. 'orphan'  — naka-tag sa piyesang wala sa Parts List ng item (tiyak na mali)
+//  2. 'cross'   — parehong file na naunang naka-attach sa ibang CUSTOMER (kopya, tiyak na mali)
+//  3. 'repeat'  — parehong file na naunang naka-attach sa ibang SO ng PAREHONG customer
+//                 (posibleng tama kung repeat order — i-review isa-isa)
+const CLEANUP_PROCS = ['drawing','burring_tapping_countersunk_drawing','bending_flat_pattern'];
+function scanSuspectDrawings(){
+  const itemById = {}; ITEMS.forEach(i=>{ itemById[i.id]=i; });
+  const byUrl = {};
+  DRAWINGS_POOL.forEach(d=>{ if(d.url && d.itemId) (byUrl[d.url]=byUrl[d.url]||[]).push(d); });
+  const out = [];
+  DRAWINGS_POOL.forEach(d=>{
+    if(!d.itemId || !CLEANUP_PROCS.includes(d.processId)) return;
+    const it = itemById[d.itemId]; if(!it || it.archived) return;
+    let reason = '';
+    if(d.childPart && it.partsList && it.partsList.length){
+      const km = partKeyMap(it);
+      const ok = new Set([].concat(km.subKeys, ...km.childKeys, Object.values(km.base)));
+      if(!ok.has(d.childPart)) reason = 'orphan';
+    }
+    if(!reason && d.url && !d.storagePath){
+      const earlier = (byUrl[d.url]||[]).filter(x=>x.id!==d.id && x.soNumber!==d.soNumber && String(x.uploadedAt||'')<=String(d.uploadedAt||''));
+      if(earlier.length){
+        reason = earlier.some(x=>clientRoot(x.client)!==clientRoot(it.client || d.client)) ? 'cross' : 'repeat';
+      }
+    }
+    if(reason) out.push({d, it, reason});
+  });
+  return out;
+}
+let CLEANUP_ROWS = [];
+function openDrawingCleanup(){
+  if(!edwardUnlocked()){ showToast('Si Edward Torio lang ang may karapatan nito.'); return; }
+  CLEANUP_ROWS = scanSuspectDrawings();
+  const titles = {orphan:'Walang katugmang piyesa sa Parts List (tiyak na mali)', cross:'Kopya galing sa ibang CUSTOMER (tiyak na mali)', repeat:'Kapareho ng file sa ibang SO ng parehong customer (i-review — baka repeat order)'};
+  const dflt = {orphan:true, cross:true, repeat:false};
+  const box = document.getElementById('modalBox');
+  let html = `<h4>🧹 Linisin ang maling drawing</h4><p class="hint">${CLEANUP_ROWS.length} entry ang nakita. Alisin lang ang naka-check. Ang ‘Kulang’ ay babalik sa Fabrication Drawing ng item kung wala na itong ibang drawing.</p><div style="max-height:62vh;overflow:auto;">`;
+  ['orphan','cross','repeat'].forEach(r=>{
+    const rows = CLEANUP_ROWS.map((x,i)=>({...x,i})).filter(x=>x.reason===r);
+    if(!rows.length) return;
+    const bySo = {};
+    rows.forEach(x=>{ const k = `${x.it.soNumber} · ${x.it.client}`; (bySo[k]=bySo[k]||[]).push(x); });
+    html += `<div style="margin:10px 0 4px;font-weight:800;">${titles[r]} — ${rows.length}</div>`;
+    Object.keys(bySo).sort().forEach(k=>{
+      html += `<details style="margin:2px 0;"><summary style="cursor:pointer;font-size:12px;font-weight:700;">${escapeHtml(k)} (${bySo[k].length})</summary>` + bySo[k].map(x=>`<label style="display:flex;gap:6px;align-items:flex-start;font-size:11px;padding:2px 0 2px 14px;"><input type="checkbox" class="cleanupChk" data-i="${x.i}" ${dflt[r]?'checked':''}><span><b>${escapeHtml(x.it.itemCode||'')}</b> · ${escapeHtml(String(x.it.description||'').slice(0,40))} — piyesa: <b>${escapeHtml(x.d.childPart||'(Main Assy)')}</b> — ${escapeHtml(x.d.name||x.d.url||'')} <i>(${escapeHtml(processLabel(x.d.processId))})</i></span></label>`).join('') + `</details>`;
+    });
+  });
+  if(!CLEANUP_ROWS.length) html += '<p>Walang nakitang kahina-hinalang drawing. 🎉</p>';
+  html += `</div><div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancel</button>${CLEANUP_ROWS.length?'<button class="btn" onclick="runDrawingCleanup()">Alisin ang naka-check</button>':''}</div>`;
+  box.innerHTML = html;
+  document.getElementById('modalOverlay').classList.add('show');
+}
+async function runDrawingCleanup(){
+  if(!edwardUnlocked()) return;
+  const ids = Array.from(document.querySelectorAll('.cleanupChk:checked')).map(el=>CLEANUP_ROWS[Number(el.dataset.i)].d.id);
+  if(!ids.length){ showToast('Walang naka-check.'); return; }
+  if(!confirm(`Aalisin ang ${ids.length} drawing entry. Hindi na ito mababawi. Tuloy?`)) return;
+  const idSet = new Set(ids);
+  const gone = DRAWINGS_POOL.filter(d=>idSet.has(d.id));
+  DRAWINGS_POOL = DRAWINGS_POOL.filter(d=>!idSet.has(d.id));
+  closeModal(); rerenderCurrentView(); renderMyTasks();
+  let failed = 0;
+  if(typeof sbClient!=='undefined' && sbClient && !isReadOnly && !capabilityUnavailable){
+    for(let i=0;i<ids.length;i+=100){
+      try{ const r = await sbClient.from('drawings_pool').delete().in('id', ids.slice(i,i+100)); if(r && r.error) failed += Math.min(100, ids.length-i); }catch(e){ failed += Math.min(100, ids.length-i); }
+    }
+    // Ang naka-upload na file (may storagePath) ay inaalis din kung wala nang ibang entry na gumagamit
+    const paths = gone.filter(d=>d.storagePath && !DRAWINGS_POOL.some(x=>x.storagePath===d.storagePath)).map(d=>d.storagePath);
+    if(paths.length){ try{ await sbClient.storage.from('drawings').remove(paths); }catch(e){} }
+  }
+  showToast(failed ? `⚠ ${ids.length-failed} ang naalis, ${failed} ang hindi na-delete sa database — subukan ulit.` : `🧹 Naalis ang ${ids.length} maling drawing.`);
 }
 // The actual blocking alert shown when cycleStep() refuses to mark a
 // drawing-producing step done — a real modal (not a toast) so it stays on
@@ -1972,7 +2134,7 @@ function drawingAttachFormHtml(item, processId, childPart){
   if(!meta) return '';
   childPart = childPart || '';
   const uid = drawingFormUid(item.id, processId, childPart);
-  const existing = drawingsForItemProcess(item, processId).filter(d=>(d.childPart||'')===childPart);
+  const existing = drawingEntriesForKey(item, processId, childPart);
   // "🔄 Palitan" removes this entry AND jumps focus straight to the attach
   // fields below — the one-click fix for "nagkamali ng na-attach na drawing"
   // instead of a separate remove-then-hunt-for-the-form step.
@@ -2695,8 +2857,8 @@ function partsListDrawingCellHtml(item, name, processId, canAttach){
     // scrolling just to see the columns further right (Natapos, etc.).
     return `<span class="hint" style="color:var(--gray);" title="Pangalanan muna ang piyesa para maka-attach dito ng sarili nitong drawing.">⚠ Pangalanan muna</span>`;
   }
-  const existing = drawingsForItemProcess(item, processId).filter(d=>(d.childPart||'')===name);
-  const isNotRequired = drawingIsMarkedNotRequired(item, processId, name);
+  const existing = drawingEntriesForKey(item, processId, name);
+  const isNotRequired = drawingNotRequiredForKey(item, processId, name);
   const pillStyle = 'display:inline-block;font-size:10px;font-weight:800;padding:2px 7px;border-radius:999px;white-space:nowrap;';
   const statusPill = existing.length
     ? '' // the actual links below already make "attached" obvious — no extra pill needed
@@ -2798,9 +2960,10 @@ function weightPartialPlan(item, processId){
 // traversal as drawingStepMissingDetails, reused here for the count gate.
 function partsCountEntries(item){
   const entries = [];
-  (item.partsList||[]).forEach(s=>{
-    if(s.name) entries.push({name:s.name, qtyPerUnit:Number(s.qtyPerUnit)||0, kgEach:Number(s.kgEach)||0});
-    (s.childParts||[]).forEach(c=>{ if(c.name) entries.push({name:c.name, qtyPerUnit:Number(c.qtyPerUnit)||0, kgEach:Number(c.kgEach)||0}); });
+  const km = partKeyMap(item);
+  (item.partsList||[]).forEach((s,si)=>{
+    if(s.name) entries.push({name:km.subKeys[si], qtyPerUnit:Number(s.qtyPerUnit)||0, kgEach:Number(s.kgEach)||0});
+    (s.childParts||[]).forEach((c,ci)=>{ if(c.name) entries.push({name:km.childKeys[si][ci], qtyPerUnit:Number(c.qtyPerUnit)||0, kgEach:Number(c.kgEach)||0}); });
   });
   return entries;
 }
@@ -3067,6 +3230,16 @@ async function savePartsListChange(item){
 function updatePartsListSubField(itemId, subIdx, field, value){
   const item = ITEMS.find(i=>i.id===itemId);
   if(!item || !item.partsList || !item.partsList[subIdx]) return;
+  if(field==='name'){
+    value = String(value||'').trim();
+    const c = partNameConflict(item.partsList, value, subIdx, -1);
+    if(c){ showToast(partDupMessage(c, value)); rerenderCurrentView(); renderMyTasks(); return; }
+    const oldKey = partKeyMap(item).subKeys[subIdx];
+    item.partsList[subIdx].name = value;
+    migratePartKey(item, oldKey, partKeyMap(item).subKeys[subIdx]);
+    savePartsListChange(item);
+    return;
+  }
   item.partsList[subIdx][field] = (field==='qtyPerUnit'||field==='kgEach') ? (Number(value)||0) : value;
   savePartsListChange(item);
 }
@@ -3075,6 +3248,16 @@ function updatePartsListChildField(itemId, subIdx, childIdx, field, value){
   if(!item || !item.partsList || !item.partsList[subIdx]) return;
   const child = (item.partsList[subIdx].childParts||[])[childIdx];
   if(!child) return;
+  if(field==='name'){
+    value = String(value||'').trim();
+    const c = partNameConflict(item.partsList, value, subIdx, childIdx);
+    if(c){ showToast(partDupMessage(c, value)); rerenderCurrentView(); renderMyTasks(); return; }
+    const oldKey = partKeyMap(item).childKeys[subIdx][childIdx];
+    child.name = value;
+    migratePartKey(item, oldKey, partKeyMap(item).childKeys[subIdx][childIdx]);
+    savePartsListChange(item);
+    return;
+  }
   child[field] = (field==='qtyPerUnit'||field==='kgEach') ? (Number(value)||0) : value;
   savePartsListChange(item);
 }
@@ -3139,6 +3322,10 @@ const PARTS_LIST_GROUP_ACCENTS = [
 // blank/item-wide/SO-wide drawing that isn't scoped to any specific piyesa.
 function partsListAccentForName(item, name){
   if(!name || !item.partsList) return null;
+  const km = partKeyMap(item);
+  for(let i=0;i<item.partsList.length;i++){
+    if(km.subKeys[i]===name || km.childKeys[i].includes(name)) return PARTS_LIST_GROUP_ACCENTS[i % PARTS_LIST_GROUP_ACCENTS.length];
+  }
   for(let i=0;i<item.partsList.length;i++){
     const s = item.partsList[i];
     if(s.name===name) return PARTS_LIST_GROUP_ACCENTS[i % PARTS_LIST_GROUP_ACCENTS.length];
@@ -3232,6 +3419,7 @@ function partsListTableHtml(item, processId){
   const cellPad = 'padding:7px 8px;';
   const subAssyChip = (color) => `<span style="display:inline-block;font-size:9px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;padding:1px 6px;border-radius:4px;background:${color};color:#fff;flex:0 0 auto;">Sub Assy</span>`;
   const childChip = (color) => `<span style="display:inline-block;font-size:9px;font-weight:800;letter-spacing:.03em;text-transform:uppercase;padding:1px 6px;border-radius:4px;border:1.5px solid ${color};color:${color};flex:0 0 auto;">Child Part</span>`;
+  const KM = partKeyMap(item);
   const rows = (item.partsList||[]).map((s, subIdx)=>{
     const accent = PARTS_LIST_GROUP_ACCENTS[subIdx % PARTS_LIST_GROUP_ACCENTS.length];
     // A visibly thick, colored top border (not just the thin neutral line
@@ -3253,7 +3441,7 @@ function partsListTableHtml(item, processId){
     // Sub Assy row: the ONE row in this group that's fully tinted with the
     // group's accent color — the clear "group header" row.
     const subRowStyle = `border-left:5px solid ${accent.color};background:${accent.bg};${dividerTop}`;
-    let inner = `<tr style="${subRowStyle}"><td style="${cellPad}${colDivider}display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">${badge}${nameCell}${subAssyChip(accent.color)}${removeBtn}</td><td style="${cellPad}${colDivider}">${qtyCell}</td><td style="${cellPad}${colDivider}"><b>${Number(s.totalQty||0).toLocaleString()}</b>${formulaHint([s.qtyPerUnit, mainQty+' '+item.unit])}</td><td style="${cellPad}${colDivider}">${materialCell(s, `updatePartsListSubField('${item.id}',${subIdx},'materialType',this.value)`)}</td>${lastColsHtml(s.name)}</tr>`;
+    let inner = `<tr style="${subRowStyle}"><td style="${cellPad}${colDivider}display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">${badge}${nameCell}${subAssyChip(accent.color)}${removeBtn}</td><td style="${cellPad}${colDivider}">${qtyCell}</td><td style="${cellPad}${colDivider}"><b>${Number(s.totalQty||0).toLocaleString()}</b>${formulaHint([s.qtyPerUnit, mainQty+' '+item.unit])}</td><td style="${cellPad}${colDivider}">${materialCell(s, `updatePartsListSubField('${item.id}',${subIdx},'materialType',this.value)`)}</td>${lastColsHtml(KM.subKeys[subIdx])}</tr>`;
     (s.childParts||[]).forEach((c, childIdx)=>{
       const childBadge = `<span style="display:inline-block;min-width:15px;height:15px;line-height:13px;text-align:center;border-radius:50%;border:1.5px solid ${accent.color};color:${accent.color};font-size:8.5px;font-weight:700;margin-right:4px;flex:0 0 auto;">${subIdx+1}.${childIdx+1}</span>`;
       const cNameCell = canEditPartsList
@@ -3267,7 +3455,7 @@ function partsListTableHtml(item, processId){
       // "one level down" from its Sub Assy — only the thin colored left
       // rail (same accent) and the indent + "↳" tie it back to its parent.
       const childRowStyle = `border-left:5px solid ${accent.color};background:#fff;`;
-      inner += `<tr style="${childRowStyle}"><td style="${cellPad}${colDivider}padding-left:26px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">↳ ${childBadge}${cNameCell}${childChip(accent.color)}${cRemoveBtn}<div class="hint" style="width:100%;margin-left:19px;">ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}"</div></td><td style="${cellPad}${colDivider}">${cQtyCell}</td><td style="${cellPad}${colDivider}">${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, mainQty+' '+item.unit])}</td><td style="${cellPad}${colDivider}">${materialCell(c, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'materialType',this.value)`)}</td>${lastColsHtml(c.name)}</tr>`;
+      inner += `<tr style="${childRowStyle}"><td style="${cellPad}${colDivider}padding-left:26px;color:var(--steel-700);display:flex;align-items:flex-start;flex-wrap:wrap;gap:5px;">↳ ${childBadge}${cNameCell}${childChip(accent.color)}${cRemoveBtn}<div class="hint" style="width:100%;margin-left:19px;">ng "${escapeHtml(s.name||('Sub Assy #'+(subIdx+1)))}"</div></td><td style="${cellPad}${colDivider}">${cQtyCell}</td><td style="${cellPad}${colDivider}">${Number(c.totalQty||0).toLocaleString()}${formulaHint([c.qtyPerUnit, mainQty+' '+item.unit])}</td><td style="${cellPad}${colDivider}">${materialCell(c, `updatePartsListChildField('${item.id}',${subIdx},${childIdx},'materialType',this.value)`)}</td>${lastColsHtml(KM.childKeys[subIdx][childIdx])}</tr>`;
     });
     if(canEditPartsList){
       inner += `<tr style="border-left:5px solid ${accent.color};background:#fff;"><td style="padding:5px 8px 7px 26px;" colspan="${colCount}"><button type="button" class="btn secondary btn-sm" onclick="addPartsListChildPart('${item.id}',${subIdx})">+ Child Part sa Sub Assy #${subIdx+1}${s.name?(' ('+escapeHtml(s.name)+')'):''}</button></td></tr>`;
@@ -11589,6 +11777,22 @@ function updateChildPartRow(rowId, subIdx, childIdx, field, value){
   renderPartsListTable(rowId);
   if(rowId!=='edit') scheduleSaveDraft(rowId);
 }
+// Sa Add New SO / Edit Item: pagkatapos mag-type (change event), kung kapareho
+// ng ibang Sub Assy/Child Part ang pangalan, hindi ito tatanggapin.
+function checkPartNameDup(rowId, subIdx, childIdx){
+  const list = partsListState[rowId] || [];
+  const sub = list[subIdx];
+  if(!sub) return;
+  const obj = childIdx>=0 ? (sub.childParts||[])[childIdx] : sub;
+  if(!obj) return;
+  const c = partNameConflict(list, obj.name, subIdx, childIdx);
+  if(c){
+    showToast(partDupMessage(c, obj.name));
+    obj.name = '';
+    renderPartRows(rowId);
+    if(rowId!=='edit') scheduleSaveDraft(rowId);
+  }
+}
 function renderPartRows(rowId){
   const wrap = document.getElementById('partsListRows_'+rowId);
   if(!wrap) return;
@@ -11597,7 +11801,7 @@ function renderPartRows(rowId){
     const childHtml = (r.childParts||[]).map((c,cidx)=>`
       <div style="display:flex;gap:6px;margin-bottom:6px;align-items:center;margin-left:24px;">
         <span class="hint" style="flex-shrink:0;">↳</span>
-        <input type="text" placeholder="Pangalan ng Child Part" value="${(c.name||'').replace(/"/g,'&quot;')}" style="flex:2;" oninput="updateChildPartRow('${rowId}',${idx},${cidx},'name',this.value)">
+        <input type="text" placeholder="Pangalan ng Child Part" value="${(c.name||'').replace(/"/g,'&quot;')}" style="flex:2;" oninput="updateChildPartRow('${rowId}',${idx},${cidx},'name',this.value)" onchange="checkPartNameDup('${rowId}',${idx},${cidx})">
         <input type="number" placeholder="Qty per Sub Assy" value="${c.qtyPerUnit}" min="0" style="flex:1;" oninput="updateChildPartRow('${rowId}',${idx},${cidx},'qtyPerUnit',this.value)">
         <button type="button" class="btn ghost" onclick="removeChildPartRow('${rowId}',${idx},${cidx})">✕</button>
       </div>
@@ -11605,7 +11809,7 @@ function renderPartRows(rowId){
     return `
     <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px;background:#fff;">
       <div style="display:flex;gap:6px;align-items:center;">
-        <input type="text" placeholder="Pangalan ng Sub Assy" value="${(r.name||'').replace(/"/g,'&quot;')}" style="flex:2;" oninput="updatePartRow('${rowId}',${idx},'name',this.value)">
+        <input type="text" placeholder="Pangalan ng Sub Assy" value="${(r.name||'').replace(/"/g,'&quot;')}" style="flex:2;" oninput="updatePartRow('${rowId}',${idx},'name',this.value)" onchange="checkPartNameDup('${rowId}',${idx},-1)">
         <input type="number" placeholder="Qty per Main Assy" value="${r.qtyPerUnit}" min="0" style="flex:1;" oninput="updatePartRow('${rowId}',${idx},'qtyPerUnit',this.value)">
         <button type="button" class="btn ghost" onclick="removePartRow('${rowId}',${idx})">✕</button>
       </div>
@@ -11659,7 +11863,7 @@ async function detectSubAssyFromFile(rowId, file){
     const detected = parseBomRowsFromCleanedText(cleaned);
     if(detected.length){
       if(!partsListState[rowId]) partsListState[rowId] = [];
-      detected.forEach(d=>partsListState[rowId].push({name:d.name, qtyPerUnit:d.qtyPerUnit, childParts:[]}));
+      detected.forEach(d=>{ if(!partNameConflict(partsListState[rowId], d.name, -1, -1)) partsListState[rowId].push({name:d.name, qtyPerUnit:d.qtyPerUnit, childParts:[]}); });
       renderPartRows(rowId);
       if(rowId!=='edit') scheduleSaveDraft(rowId);
       if(statusEl) statusEl.textContent = `✓ Na-detect ang ${detected.length} posibleng Sub Assy mula sa BOM table ng "${file.name}" — inalis na ang title block noise. Paki-verify at i-adjust kung kailangan (o gawing Child Part kung ito pala ay parte ng ibang Sub Assy).`;
@@ -11677,22 +11881,39 @@ async function detectSubAssyFromFile(rowId, file){
 // Only fills in when the row's own route/parts are still empty, so it never
 // overwrites something the person has already set up themselves.
 function normalizeMatchText(s){ return (s||'').trim().toLowerCase().replace(/\s+/g,' '); }
-function findMatchingReferenceItem(description, drawingLink, itemCode){
+// Ang "client" ay minsan may kasamang PO/buwan ("WILCON PO 23", "Yumex
+// Philippines October 2026 PO 01"), kaya ang pinaghahambing ay ang UNANG SALITA
+// lang (wilcon, yumex, persquare...). Ang drawing/parts list ay HINDI dapat
+// mapunta sa ibang customer.
+function clientRoot(c){
+  const m = String(c||'').toLowerCase().match(/[a-z]{3,}/);
+  return m ? m[0] : '';
+}
+// Reference item para sa auto-fill ng route/parts list. Mahigpit na:
+//  - parehong customer (unang salita ng client) — hindi kailanman galing sa ibang customer
+//  - hindi sa parehong SO
+//  - parehong Description (at parehong Item Code kung pareho silang may code)
+// Ang Item Code lang ay HINDI sapat: ang mga code na tulad ng
+// "IN-0051-19012260-00" ay ginagamit ng maraming customer/item.
+function findMatchingReferenceItem(description, drawingLink, itemCode, client, soNumber){
   const descNorm = normalizeMatchText(description);
   const linkNorm = normalizeMatchText(drawingLink);
   const codeNorm = normalizeMatchText(itemCode);
+  const root = clientRoot(client);
+  if(!root) return null;
+  const soNorm = normalizeMatchText(soNumber);
+  const base = ITEMS.filter(it =>
+    clientRoot(it.client)===root &&
+    normalizeMatchText(it.soNumber)!==soNorm &&
+    ((it.route&&it.route.length) || (it.partsList&&it.partsList.length)));
   let candidates = [];
-  if(linkNorm){
-    candidates = ITEMS.filter(it => normalizeMatchText(it.drawingLink) === linkNorm && ((it.route&&it.route.length) || (it.partsList&&it.partsList.length)));
+  if(descNorm){
+    candidates = base.filter(it => normalizeMatchText(it.description)===descNorm &&
+      (!codeNorm || !normalizeMatchText(it.itemCode) || normalizeMatchText(it.itemCode)===codeNorm));
   }
-  // Item code is usually the most specific/unique identifier a part has, so
-  // it's checked before description (a description alone can be reused
-  // across genuinely different parts more easily than a code is).
-  if(candidates.length===0 && codeNorm){
-    candidates = ITEMS.filter(it => normalizeMatchText(it.itemCode) === codeNorm && ((it.route&&it.route.length) || (it.partsList&&it.partsList.length)));
-  }
-  if(candidates.length===0 && descNorm){
-    candidates = ITEMS.filter(it => normalizeMatchText(it.description) === descNorm && ((it.route&&it.route.length) || (it.partsList&&it.partsList.length)));
+  if(candidates.length===0 && linkNorm){
+    candidates = base.filter(it => normalizeMatchText(it.drawingLink)===linkNorm &&
+      (!descNorm || normalizeMatchText(it.description)===descNorm));
   }
   if(candidates.length===0) return null;
   candidates.sort((a,b) => new Date(b.updatedAt||b.dateAdded||0) - new Date(a.updatedAt||a.dateAdded||0));
@@ -11738,7 +11959,7 @@ function checkAndSuggestReference(rowId){
   const hasOwnParts = (partsListState[rowId]||[]).some(s=>s.name);
   if(hasOwnRoute || hasOwnParts) return; // don't clobber what the person already set up
 
-  const ref = findMatchingReferenceItem(description, firstDrawing, itemCode);
+  const ref = findMatchingReferenceItem(description, firstDrawing, itemCode, (document.getElementById('soClient')||{}).value||'', (document.getElementById('soNumber')||{}).value||'');
   if(!ref) return;
 
   if(ref.route && ref.route.length){
@@ -11746,10 +11967,10 @@ function checkAndSuggestReference(rowId){
     updateRoutePreview(rowId);
   }
   if(ref.partsList && ref.partsList.length){
-    partsListState[rowId] = JSON.parse(JSON.stringify(ref.partsList)).map(s=>({
+    partsListState[rowId] = uniquifyPartsList(JSON.parse(JSON.stringify(ref.partsList)).map(s=>({
       name:s.name, qtyPerUnit:s.qtyPerUnit, materialType:s.materialType||'',
       childParts:(s.childParts||[]).map(c=>({name:c.name, qtyPerUnit:c.qtyPerUnit, materialType:c.materialType||''}))
-    }));
+    })));
     renderPartRows(rowId);
   }
   if(!firstDrawing.trim()){
@@ -11760,13 +11981,11 @@ function checkAndSuggestReference(rowId){
       renderDrawingList(rowId);
     }
   }
-  const drawingPoolCopies = referenceDrawingPoolCopies(ref);
-  if(drawingPoolCopies.length){
-    PENDING_DRAWING_POOL_COPIES[rowId] = drawingPoolCopies;
-  }
+  // HINDI na awtomatikong kinokopya ang Fabrication Drawing — ang Engineering
+  // lang ang nag-a-attach ng drawing sa bawat piyesa (dati nagkakaroon ng
+  // drawing mula sa ibang customer/item na pareho lang ang code).
   scheduleSaveDraft(rowId);
-  const drawingNote = drawingPoolCopies.length ? ' Kasama na rin ang naka-attach na Fabrication Drawing (Main Assy/Sub Assy/Child Part).' : '';
-  showToast(`Na-detect ang parehong item (${ref.itemCode}) — inilagay ang huling na-update na route at parts list.${drawingNote} Paki-verify.`);
+  showToast(`Na-detect ang dating item ng parehong customer (${ref.itemCode}) — inilagay ang route at parts list. Walang drawing na kinopya; Engineering ang maglalagay. Paki-verify.`);
 }
 function getSoContext(){
   return {
@@ -12171,6 +12390,7 @@ async function init(){
 init();
 
 </script>
+<button id="edwardCleanBtn" onclick="openDrawingCleanup()" title="Linisin ang maling drawing (Edward)" style="display:none;position:fixed;right:10px;bottom:46px;z-index:900;border:none;color:#fff;background:#b45309;border-radius:18px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;opacity:.9;">🧹</button>
 <button id="edwardLockBtn" onclick="toggleEdwardLock()" style="position:fixed;right:10px;bottom:10px;z-index:900;border:none;color:#fff;border-radius:18px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;opacity:.85;">🔐</button>
 <script>try{ updateEdwardBtn(); }catch(e){}</script>
 </body>
