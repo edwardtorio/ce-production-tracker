@@ -698,11 +698,8 @@
     <div class="tab" data-view="board">Production Board</div>
     <div class="tab active" data-view="team">My Tasks</div>
     <div class="tab" data-view="addso">+ Add New SO</div>
-    <div class="tab" data-view="materials">🚚 Materials</div>
     <div class="tab" data-view="jinreview">🔍 For Review (Edward)<span id="jinReviewTabBadge" style="display:none;margin-left:5px;background:var(--red);color:#fff;border-radius:10px;padding:1px 6px;font-size:11px;font-weight:700;"></span></div>
     <div class="tab" data-view="owners">Process Owners</div>
-    <div class="tab" data-view="costrates">Cost Rates</div>
-    <div class="tab" data-view="margin">Contribution Margin</div>
     <div class="tab" data-view="tvmode">📺 TV Mode</div>
   </div>
 </div>
@@ -2770,6 +2767,25 @@ function backfillCatchUpHistory(items){
 
 function fmtPHP(n){
   return '₱' + Number(n||0).toLocaleString('en-PH', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+// Ilang araw nang delayed ang isang step na CRITICAL na: bilang ng araw mula
+// sa huling (3rd) Catch-up Schedule na nalagpasan hanggang ngayon. Hindi na
+// ipinapakita ang 1st/2nd/3rd Catch-up Schedule — ang numero na lang ng
+// delay ang makikita.
+function criticalDaysDelayed(item, pid){
+  const hist = (item.catchUpHistory && item.catchUpHistory[pid]) || [];
+  const last = (hist.length ? hist[hist.length-1].date : '') || (item.catchUpDate && item.catchUpDate[pid]) || '';
+  if(!last) return null;
+  const d0 = new Date(String(last).slice(0,10)+'T00:00:00');
+  if(isNaN(d0)) return null;
+  const now = new Date(); const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.max(0, Math.round((t0 - d0)/86400000));
+}
+function criticalDelayText(item, pids){
+  const days = (pids||[]).map(p=>criticalDaysDelayed(item,p)).filter(x=>x!==null);
+  if(!days.length) return 'delayed';
+  const n = Math.max(...days);
+  return `${n} araw nang delayed`;
 }
 function formatDateLong(dateStr){
   if(!dateStr) return '';
@@ -4954,7 +4970,7 @@ function renderTeamWorkload(){
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;padding-right:${perf.pct===null?'0':'38px'};">${avatarHtml(name,28)}<div class="pname">${name}</div></div>
       <div class="prole">${[...d.roles].join(', ')}</div>
       <div class="ptasks"><span class="q">${d.q} queue</span> · <span class="o">${d.o} ongoing</span> · <span class="d">${d.d} done</span>${d.na?` · <span style="color:var(--amber);">${d.na} need assign</span>`:''}</div>
-      ${d.critical?`<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:4px 8px;border-radius:6px;margin-top:6px;">🔴 May critical na item — lagpas na sa 3rd Catch-up Schedule</div>`:''}
+      ${d.critical?`<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:4px 8px;border-radius:6px;margin-top:6px;">🔴 May critical na item — delayed na</div>`:''}
       <div class="hint" style="margin-top:6px;">👤 I-tap para buksan ang profile</div>
     </div>`;
   });
@@ -6059,10 +6075,7 @@ function renderBoard(){
         // step is kept and shown as its own line, not just the latest one.
         const stepCatchUpHistory = (isCurrent && it.catchUpHistory && it.catchUpHistory[pid]) || [];
         const stepCatchUpCritical = isCurrent && !!(it.catchUpCritical && it.catchUpCritical[pid]);
-        const catchUpHistoryHtml = stepCatchUpHistory.map((h,idx)=>{
-          const missed = idx < stepCatchUpHistory.length-1 || stepCatchUpCritical;
-          return `<div class="step-date" style="color:#a35d00;font-weight:700;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpOrdinal(h.attempt)} Catch-up Schedule: ${formatDateLong(h.date)}${missed?' (nalagpasan)':''}</div>`;
-        }).join('');
+        const catchUpHistoryHtml = ''; // inalis na ang 1st/2nd/3rd Catch-up Schedule lines
         // Once a step is done, its original target date matters less than
         // when it actually finished — swap the target-date line for the
         // actual completion date plus how long the step took (start ->
@@ -6105,7 +6118,7 @@ function renderBoard(){
         // has already accumulated. Purely a live display projection — not
         // persisted, and it does not replace this step's own original
         // target date shown above it.
-        const cascadedLbl = (isDownstream && catchUpDeltaDays>0 && it.routeTargetDates[pid]) ? `Catch-up Schedule: ${formatDateLong(addCalendarDays(it.routeTargetDates[pid], catchUpDeltaDays))}` : '';
+        const cascadedLbl = '';
         // Read-only on the Production Board on purpose — status moves only
         // from My Tasks now (the "pill" there still calls cycleStep), so
         // this stays a live, always-in-sync mirror instead of a second place
@@ -6134,7 +6147,7 @@ function renderBoard(){
       // Material Procurement / Fabrication Drawing parallel window it could
       // be either one (or both), not necessarily the single earliest `cur`.
       const criticalStepIds = activeIds.filter(pid => it.catchUpCritical && it.catchUpCritical[pid]);
-      const criticalNote = isCatchUpCritical ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:6px 9px;border-radius:6px;margin-top:6px;">🔴 CRITICAL — Lumagpas na sa 3rd Catch-up Schedule sa ${criticalStepIds.map(processLabel).join(' / ')}! Kailangan na ng agarang aksyon dito.</div>` : '';
+      const criticalNote = isCatchUpCritical ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:6px 9px;border-radius:6px;margin-top:6px;">🔴 CRITICAL — ${criticalDelayText(it, criticalStepIds)} sa ${criticalStepIds.map(processLabel).join(' / ')}! Kailangan na ng agarang aksyon dito.</div>` : '';
       const splitNote = it.splitNote ? `<div class="hint" style="color:var(--accent-teal-dk);margin-top:6px;">➗ ${it.splitNote}</div>` : '';
       const partsHtml = it.partsBreakdown ? `<details style="margin-top:6px;"><summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--gray);">📎 Raw Extracted Text (reference lang)</summary><div class="hint" style="white-space:pre-wrap;margin-top:4px;">${escapeHtml(it.partsBreakdown)}</div></details>` : '';
       const drawingHtml = drawingLinkHtml(it);
@@ -7874,12 +7887,9 @@ function renderPersonActionableTasksHtml(name){
     // latest) so 1st/2nd stay visible even once it's reached 3rd/critical.
     const isCatchUpCritical = !!(t.item.catchUpCritical && t.item.catchUpCritical[t.processId]);
     const catchUpHistoryForTask = (t.item.catchUpHistory && t.item.catchUpHistory[t.processId]) || [];
-    const catchUpNote = catchUpHistoryForTask.map((h,idx)=>{
-      const missed = idx < catchUpHistoryForTask.length-1 || isCatchUpCritical;
-      return `<div class="hint" style="color:#a35d00;font-weight:700;margin-top:4px;" title="Catch-up schedule — hindi ito pinapalitan ang orihinal na target date sa itaas.">⏩ ${catchUpOrdinal(h.attempt)} Catch-up Schedule: ${formatDateLong(h.date)}${missed?' (nalagpasan)':''}</div>`;
-    }).join('');
+    const catchUpNote = ''; // inalis na ang 1st/2nd/3rd Catch-up Schedule lines — delay days na lang sa CRITICAL
     const criticalNote = isCatchUpCritical
-      ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:5px 8px;border-radius:6px;margin-top:4px;">🔴 CRITICAL — Lumagpas na sa 3rd Catch-up Schedule! Kailangan na ng agarang aksyon.</div>`
+      ? `<div class="hint" style="color:#fff;background:var(--red);font-weight:800;padding:5px 8px;border-radius:6px;margin-top:4px;">🔴 CRITICAL — ${criticalDelayText(t.item,[t.processId])}! Kailangan na ng agarang aksyon.</div>`
       : '';
     // Persistent "started"/"finished" stamps for this task's current step —
     // started is set the first time it's tapped to Ongoing (survives pauses
